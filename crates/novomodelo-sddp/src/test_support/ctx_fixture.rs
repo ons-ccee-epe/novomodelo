@@ -17,9 +17,10 @@ use crate::indexer::{
     AnticipatedPlants, EntityPositions, HydroCellIndex, StateSpace, StudyDimensions,
 };
 use crate::lead_time::AnticipatedResolution;
-use crate::lp::builder::{ResolvedTables, TemplateBuildCtx};
+use crate::lp::builder::{ResolvedTables, ResolvedTailraceLateral, TemplateBuildCtx};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
+use crate::setup::lp_build_inputs::resolve_tailrace_lateral;
 use crate::test_support::constant_lead_resolution;
 use crate::time_value::{PostStudyResolved, TimeValue};
 
@@ -59,6 +60,9 @@ pub(crate) struct CtxFixture {
     pub(crate) pumping_stations: Vec<PumpingStation>,
     pub(crate) contracts: Vec<EnergyContract>,
     pub(crate) diversion_upstream: HashMap<EntityId, Vec<usize>>,
+    /// Derived fresh, from `hydros`, on every [`Self::ctx`] call — the backing
+    /// store [`TemplateBuildCtx::tailrace_lateral`] borrows.
+    pub(crate) tailrace_lateral: Vec<ResolvedTailraceLateral>,
     pub(crate) anticipated_lead_stages: Vec<usize>,
     /// Non-default only when a test set it explicitly — [`Self::ctx`] then
     /// attaches it to `self.state` as-is, in place of the saturating-default
@@ -120,6 +124,7 @@ impl Default for CtxFixture {
             pumping_stations: Vec::new(),
             contracts: Vec::new(),
             diversion_upstream: HashMap::new(),
+            tailrace_lateral: Vec::new(),
             anticipated_lead_stages: Vec::new(),
             anticipated_resolution: AnticipatedResolution::default(),
             anticipated_plants: AnticipatedPlants::default(),
@@ -142,16 +147,18 @@ impl Default for CtxFixture {
 impl CtxFixture {
     /// Derives `positions`, `state`, and `study_dims` from this fixture's own
     /// slices, the way [`EntityPositions::build`]/`build_study_dimensions` do,
+    /// `tailrace_lateral` from `hydros` through `resolve_tailrace_lateral`,
     /// `time_value`'s one-step discount factors as one `1.0` per `bounds`
     /// stage, `resolved_generic_coefficients` over stage ids `0..n` with a
     /// uniform block count, `n` and the count each the widest of `bounds` and
     /// `resolved_parameters`, and the bus deficit table of `penalties` from each
     /// bus's base curve; every other field is copied through unchanged.
     /// `&mut self`: all six are recomputed into `self`'s own fields on every
-    /// call, so [`TemplateBuildCtx::positions`]/`state`/`study_dims` can borrow
-    /// a backing store with `self`'s own lifetime. `state` attaches
+    /// call, so [`TemplateBuildCtx::positions`]/`state`/`study_dims`/
+    /// `tailrace_lateral` can borrow a backing store with `self`'s own
+    /// lifetime. `state` attaches
     /// `self.anticipated_resolution` as-is when a test set it explicitly (it
-    /// is no longer `AnticipatedResolution::default`), else the
+    /// differs from `AnticipatedResolution::default`), else the
     /// saturating-default [`constant_lead_resolution`] over this fixture's
     /// own `anticipated_lead_stages`. A test that needs a derived field's
     /// value to disagree with its own slices sets the fixture's owner field
@@ -187,6 +194,7 @@ impl CtxFixture {
             self.anticipated_resolution.clone()
         };
         self.state = self.build_state(resolution);
+        self.tailrace_lateral = resolve_tailrace_lateral(&self.hydros);
         let (_, cumulative, delivery_stage_ids, calendar, post_study) =
             self.time_value.canonical_fields();
         self.time_value = TimeValue::from_parts(
@@ -247,6 +255,7 @@ impl CtxFixture {
             pumping_stations: &self.pumping_stations,
             contracts: &self.contracts,
             diversion_upstream: &self.diversion_upstream,
+            tailrace_lateral: &self.tailrace_lateral,
             state: &self.state,
             study_dims: &self.study_dims,
             time_value: &self.time_value,

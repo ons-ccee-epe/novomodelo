@@ -972,7 +972,7 @@ mod tests {
     use novomodelo_core::temporal::PolicyGraphType;
     use novomodelo_core::{
         AnticipatedCommitmentHistory, AnticipatedConfig, DeficitSegment, EntityId, HorizonGraph,
-        Hydro, Thermal,
+        Hydro,
     };
 
     use chrono::NaiveDate;
@@ -1030,15 +1030,17 @@ mod tests {
     /// and miss a violation.
     fn two_hydro_capacity_study() -> Vec<Hydro> {
         vec![
-            Hydro {
-                max_turbined_m3s: 600.0,
-                max_generation_mw: 400.0,
-                ..make_hydro(1, None)
+            {
+                let mut hydro = make_hydro(1, None);
+                hydro.max_turbined_m3s = 600.0;
+                hydro.max_generation_mw = 400.0;
+                hydro
             },
-            Hydro {
-                max_turbined_m3s: 1000.0,
-                max_generation_mw: 700.0,
-                ..make_hydro(2, None)
+            {
+                let mut hydro = make_hydro(2, None);
+                hydro.max_turbined_m3s = 1000.0;
+                hydro.max_generation_mw = 700.0;
+                hydro
             },
         ]
     }
@@ -1402,10 +1404,8 @@ mod tests {
         );
     }
 
-    /// Deliberate behavior change: a generic-constraint bounds row's `block_id`
-    /// range used to be checked in Layer 3 (`referential.rs`) as
-    /// `ErrorKind::InvalidValue`; owning it through Layer 5a's shared
-    /// `check_row` now reports `BusinessRuleViolation`, exactly like the other
+    /// A generic-constraint bounds row's `block_id` range is checked by Layer 5a's
+    /// shared `check_row` and reports `BusinessRuleViolation`, exactly like the other
     /// six families ([`test_negative_block_id_and_out_of_horizon_stage_both_rejected`]).
     #[test]
     fn test_generic_constraint_bounds_block_id_range_is_business_rule_violation() {
@@ -1738,13 +1738,12 @@ mod tests {
         );
     }
 
-    /// Deliberate behavior change: `check_generic_constraint_bounds_validity`
-    /// (Layer 3) used to key duplicates per ROW `(constraint_id, stage_id,
-    /// block_id)`, rejecting this pair; owning the family through Layer 5a's
-    /// per-COLUMN key — the same rule the other six families already have —
-    /// now accepts it, exactly like [`test_disjoint_columns_on_same_entity_stage_block_accepted`].
+    /// Generic-constraint bounds duplicates are keyed per COLUMN by Layer 5a, the
+    /// same rule as the other six families, so two rows sharing `(constraint_id,
+    /// stage_id, block_id)` that set disjoint columns are accepted, exactly like
+    /// [`test_disjoint_columns_on_same_entity_stage_block_accepted`].
     #[test]
-    fn test_generic_constraint_bounds_disjoint_column_duplicate_now_accepted() {
+    fn test_generic_constraint_bounds_disjoint_column_duplicate_accepted() {
         let mut data = make_data(
             vec![],
             vec![],
@@ -1898,9 +1897,8 @@ mod tests {
     }
 
     /// Two rows for the same `(hydro_id, stage_id, block_id)` both setting
-    /// `min_spillage_m3s` collide — pins that the widened duplicate-row column
-    /// list registers the new spillage/diversion axes, not just the
-    /// pre-existing seven.
+    /// `min_spillage_m3s` collide — pins that the duplicate-row column list
+    /// covers the spillage and diversion columns.
     #[test]
     fn test_duplicate_min_spillage_m3s_rejected() {
         let mut data = make_data(
@@ -1972,7 +1970,7 @@ mod tests {
         assert!(msg.contains("unit group 3"), "message: {msg}");
     }
 
-    /// Pins the whole point of the widened duplicate key: two DIFFERENT
+    /// The group duplicate key carries the group id: two DIFFERENT
     /// groups of one plant overriding the same column at the same
     /// `(stage_id, block_id)` is the file's designed usage, not a collision.
     #[test]
@@ -2365,10 +2363,8 @@ mod tests {
 
     #[test]
     fn test_block_row_rejected_on_anticipated_thermal_only() {
-        let anticipated_thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(1, 0.0, 500.0)
-        };
+        let mut anticipated_thermal = make_thermal(1, 0.0, 500.0);
+        anticipated_thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let plain_thermal = make_thermal(2, 0.0, 500.0);
         let mut data = make_data(
             vec![],
@@ -2433,10 +2429,8 @@ mod tests {
 
     #[test]
     fn test_cost_only_block_row_rejected_on_anticipated_thermal() {
-        let anticipated_thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(1, 0.0, 500.0)
-        };
+        let mut anticipated_thermal = make_thermal(1, 0.0, 500.0);
+        anticipated_thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut data = make_data(
             vec![],
             vec![anticipated_thermal],
@@ -2675,15 +2669,17 @@ mod tests {
     /// both violations below.
     fn two_reservoir_study() -> Vec<Hydro> {
         vec![
-            Hydro {
-                min_storage_hm3: 50.0,
-                max_storage_hm3: 400.0,
-                ..make_hydro(1, None)
+            {
+                let mut hydro = make_hydro(1, None);
+                hydro.min_storage_hm3 = 50.0;
+                hydro.max_storage_hm3 = 400.0;
+                hydro
             },
-            Hydro {
-                min_storage_hm3: 10.0,
-                max_storage_hm3: 900.0,
-                ..make_hydro(2, None)
+            {
+                let mut hydro = make_hydro(2, None);
+                hydro.min_storage_hm3 = 10.0;
+                hydro.max_storage_hm3 = 900.0;
+                hydro
             },
         ]
     }
@@ -2794,24 +2790,26 @@ mod tests {
     /// matched by its groups' `min_*`, so rule 44 stays silent too.
     fn two_group_capacity_study() -> Vec<Hydro> {
         vec![
-            Hydro {
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 900.0,
-                min_generation_mw: 0.0,
-                max_generation_mw: 700.0,
-                unit_groups: vec![
+            {
+                let mut hydro = make_hydro(1, None);
+                hydro.min_turbined_m3s = 0.0;
+                hydro.max_turbined_m3s = 900.0;
+                hydro.min_generation_mw = 0.0;
+                hydro.max_generation_mw = 700.0;
+                hydro.unit_groups = vec![
                     make_unit_group(2, 1, 0.0, 400.0, 0.0, 600.0),
                     make_unit_group(5, 1, 0.0, 300.0, 0.0, 300.0),
-                ],
-                ..make_hydro(1, None)
+                ];
+                hydro
             },
-            Hydro {
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 1200.0,
-                min_generation_mw: 0.0,
-                max_generation_mw: 1000.0,
-                unit_groups: vec![make_unit_group(3, 2, 0.0, 1000.0, 0.0, 1200.0)],
-                ..make_hydro(2, None)
+            {
+                let mut hydro = make_hydro(2, None);
+                hydro.min_turbined_m3s = 0.0;
+                hydro.max_turbined_m3s = 1200.0;
+                hydro.min_generation_mw = 0.0;
+                hydro.max_generation_mw = 1000.0;
+                hydro.unit_groups = vec![make_unit_group(3, 2, 0.0, 1000.0, 0.0, 1200.0)];
+                hydro
             },
         ]
     }

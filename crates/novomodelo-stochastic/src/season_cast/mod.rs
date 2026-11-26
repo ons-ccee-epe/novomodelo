@@ -747,11 +747,10 @@ mod tests {
         nth_previous_occurrence, observation_occurrence_year, post_study_calendar_stages,
         season_period_window,
     };
-    use crate::test_support::{MonthlyLabels, monthly_season_map, weekly_season_map};
     use chrono::NaiveDate;
     use novomodelo_core::PostStudyStage;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
+    use novomodelo_core::test_support::{
+        MonthlyLabels, StageSpec, make_stage, monthly_season_map, single_block, weekly_season_map,
     };
 
     fn twelve_month_season_map() -> SeasonMap {
@@ -778,28 +777,13 @@ mod tests {
 
         let start = NaiveDate::from_ymd_opt(2026, 4, 4).unwrap();
         let end = NaiveDate::from_ymd_opt(2026, 5, 2).unwrap();
-        let stage = Stage {
-            index: 0,
-            id: 0,
+        let stage = make_stage(StageSpec {
             start_date: start,
             end_date: end,
             season_id: Some(3),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 28.0 * 24.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        };
+            blocks: single_block("SINGLE", 28.0 * 24.0),
+            ..Default::default()
+        });
 
         let window = season_period_window(&season_map, season_def, &stage);
 
@@ -815,28 +799,13 @@ mod tests {
 
         let start = NaiveDate::from_ymd_opt(2026, 4, 4).unwrap();
         let end = NaiveDate::from_ymd_opt(2026, 5, 2).unwrap();
-        let stage = Stage {
-            index: 0,
-            id: 0,
+        let stage = make_stage(StageSpec {
             start_date: start,
             end_date: end,
             season_id: Some(3),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 28.0 * 24.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        };
+            blocks: single_block("SINGLE", 28.0 * 24.0),
+            ..Default::default()
+        });
         let anchor = season_period_window(&season_map, season_def, &stage);
 
         let march = nth_previous_occurrence(&season_map, season_def, &anchor, 1)
@@ -1165,28 +1134,17 @@ mod tests {
 
     fn stage_with_width(index: usize, start: NaiveDate, width_days: i64) -> Stage {
         let end = start + chrono::TimeDelta::days(width_days);
-        Stage {
-            index,
+        make_stage(StageSpec {
             id: i32::try_from(index).unwrap(),
+            index: Some(index),
             start_date: start,
             end_date: end,
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: f64::from(u32::try_from(width_days).unwrap()) * 24.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block(
+                "SINGLE",
+                f64::from(u32::try_from(width_days).unwrap()) * 24.0,
+            ),
+            ..Default::default()
+        })
     }
 
     fn six_stage_calendar() -> Vec<Stage> {
@@ -1240,28 +1198,14 @@ mod tests {
     fn nominal_month_stage(index: usize, year: i32, month: u32) -> Stage {
         let start = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
         let end = month_exclusive_end(year, month);
-        Stage {
-            index,
+        make_stage(StageSpec {
             id: i32::try_from(index).unwrap(),
+            index: Some(index),
             start_date: start,
             end_date: end,
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 730.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("SINGLE", 730.0),
+            ..Default::default()
+        })
     }
 
     /// Jan/Feb/Mar 2024: real spans 744 h / 696 h / 744 h, none equal to 730 h.
@@ -1388,7 +1332,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)] // both paths run the identical arithmetic; the comparison must be bit-exact
-    fn test_season_occurrence_matches_pre_refactor_helper_sequence() {
+    fn test_season_occurrence_matches_its_helper_composition() {
         let season_map = twelve_month_season_map();
         let season_def = &season_map.seasons[3];
         let first_stage = stage_with_width(0, NaiveDate::from_ymd_opt(2026, 4, 4).unwrap(), 28);

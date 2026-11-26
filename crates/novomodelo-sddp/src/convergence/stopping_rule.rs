@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_iteration_limit_triggered_at_10() {
+    fn iteration_limit_triggered_at_10() {
         let rule = StoppingRule::IterationLimit { limit: 10 };
         let state = make_state(10, 0.0, 0.0, vec![]);
         assert!(rule.is_triggered(&state));
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_bound_stalling_with_6_history_entries() {
+    fn bound_stalling_with_6_history_entries() {
         let rule = StoppingRule::BoundStalling {
             tolerance: 0.01,
             iterations: 5,
@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_rule_set_any_mode_stops_at_iteration_100() {
+    fn rule_set_any_mode_stops_at_iteration_100() {
         let rule_set = StoppingRuleSet {
             rules: vec![
                 StoppingRule::IterationLimit { limit: 100 },

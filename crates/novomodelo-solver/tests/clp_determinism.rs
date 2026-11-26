@@ -582,7 +582,7 @@ fn dse_pricing_profile_is_deterministic_and_order_invariant() {
 
 /// **Wired knob — refactorization cadence.** A profile setting
 /// `factorization_frequency = 200` (the backward-pass tuned value) is driven
-/// through `apply_profile`, which now issues the shim factorization-frequency
+/// through `apply_profile`, which issues the shim factorization-frequency
 /// setter. The solve sequence must be bit-for-bit reproducible and
 /// declaration-order invariant.
 #[test]

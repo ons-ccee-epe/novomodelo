@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn new_single_rank_counts_is_one_element() {
-        // Acceptance criterion: counts = [local_count * n_state], displs = [0]
+        // counts = [local_count * n_state], displs = [0]
         let bufs = ExchangeBuffers::new(&state_of(2), 3, 1);
         assert_eq!(bufs.counts, vec![6]); // 3 * 2
         assert_eq!(bufs.displs, vec![0]);
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn exchange_single_rank_three_scenarios_two_state() {
-        // Acceptance criterion AC1: n_state=2, local_count=3, num_ranks=1,
+        // n_state=2, local_count=3, num_ranks=1,
         // stage 0 of a 1-stage system. gathered_states = [1,2,3,4,5,6].
         let mut bufs = ExchangeBuffers::new(&state_of(2), 3, 1);
         let records = vec![
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn exchange_selects_correct_stage_in_multi_stage_records() {
-        // Acceptance criterion AC2: verify that stage 1 is selected from a
+        // Verify that stage 1 is selected from a
         // 3-stage system (records indexed at scenario * 3 + stage).
         // 2 scenarios, 3 stages, n_state=2
         // records[m * 3 + stage]:
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn state_at_matches_record_state_after_exchange() {
-        // Acceptance criterion AC3: state_at(0, 1) matches records[1 * num_stages + stage].state
+        // state_at(0, 1) matches records[1 * num_stages + stage].state
         // 2 scenarios, 1 stage, n_state=3
         let records = vec![
             make_record(vec![1.0, 2.0, 3.0]), // m=0, stage=0
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn exchange_error_maps_to_sddp_communication_error() {
-        // Acceptance criterion AC5: a failing communicator returns
+        // A failing communicator returns
         // SddpError::Communication(_).
         use crate::SddpError;
 
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn real_total_scenarios_uneven_distribution() {
-        // AC: total_forward_passes=5, num_ranks=2, actual_per_rank=[3,2].
+        // total_forward_passes=5, num_ranks=2, actual_per_rank=[3,2].
         // real_total_scenarios() must return 5, not 6.
         let bufs = ExchangeBuffers::with_actual_counts(&state_of(2), 3, 2, &[3, 2]);
         assert_eq!(bufs.real_total_scenarios(), 5);
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn real_total_scenarios_even_distribution() {
-        // AC: even split, real_total_scenarios() == total_scenarios().
+        // Even split, real_total_scenarios() == total_scenarios().
         let bufs = ExchangeBuffers::with_actual_counts(&state_of(2), 3, 2, &[3, 3]);
         assert_eq!(bufs.real_total_scenarios(), 6);
         assert_eq!(bufs.total_scenarios(), 6);
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn real_total_scenarios_single_rank() {
-        // AC: num_ranks==1, real_total_scenarios() == total_scenarios().
+        // num_ranks==1, real_total_scenarios() == total_scenarios().
         let bufs = ExchangeBuffers::with_actual_counts(&state_of(2), 3, 1, &[3]);
         assert_eq!(bufs.real_total_scenarios(), 3);
         assert_eq!(bufs.total_scenarios(), 3);
@@ -646,7 +646,7 @@ mod tests {
     /// a reason to sit the `allgatherv` out — a rank that skipped it would
     /// strand its peers.
     #[test]
-    fn rank_with_zero_actual_forward_passes_still_contributes_its_gather_slot() {
+    fn rank_with_zero_actual_forward_passes_contributes_its_gather_slot() {
         let n_state = 1;
         let max_local_fwd = 1;
         let mut bufs =

@@ -63,21 +63,13 @@ pub fn resolve_ncs_bounds(
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
     use novomodelo_core::EntityId;
 
     fn make_ncs(id: i32, max_mw: f64) -> NonControllableSource {
-        NonControllableSource {
-            id: EntityId(id),
-            name: format!("NCS{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(0),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            max_generation_mw: max_mw,
-            allow_curtailment: true,
-            curtailment_cost: 5.0,
-        }
+        let mut ncs = crate::test_support::make_ncs(id, 0);
+        ncs.name = format!("NCS{id}");
+        ncs.max_generation_mw = max_mw;
+        ncs
     }
 
     fn make_stage_index(ids: &[i32]) -> HashMap<i32, usize> {

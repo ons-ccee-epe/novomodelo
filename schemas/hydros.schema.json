@@ -352,6 +352,17 @@
             "null"
           ]
         },
+        "spillage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawSpillage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Spillage bounds. Absent or null = unbounded."
+        },
         "tailrace": {
           "anyOf": [
             {
@@ -362,6 +373,17 @@
             }
           ],
           "description": "Tailrace elevation model. Absent or null = no tailrace."
+        },
+        "tailrace_flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawTailraceFlow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Flow that drives the tailrace level. Absent or null = the plant's own\ntotal outflow, no influences."
         },
         "travel_time_hours": {
           "default": null,
@@ -559,6 +581,31 @@
       ],
       "type": "object"
     },
+    "RawSpillage": {
+      "additionalProperties": false,
+      "description": "The `spillage` sub-object.\n\nA `null` or omitted key leaves that side unbounded. Spillage values in\n`constraints/hydro_bounds.parquet` replace these per stage or block.",
+      "properties": {
+        "max_spillage_m3s": {
+          "default": null,
+          "description": "Maximum spillage (m³/s).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_spillage_m3s": {
+          "default": null,
+          "description": "Minimum spillage (m³/s).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "RawTailrace": {
       "description": "The `tailrace` sub-object. The `type` key selects the tailrace model.",
       "oneOf": [
@@ -606,6 +653,57 @@
           "type": "object"
         }
       ]
+    },
+    "RawTailraceFlow": {
+      "additionalProperties": false,
+      "description": "The `tailrace_flow` sub-object: the flow (m³/s) whose value sets the\ntailrace level, `own_outflow_factor · own outflow + Σ factor · outflow of\neach listed hydro + Σ factor · incremental inflow of each listed hydro`.\nFactors are non-negative dimensionless weights and need not sum to 1.",
+      "properties": {
+        "incremental_inflow_influences": {
+          "description": "Hydros whose incremental inflow (m³/s) adds to this plant's tailrace\nflow. Absent = none. May name the declaring hydro.",
+          "items": {
+            "$ref": "#/$defs/RawTailraceFlowInfluence"
+          },
+          "type": "array"
+        },
+        "outflow_influences": {
+          "description": "Other hydros whose total outflow (m³/s) adds to this plant's tailrace\nflow. Absent = none. May not name the declaring hydro: its own outflow\nis weighted by `own_outflow_factor` alone.",
+          "items": {
+            "$ref": "#/$defs/RawTailraceFlowInfluence"
+          },
+          "type": "array"
+        },
+        "own_outflow_factor": {
+          "default": null,
+          "description": "Weight on this plant's own turbined plus spilled outflow (m³/s).\nAbsent or null = 1.0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawTailraceFlowInfluence": {
+      "additionalProperties": false,
+      "description": "One weighted entry of a `tailrace_flow` influence list.",
+      "properties": {
+        "factor": {
+          "description": "Non-negative dimensionless weight on that plant's flow.",
+          "format": "double",
+          "type": "number"
+        },
+        "hydro_id": {
+          "description": "Identifier of the influencing hydro plant; at most once per list.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hydro_id",
+        "factor"
+      ],
+      "type": "object"
     },
     "RawTailracePoint": {
       "additionalProperties": false,

@@ -38,22 +38,17 @@
 mod common;
 
 use chrono::{NaiveDate, TimeDelta};
-use novomodelo_core::entities::hydro::{FillingConfig, HydroGenerationModel};
+use novomodelo_core::entities::hydro::FillingConfig;
 use novomodelo_core::entities::thermal::AnticipatedConfig;
 use novomodelo_core::scenario::InflowModel;
-use novomodelo_core::temporal::{
-    Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
-};
+use novomodelo_core::temporal::{Block, Stage, StageStateConfig};
 use novomodelo_core::{
-    AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
-    ContractBlockBounds, EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties,
-    HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
-    NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
+    AnticipatedCommitmentHistory, EntityId, HydroPastDefluence, HydroStorage, InitialConditions,
+    System, SystemBuilder,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
-    ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
+    InflowResidualConfig, ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
@@ -104,48 +99,6 @@ fn commitment_seed_windows(
         .collect()
 }
 
-fn zero_hydro_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 0.0,
-    }
-}
-
-fn zero_penalties(n_hydros: usize, n_stages: usize) -> ResolvedPenalties {
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: zero_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 fn build_config(iteration_limit: u32) -> Config {
     Config {
         schema: None,
@@ -153,6 +106,7 @@ fn build_config(iteration_limit: u32) -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: InflowNonNegativityMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -166,7 +120,7 @@ fn build_config(iteration_limit: u32) -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),
@@ -257,15 +211,9 @@ fn build_commitment_system(
                         name: "S".to_string(),
                         duration_hours: (DAYS_PER_STAGE * 24) as f64,
                     }],
-                    block_mode: BlockMode::Parallel,
                     state_config: StageStateConfig {
                         storage: false,
                         inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
                     },
                     ..Default::default()
                 },
@@ -273,67 +221,29 @@ fn build_commitment_system(
         })
         .collect();
 
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: k_max as usize,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 0.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds::default(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: floor_mw,
-                max_generation_mw: cap_mw,
-                cost_per_mwh: 10.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    if let Some((stage_idx, min_mw, max_mw)) = stage_override {
-        let cell = bounds.thermal_block_base_mut(0, stage_idx);
-        cell.min_generation_mw = min_mw;
-        cell.max_generation_mw = max_mw;
-    }
-
-    let penalties = zero_penalties(0, n_stages);
-
     let past_anticipated_commitments =
         commitment_seed_windows(ant_id, anchor, DAYS_PER_STAGE, seeds);
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages)
-        .bounds(bounds)
-        .penalties(penalties)
-        .initial_conditions(InitialConditions {
-            past_anticipated_commitments,
-            ..Default::default()
-        })
-        .build()
-        .expect("build_commitment_system: valid system")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages.clone())
+                .initial_conditions(InitialConditions {
+                    past_anticipated_commitments: past_anticipated_commitments.clone(),
+                    ..Default::default()
+                })
+        },
+        k_max as usize,
+        |_, bounds, _| {
+            if let Some((stage_idx, min_mw, max_mw)) = stage_override {
+                let cell = bounds.thermal_block_base_mut(0, stage_idx);
+                cell.min_generation_mw = min_mw;
+                cell.max_generation_mw = max_mw;
+            }
+        },
+    )
 }
 
 #[test]
@@ -400,7 +310,7 @@ fn anticipated_commitment_over_cap_seed_is_clamped() {
     assert!(
         outcome.error.is_none(),
         "a genuine over-cap commitment seed is clamped at setup time and must train \
-         to completion — the retired runtime verdict must not resurface. Got: {:?}",
+         to completion with no runtime verdict. Got: {:?}",
         outcome.error
     );
     assert!(
@@ -438,7 +348,6 @@ fn build_transit_bucket_system(n_stages: usize, travel_time_hours: f64, seed_m3s
             max_storage_hm3: CAP_HM3,
             max_turbined_m3s: 500.0,
             max_generation_mw: 1_000.0,
-            generation_model: HydroGenerationModel::ConstantProductivity,
             ..Default::default()
         },
     );
@@ -451,7 +360,6 @@ fn build_transit_bucket_system(n_stages: usize, travel_time_hours: f64, seed_m3s
             max_storage_hm3: CAP_HM3,
             max_turbined_m3s: 500.0,
             max_generation_mw: 1_000.0,
-            generation_model: HydroGenerationModel::ConstantProductivity,
             ..Default::default()
         },
     );
@@ -470,66 +378,11 @@ fn build_transit_bucket_system(n_stages: usize, travel_time_hours: f64, seed_m3s
                         name: "S".to_string(),
                         duration_hours: STAGE_HOURS,
                     }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
                     ..Default::default()
                 },
             )
         })
         .collect();
-
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: CAP_HM3,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 500.0,
-                max_generation_mw: 1_000.0,
-                ..HydroBlockBounds::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let penalties = zero_penalties(2, n_stages);
 
     let past_defluences = vec![HydroPastDefluence {
         hydro_id: upstream_id,
@@ -538,28 +391,30 @@ fn build_transit_bucket_system(n_stages: usize, travel_time_hours: f64, seed_m3s
         value_m3s: seed_m3s,
     }];
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![downstream, upstream])
-        .stages(stages)
-        .bounds(bounds)
-        .penalties(penalties)
-        .initial_conditions(InitialConditions {
-            storage: vec![
-                HydroStorage {
-                    hydro_id: downstream_id,
-                    value_hm3: 100.0,
-                },
-                HydroStorage {
-                    hydro_id: upstream_id,
-                    value_hm3: 100.0,
-                },
-            ],
-            past_defluences,
-            ..Default::default()
-        })
-        .build()
-        .expect("build_transit_bucket_system: valid system")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![downstream.clone(), upstream.clone()])
+                .stages(stages.clone())
+                .initial_conditions(InitialConditions {
+                    storage: vec![
+                        HydroStorage {
+                            hydro_id: downstream_id,
+                            value_hm3: 100.0,
+                        },
+                        HydroStorage {
+                            hydro_id: upstream_id,
+                            value_hm3: 100.0,
+                        },
+                    ],
+                    past_defluences: past_defluences.clone(),
+                    ..Default::default()
+                })
+        },
+        0,
+        |_, _, _| {},
+    )
 }
 
 #[test]
@@ -620,7 +475,6 @@ fn build_storage_system_with(
             max_storage_hm3: cap_hm3,
             max_turbined_m3s: 100.0,
             max_generation_mw: 100.0,
-            generation_model: HydroGenerationModel::ConstantProductivity,
             filling: fixture.filling,
             ..Default::default()
         },
@@ -640,16 +494,6 @@ fn build_storage_system_with(
                         name: "S".to_string(),
                         duration_hours: (DAYS_PER_STAGE * 24) as f64,
                     }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
                     ..Default::default()
                 },
             )
@@ -668,56 +512,6 @@ fn build_storage_system_with(
         })
         .collect();
 
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: fixture.min_storage_hm3,
-                max_storage_hm3: cap_hm3,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 100.0,
-                ..HydroBlockBounds::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let first_stage_bounds = bounds.hydro_bounds_mut(0, 0);
-    (
-        first_stage_bounds.min_storage_hm3,
-        first_stage_bounds.max_storage_hm3,
-    ) = fixture.stage0_storage_hm3;
-
-    let penalties = zero_penalties(1, n_stages);
     let seed = vec![HydroStorage {
         hydro_id,
         value_hm3: seed_hm3,
@@ -728,20 +522,28 @@ fn build_storage_system_with(
         (seed, vec![])
     };
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .initial_conditions(InitialConditions {
-            storage,
-            filling_storage,
-            ..Default::default()
-        })
-        .build()
-        .expect("build_storage_system: valid system")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .initial_conditions(InitialConditions {
+                    storage: storage.clone(),
+                    filling_storage: filling_storage.clone(),
+                    ..Default::default()
+                })
+        },
+        0,
+        |_, bounds, _| {
+            let first_stage_bounds = bounds.hydro_bounds_mut(0, 0);
+            (
+                first_stage_bounds.min_storage_hm3,
+                first_stage_bounds.max_storage_hm3,
+            ) = fixture.stage0_storage_hm3;
+        },
+    )
 }
 
 #[test]

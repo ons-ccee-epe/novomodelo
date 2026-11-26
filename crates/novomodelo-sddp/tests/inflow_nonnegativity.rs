@@ -25,10 +25,7 @@ use std::sync::mpsc;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
-    EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
-    LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-    PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
+    DeficitSegment, EntityId, SystemBuilder,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
     },
@@ -37,6 +34,7 @@ use novomodelo_core::{
         StageStateConfig,
     },
 };
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_sddp::{
     LoadedPolicy, Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule,
     StoppingRuleSet, TrainingConfig, build_stage_templates_resolving_layout,
@@ -53,7 +51,7 @@ use novomodelo_sddp::{
     risk_measure::RiskMeasure,
     setup::node_graph::Traversal,
     simulate,
-    simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec},
+    simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec, SimulationTailrace},
     test_support::{permissive_state_boxes, template_structure::state_lag_dims},
     train,
     workspace::{SolverWorkspace, WorkspaceSizing},
@@ -278,98 +276,18 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
         schedule: vec![],
     };
 
-    let hydro_bounds_default = HydroStageBounds {
-        min_storage_hm3: 0.0,
-        max_storage_hm3: spec.max_storage_hm3,
-        filling_min_rate_m3s: 0.0,
-        water_withdrawal_m3s: 0.0,
-    };
-    let hydro_bounds_default_block = HydroBlockBounds {
-        max_turbined_m3s: 50.0,
-        max_generation_mw: 50.0,
-        ..Default::default()
-    };
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: N_HYDROS,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: N_STAGES,
-            k_max: 0,
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .correlation(correlation.clone())
         },
-        &BoundsDefaults {
-            hydro: hydro_bounds_default,
-            hydro_block: hydro_bounds_default_block,
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let hydro_penalties_default = HydroPenalties {
-        spillage_cost: spec.release_cost,
-        diversion_cost: 0.0,
-        turbined_cost: spec.release_cost,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: spec.inflow_nonnegativity_cost,
-    };
-    let resolved_penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: N_HYDROS,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: hydro_penalties_default,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .correlation(correlation)
-        .bounds(resolved_bounds)
-        .penalties(resolved_penalties)
-        .build()
-        .unwrap()
+        0,
+        |_, _, _| {},
+    )
 }
 
 fn build_stochastic(system: &novomodelo_core::System) -> StochasticContext {
@@ -543,6 +461,7 @@ fn train_fixture_into(
                     rules: vec![StoppingRule::IterationLimit { limit: iterations }],
                     mode: StoppingMode::Any,
                 },
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -566,6 +485,7 @@ fn train_fixture_into(
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, n_stages),
             study_dims: &fx.study_dims,
             inflow_method: &fx.inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &fx.stochastic,
             initial_state: &fx.initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -608,6 +528,7 @@ fn simulate_fixture(
         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, N_STAGES),
         study_dims: &fx.study_dims,
         inflow_method: &fx.inflow_method,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &fx.stochastic,
         initial_state: &fx.initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -674,6 +595,7 @@ fn simulate_fixture(
             contract_prices_per_stage: &vec![Vec::new(); N_STAGES],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &fx.stage_templates.hydro_productivities_per_stage,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0; N_HYDROS],
@@ -731,8 +653,7 @@ fn test_penalty_method_prevents_infeasibility() {
 #[test]
 fn test_penalty_slack_value_matches_negative_inflow() {
     let fx = build_fixture();
-    let n_stages = fx.stage_templates.templates.len();
-    let fcf = FutureCostFunction::new(n_stages, fx.state.n_state, 1, 20, &vec![0; n_stages]);
+    let fcf = empty_fcf(&fx);
 
     train_fixture(&fx, 3).expect("training must succeed before simulation");
     let scenario_results = simulate_fixture(&fx, &fcf).expect("simulate must succeed");
@@ -753,8 +674,7 @@ fn test_penalty_slack_value_matches_negative_inflow() {
 #[test]
 fn test_simulation_slack_output_populated() {
     let fx = build_fixture();
-    let n_stages = fx.stage_templates.templates.len();
-    let fcf = FutureCostFunction::new(n_stages, fx.state.n_state, 1, 20, &vec![0; n_stages]);
+    let fcf = empty_fcf(&fx);
 
     train_fixture(&fx, 3).expect("training must succeed");
     let scenario_results = simulate_fixture(&fx, &fcf).expect("simulate must succeed");
@@ -804,59 +724,27 @@ fn truncation_with_penalty_training_completes() {
 /// The two-hydro system with per-plant `inflow_nonnegativity_cost` H1 = 100 and
 /// H2 = 5000 $/(m³/s·h).
 fn per_plant_penalty_system() -> novomodelo_core::System {
-    let hydro_penalties_default = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 100.0,
-    };
-    let mut resolved_penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: N_HYDROS,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: hydro_penalties_default,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-    for stage_idx in 0..N_STAGES {
-        resolved_penalties
-            .hydro_penalties_mut(1, stage_idx)
-            .inflow_nonnegativity_cost = 5000.0;
-    }
-
     let base_system = build_system();
-    SystemBuilder::new()
-        .buses(base_system.buses().to_vec())
-        .hydros(base_system.hydros().to_vec())
-        .stages(base_system.stages().to_vec())
-        .inflow_models(base_system.inflow_models().to_vec())
-        .correlation(base_system.correlation().clone())
-        .bounds(base_system.bounds().clone())
-        .penalties(resolved_penalties)
-        .build()
-        .unwrap()
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(base_system.buses().to_vec())
+                .hydros(base_system.hydros().to_vec())
+                .stages(base_system.stages().to_vec())
+                .inflow_models(base_system.inflow_models().to_vec())
+                .correlation(base_system.correlation().clone())
+        },
+        0,
+        |_, b, p| {
+            *b = base_system.bounds().clone();
+            for stage_idx in 0..N_STAGES {
+                p.hydro_penalties_mut(1, stage_idx)
+                    .inflow_nonnegativity_cost = 5000.0;
+                p.hydro_penalties_mut(0, stage_idx)
+                    .inflow_nonnegativity_cost = 100.0;
+            }
+        },
+    )
 }
 
 fn templates_for(
@@ -2106,6 +1994,334 @@ mod truncation_order_invariance {
         assert!(
             base.bounds == reversed.bounds,
             "slack bounds differ under declaration-order reversal"
+        );
+    }
+}
+
+mod lognormal_branches {
+    use novomodelo_io::config::{
+        InflowResidualDistribution, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::indexer::LagPointMode;
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{
+        ProbeCut, inflow_slack_bounds_for_probe, node_opening_noise,
+    };
+    use novomodelo_sddp::{SimulationStageResult, StudySetup};
+    use novomodelo_solver::ActiveSolver;
+    use novomodelo_stochastic::evaluate_par_noise_term_batch;
+
+    use super::common::expanded_solve::CutRowSet;
+    use super::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use super::common::lognormal_branches::{Branch, classify, conditional_means};
+    use super::common::stored_cut_oracles::solve_successor_opening;
+    use super::common::{
+        StubComm, build_setup_in_code_with_models, run_simulation, stored_trial_states,
+        train_storing_trial_states,
+    };
+
+    const OPENINGS: usize = 3;
+    const FORWARD_PASSES: u32 = 4;
+    const ITERATIONS: u32 = 3;
+    const SCENARIOS: u32 = 20;
+
+    fn switched_setup(distribution: InflowResidualDistribution, simulate: bool) -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: OPENINGS,
+            reach_the_fallback: true,
+            ..FphaLagOptions::default()
+        });
+        config.modeling.inflow_residual.distribution = distribution;
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        if simulate {
+            config.simulation.enabled = true;
+            config.simulation.selection = Some(SimulationSelection::Sampled {
+                num_scenarios: SCENARIOS,
+            });
+        }
+        build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    fn tagged(at: &str, branches: Vec<Branch>) -> impl Iterator<Item = (String, Branch)> {
+        let at = at.to_owned();
+        branches
+            .into_iter()
+            .enumerate()
+            .map(move |(hydro, branch)| (format!("{at} hydro {hydro}"), branch))
+    }
+
+    fn simulated_conditional_means(
+        setup: &StudySetup,
+        stage: &SimulationStageResult,
+        at: &str,
+    ) -> (Vec<i32>, Vec<f64>) {
+        let space = setup.stage_state();
+        let n_hydros = space.hydro_count;
+        let mut hydro_ids: Vec<i32> = stage.hydros.iter().map(|hydro| hydro.hydro_id).collect();
+        hydro_ids.sort_unstable();
+        hydro_ids.dedup();
+        let mut incoming = vec![0.0; space.n_state];
+        for lag in &stage.inflow_lags {
+            let hydro = hydro_ids
+                .binary_search(&lag.hydro_id)
+                .unwrap_or_else(|_| panic!("{at}: lag of unknown hydro {}", lag.hydro_id));
+            incoming[n_hydros * (1 + lag.lag_index as usize) + hydro] = lag.inflow_m3s;
+        }
+        let means = conditional_means(setup, stage.stage_id as usize, &incoming);
+        (hydro_ids, means)
+    }
+
+    fn assert_both_branches(label: &str, entries: &[(String, Branch)]) {
+        for (at, branch) in entries {
+            assert!(
+                !matches!(branch, Branch::Unmatched | Branch::Normal),
+                "{label}: {at} took {branch:?}"
+            );
+        }
+        for wanted in [Branch::Lognormal, Branch::Fallback] {
+            assert!(
+                entries.iter().any(|(_, branch)| *branch == wanted),
+                "{label}: no entry took {wanted:?} among {} entries",
+                entries.len()
+            );
+        }
+    }
+
+    fn forward_entries(label: &str, setup: &StudySetup) -> Vec<(String, Branch)> {
+        let training_ctx = setup.training_ctx();
+        for pool in [0, 1] {
+            let layout = &training_ctx.cut_state_layouts[pool];
+            assert_eq!(
+                layout.n_slots(),
+                training_ctx.state.n_state,
+                "{label}: pool {pool} drops a state dimension"
+            );
+            assert_eq!(
+                layout.lag_point().mode(),
+                LagPointMode::Shifted,
+                "{label}: pool {pool} is not Shifted"
+            );
+        }
+        let pool0 = stored_trial_states(setup, NodePos(0));
+        let pool1 = stored_trial_states(setup, NodePos(1));
+        assert_eq!(
+            pool0.len(),
+            pool1.len(),
+            "{label}: pools 0 and 1 store different numbers of trial states"
+        );
+        let n_hydros = training_ctx.state.hydro_count;
+        let lag0 = n_hydros..2 * n_hydros;
+        let initial_means = conditional_means(setup, 0, training_ctx.initial_state);
+        let mut entries = Vec::new();
+        for (trial, (outgoing0, outgoing1)) in pool0.iter().zip(&pool1).enumerate() {
+            entries.extend(tagged(
+                &format!("stage 0 trial {trial}"),
+                classify(setup, NodePos(0), &initial_means, &outgoing0[lag0.clone()]),
+            ));
+            entries.extend(tagged(
+                &format!("stage 1 trial {trial}"),
+                classify(
+                    setup,
+                    NodePos(1),
+                    &conditional_means(setup, 1, outgoing0),
+                    &outgoing1[lag0.clone()],
+                ),
+            ));
+        }
+        entries
+    }
+
+    #[test]
+    fn the_forward_pass_reaches_both_lognormal_branches() {
+        let label = "forward";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, false);
+        train_storing_trial_states(label, &mut setup);
+
+        assert_both_branches(label, &forward_entries(label, &setup));
+    }
+
+    #[test]
+    fn the_backward_openings_reach_both_lognormal_branches() {
+        let label = "backward";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, false);
+        train_storing_trial_states(label, &mut setup);
+
+        let rows = CutRowSet::active(&setup.fcf, 1, 0);
+        let mut workspaces = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("the workspace pool must build");
+        let ws = &mut workspaces.workspaces[0];
+        let mut cut = ProbeCut::new(&setup.training_ctx());
+        let mut entries = Vec::new();
+        for (trial, pin) in stored_trial_states(&setup, NodePos(0)).iter().enumerate() {
+            let means = conditional_means(&setup, 1, pin);
+            for opening in 0..OPENINGS {
+                let at = format!("stage 1 trial {trial} opening {opening}");
+                let raw_noise = node_opening_noise(&setup, NodePos(1), opening);
+                solve_successor_opening(&setup, ws, &rows, pin, &raw_noise, None, &mut cut)
+                    .unwrap_or_else(|error| panic!("{at}: the solve failed: {error:?}"));
+                entries.extend(tagged(
+                    &at,
+                    classify(&setup, NodePos(1), &means, &cut.realized_inflow),
+                ));
+            }
+        }
+
+        assert_both_branches(label, &entries);
+    }
+
+    #[test]
+    fn the_simulation_reaches_both_lognormal_branches() {
+        let label = "simulation";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, true);
+        let scenarios = run_simulation(&mut setup, ITERATIONS as usize);
+
+        let mut entries = Vec::new();
+        for scenario in &scenarios {
+            for stage in &scenario.stages {
+                let at = format!("scenario {} stage {}", scenario.scenario_id, stage.stage_id);
+                let (hydro_ids, means) = simulated_conditional_means(&setup, stage, &at);
+                let realized: Vec<f64> = hydro_ids
+                    .iter()
+                    .map(|id| {
+                        stage
+                            .hydros
+                            .iter()
+                            .find(|hydro| hydro.hydro_id == *id)
+                            .map(|hydro| hydro.incremental_inflow_m3s)
+                            .expect("a hydro id read from the stage has a row")
+                    })
+                    .collect();
+                let node = NodePos(stage.stage_id as usize);
+                entries.extend(tagged(&at, classify(&setup, node, &means, &realized)));
+            }
+        }
+
+        assert_both_branches(label, &entries);
+    }
+
+    #[test]
+    fn the_switched_study_under_normal_takes_the_normal_term_everywhere() {
+        let label = "normal control";
+        let mut setup = switched_setup(InflowResidualDistribution::Normal, false);
+        train_storing_trial_states(label, &mut setup);
+
+        let entries = forward_entries(label, &setup);
+        for (at, branch) in &entries {
+            assert!(
+                matches!(branch, Branch::Normal | Branch::Fallback | Branch::Tied),
+                "{label}: {at} took {branch:?}"
+            );
+        }
+        assert!(
+            entries.iter().any(|(_, branch)| *branch == Branch::Normal),
+            "{label}: no entry took the normal term with a positive conditional mean"
+        );
+    }
+
+    #[test]
+    fn lognormal_branch_solves_need_no_truncation_correction() {
+        let label = "no truncation correction";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, false);
+        train_storing_trial_states(label, &mut setup);
+
+        let rows = CutRowSet::active(&setup.fcf, 1, 0);
+        let mut workspaces = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("the workspace pool must build");
+        let ws = &mut workspaces.workspaces[0];
+        let training_ctx = setup.training_ctx();
+        let par = training_ctx.stochastic.par();
+        let n_hydros = training_ctx.state.hydro_count;
+        let mut cut = ProbeCut::new(&training_ctx);
+        let mut normal_term = vec![0.0; n_hydros];
+        let (mut normal_would_correct, mut bound_above_zero) = (false, false);
+        for (trial, pin) in stored_trial_states(&setup, NodePos(0)).iter().enumerate() {
+            let means = conditional_means(&setup, 1, pin);
+            for opening in 0..OPENINGS {
+                let at = format!("{label}: stage 1 trial {trial} opening {opening}");
+                let raw_noise = node_opening_noise(&setup, NodePos(1), opening);
+                solve_successor_opening(&setup, ws, &rows, pin, &raw_noise, None, &mut cut)
+                    .unwrap_or_else(|error| panic!("{at}: the solve failed: {error:?}"));
+                let (lower, upper) =
+                    inflow_slack_bounds_for_probe(ws, &training_ctx, StageIdx(1), pin, &raw_noise);
+                evaluate_par_noise_term_batch(par, 1, &raw_noise[..n_hydros], &mut normal_term);
+                for (name, len) in [
+                    ("realized inflow", cut.realized_inflow.len()),
+                    ("inflow slack", cut.inflow_slack.len()),
+                    ("lower slack bound", lower.len()),
+                    ("upper slack bound", upper.len()),
+                ] {
+                    assert_eq!(
+                        len, n_hydros,
+                        "{at}: the {name} does not hold one per hydro"
+                    );
+                }
+                for (hydro, &p) in means.iter().enumerate() {
+                    if p > 0.0 {
+                        let z = cut.realized_inflow[hydro];
+                        assert!(
+                            z.is_finite() && z >= 0.0 && z.to_bits() != (-0.0_f64).to_bits(),
+                            "{at} hydro {hydro}: realized inflow {z} with a conditional mean {p}"
+                        );
+                        for (name, bound) in [("lower", lower[hydro]), ("upper", upper[hydro])] {
+                            assert_eq!(
+                                bound.to_bits(),
+                                0.0_f64.to_bits(),
+                                "{at} hydro {hydro}: {name} slack bound {bound} with a conditional mean {p}"
+                            );
+                        }
+                        assert_eq!(
+                            cut.inflow_slack[hydro], 0.0,
+                            "{at} hydro {hydro}: solved slack with a conditional mean {p}"
+                        );
+                        normal_would_correct |= normal_term[hydro] < -p;
+                    } else {
+                        bound_above_zero |= upper[hydro] > 0.0;
+                    }
+                }
+            }
+        }
+        assert!(
+            normal_would_correct,
+            "{label}: no checked solve has a normal term below minus its conditional mean"
+        );
+        assert!(
+            bound_above_zero,
+            "{label}: no solve with a conditional mean at or below zero has an upper slack bound above zero"
+        );
+
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, true);
+        let scenarios = run_simulation(&mut setup, ITERATIONS as usize);
+        let mut checked_rows = 0;
+        for scenario in &scenarios {
+            for stage in &scenario.stages {
+                let at = format!(
+                    "{label}: scenario {} stage {}",
+                    scenario.scenario_id, stage.stage_id
+                );
+                let (hydro_ids, means) = simulated_conditional_means(&setup, stage, &at);
+                for row in &stage.hydros {
+                    let hydro = hydro_ids
+                        .binary_search(&row.hydro_id)
+                        .expect("a hydro id read from the stage has a row");
+                    if means[hydro] > 0.0 {
+                        checked_rows += 1;
+                        assert_eq!(
+                            row.inflow_nonnegativity_slack_m3s, 0.0,
+                            "{at} hydro id {}: simulated slack with a conditional mean {}",
+                            row.hydro_id, means[hydro]
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            checked_rows > 0,
+            "{label}: no simulated hydro row has a conditional mean above zero"
         );
     }
 }

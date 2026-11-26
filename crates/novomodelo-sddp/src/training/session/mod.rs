@@ -5,6 +5,7 @@
 
 use novomodelo_comm::CommError::CollectiveFailed;
 use novomodelo_io::StageStatesReadResult;
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::freeze_rows_into_template;
 
@@ -51,6 +52,7 @@ use crate::{
         aggregate_solver_statistics, pack_delta_scalars, unpack_delta_scalars,
     },
     state_exchange::ExchangeBuffers,
+    training::storage_grid::GridTrials,
     training::training::{CheckpointBasisStore, LoadedPolicy, gather_basis_store, global_scenario},
     training::{TrainingOutcome, TrainingResult, broadcast_basis_cache},
     workspace::{BasisStore, NoisePreallocation, WorkspacePool, WorkspaceSizing},
@@ -561,6 +563,7 @@ where
         let lazy_totals_before = self.lazy_solve_local_totals();
 
         let (forward_result, sync_result, fwd_solve_time_ms) = self.run_forward_phase(iteration)?;
+        self.place_first_iteration_on_storage_grid(iteration);
         let (backward_result, bwd_solve_time_ms) = self.run_backward_phase(iteration)?;
 
         // Reduced across ranks so the reported figures are work-distribution
@@ -956,6 +959,27 @@ where
     }
 
     // ── Private phase helpers ──────────────────────────────────────────────
+
+    /// Moves the first iteration's trial points onto the configured storage grid.
+    /// A resumed run never reaches iteration 1.
+    fn place_first_iteration_on_storage_grid(&mut self, iteration: u64) {
+        if iteration != 1 {
+            return;
+        }
+        if let Some(grid) = &self.config.loop_config.storage_grid {
+            grid.overwrite_storage(
+                &mut self.scratch.records,
+                self.stage_ctx.state_boxes,
+                self.training_ctx.state.state_dim_storage_range(),
+                self.training_ctx.horizon.num_stages(),
+                GridTrials {
+                    first: self.ranks.my_fwd_offset,
+                    local: self.ranks.my_actual_fwd,
+                    total: self.ranks.num_total_forward_passes,
+                },
+            );
+        }
+    }
 
     /// Run the forward pass and forward synchronisation for one iteration.
     pub(crate) fn run_forward_phase(
@@ -1619,10 +1643,12 @@ fn reserve_for_pool_capacity<S: SolverInterface + Send>(
     let max_pool_capacity = fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
     fwd_pool.reserve_pool_scratch(training_ctx, sizing, max_pool_capacity);
     bwd_state.reserve_by_node_aggregate(training_ctx.cut_state_layouts, max_pool_capacity);
-    bwd_state.reserve_stage_noise(
-        training_ctx.stochastic.class_dimensions().total(),
-        max_pool_capacity,
-    );
+    if training_ctx.inflow_residual == InflowResidualDistribution::Normal {
+        bwd_state.reserve_stage_noise(
+            training_ctx.stochastic.class_dimensions().total(),
+            max_pool_capacity,
+        );
+    }
     scratch
         .lb_noise_scratch
         .reserve_cut_rows(fcf.pools[lb_root_pool(training_ctx.node_graph)?].capacity);
@@ -1723,22 +1749,19 @@ fn next_iteration_cut_bound(pool: &CutPool, forward_passes: u32) -> usize {
     clippy::needless_range_loop
 )]
 mod tests {
+    use novomodelo_io::config::InflowResidualDistribution;
     use std::collections::BTreeMap;
     use std::sync::mpsc;
 
     use crate::test_support::RankStub;
-    use chrono::NaiveDate;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::{
-        Bus, EntityId, PoolRowCounts, SystemBuilder, TrainingEvent, WorkerTimingPhase,
+        EntityId, PoolRowCounts, SystemBuilder, TrainingEvent, WorkerTimingPhase,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
             SamplingScheme,
         },
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
     use novomodelo_io::OwnedPolicyCutRecord;
     use novomodelo_io::config::BackwardScheduler;
@@ -2006,90 +2029,55 @@ mod tests {
 
     #[allow(clippy::cast_possible_wrap)]
     fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+        use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+        use novomodelo_core::entities::hydro::HydroPenalties;
 
-        let bus = Bus {
-            id: EntityId(0),
-            name: "B0".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![novomodelo_core::DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(1),
-            name: "H1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
+        let bus = builders::make_bus(
+            EntityId(0),
+            BusSpec {
+                name: "B0".to_string(),
+                deficit_segments: vec![novomodelo_core::DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
             },
-        };
-        hydro.declare_mirror_unit_group(EntityId(0));
+        );
+        let hydro = builders::make_hydro(
+            EntityId(1),
+            HydroSpec {
+                name: "H1".to_string(),
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        );
 
-        let make_stage = |idx: usize| Stage {
-            index: idx,
-            id: idx as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: n_openings,
-                noise_method: NoiseMethod::Saa,
-            },
-        };
-
-        let stages: Vec<Stage> = (0..n_stages).map(make_stage).collect();
+        let stages: Vec<Stage> = (0..n_stages)
+            .map(|idx| {
+                builders::make_stage(
+                    idx,
+                    StageSpec {
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        scenario_config: ScenarioSourceConfig {
+                            branching_factor: n_openings,
+                            noise_method: NoiseMethod::Saa,
+                        },
+                        ..StageSpec::default()
+                    },
+                )
+            })
+            .collect();
 
         let inflow_models: Vec<_> = (0..n_stages)
             .map(|i| InflowModel {
@@ -2149,28 +2137,22 @@ mod tests {
     }
 
     fn make_stages(n_stages: usize) -> Vec<Stage> {
+        use crate::test_support::builders::{self, StageSpec};
+
         (0..n_stages)
-            .map(|i| Stage {
-                index: i,
-                id: i as i32,
-                start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-                season_id: Some(0),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "S".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|i| {
+                builders::make_stage(
+                    i,
+                    StageSpec {
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        ..StageSpec::default()
+                    },
+                )
             })
             .collect()
     }
@@ -2212,6 +2194,7 @@ mod tests {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit_rules(limit),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -2253,6 +2236,7 @@ mod tests {
             cut_state_layouts,
             study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -4438,6 +4422,82 @@ mod tests {
                 .zip(final_cut_rows.iter().step_by(2))
                 .any(|(capacity, len)| len > capacity),
             "no basis outgrew its first cut-row capacity, so the pin never crossed a doubling"
+        );
+    }
+
+    fn stage_noise_capacities(session: &TrainingSession<'_, ActiveSolver, StubComm>) -> [usize; 4] {
+        session
+            .bwd_state
+            .stage_noise()
+            .buffer_identity()
+            .map(|(_, capacity)| capacity)
+    }
+
+    #[test]
+    fn lognormal_lag_study_reserves_no_stage_noise_table() {
+        {
+            let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 6);
+            let stage_ctx = setup.inputs.stage_ctx();
+            let training_ctx = setup.inputs.training_ctx();
+            let n_stages = training_ctx.horizon.num_stages();
+            let config = make_config(setup.loop_params.forward_passes, 6, 6, n_stages);
+            let mut solver = ActiveSolver::new().unwrap();
+            let session = TrainingSession::new(
+                &mut solver,
+                config,
+                &mut setup.fcf,
+                &stage_ctx,
+                &training_ctx,
+                &StubComm,
+                ActiveSolver::new,
+                Vec::new(),
+                SolverProfiles {
+                    backward_scheduler: BackwardScheduler::ByScenario {},
+                    ..SolverProfiles::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                stage_noise_capacities(&session).iter().any(|&c| c > 0),
+                "normal: the session reserved no stage noise table"
+            );
+        }
+
+        let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 6);
+        let stage_ctx = setup.inputs.stage_ctx();
+        let training_ctx = TrainingContext {
+            inflow_residual: InflowResidualDistribution::Lognormal3p,
+            ..setup.inputs.training_ctx()
+        };
+        let n_stages = training_ctx.horizon.num_stages();
+        let config = make_config(setup.loop_params.forward_passes, 6, 6, n_stages);
+        let mut solver = ActiveSolver::new().unwrap();
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut setup.fcf,
+            &stage_ctx,
+            &training_ctx,
+            &StubComm,
+            ActiveSolver::new,
+            Vec::new(),
+            SolverProfiles {
+                backward_scheduler: BackwardScheduler::ByScenario {},
+                ..SolverProfiles::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            stage_noise_capacities(&session),
+            [0; 4],
+            "lognormal: construction reserved a stage noise table"
+        );
+        session.prime_frozen_templates();
+        let _ = session.run_iteration(1).unwrap();
+        assert_eq!(
+            stage_noise_capacities(&session),
+            [0; 4],
+            "lognormal: the boundary reserve grew a stage noise table"
         );
     }
 }

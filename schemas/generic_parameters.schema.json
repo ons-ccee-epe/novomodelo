@@ -281,7 +281,7 @@
     },
     "ScalarParameterJsonEntry": {
       "additionalProperties": false,
-      "description": "One parameter entry.\n\nAn unknown key, such as the retired `values_source`, is a parse error that\nnames the key.",
+      "description": "One parameter entry.",
       "properties": {
         "block_values": {
           "description": "`[[stage_id, block_id, value], ...]` triples. Required when\n`kind == \"per_stage_block\"` (each `(stage_id, block_id)` pair unique);\nmust be absent for all other kinds.",

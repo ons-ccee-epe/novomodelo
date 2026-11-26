@@ -13,7 +13,7 @@ use crate::common::expanded_solve::{
     load_expanded, stages_whose_producer_drops_a_state_dimension,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
-use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+use crate::common::in_code_studies::{FphaLagOptions, LateralFactors, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{assert_first_try, rounding_factor, value_tolerance};
 use crate::common::stored_cut_oracles::{
     PartialSums, all_zero, apply_oracle_config, bits_eq, replay_partial_sums,
@@ -670,6 +670,23 @@ fn cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack(
         totals.fpha_slack_active_solves >= 1,
         "{LAG_STUDY}: no cold solve has an FPHA slack above {FPHA_SLACK_ACTIVE_FLOOR:e} at the \
          price {ACTIVE_FPHA_VIOLATION_COST}"
+    );
+}
+
+/// The same agreement with `H1`'s outflow and incremental inflow in `H0`'s FPHA tailrace flow.
+#[test]
+fn cold_solves_and_cuts_agree_across_the_formulations_with_a_lateral_fpha_inflow() {
+    let totals = check_lag_study(FphaLagOptions {
+        openings: OPENINGS,
+        h0_lateral_from_h1: Some(LateralFactors {
+            outflow: 0.6,
+            incremental_inflow: 0.4,
+        }),
+        ..FphaLagOptions::default()
+    });
+    assert!(
+        totals.compact_lag_cuts >= 1,
+        "{LAG_STUDY}: no checked compact cut has a non-zero lag coefficient"
     );
 }
 

@@ -238,7 +238,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
 
-    /// AC: scrambled declaration order — hydro=1 declares group 5 before group 2
+    /// Scrambled declaration order — hydro=1 declares group 5 before group 2
     /// at the same stage, and a `block_id = None` row precedes its
     /// `block_id = Some(3)` sibling for `(hydro=1, group=5, stage=2)` — sorts to
     /// `(hydro_id, hydro_unit_group_id, stage_id, block_id)` ascending.
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(rows[3].max_generation_mw, Some(99.0));
     }
 
-    /// AC: NaN in `max_generation_mw` of row index 1 -> `SchemaError` whose
+    /// NaN in `max_generation_mw` of row index 1 -> `SchemaError` whose
     /// `field` is exactly `hydro_unit_group_bounds[1].max_generation_mw`.
     #[test]
     fn parse_hydro_unit_group_bounds_rejects_non_finite() {
@@ -332,7 +332,7 @@ mod tests {
         }
     }
 
-    /// AC: a file carrying only the three required columns yields four `None`
+    /// A file carrying only the three required columns yields four `None`
     /// bounds and `block_id: None` in every row — a sparse absent column, not a
     /// schema error.
     #[test]

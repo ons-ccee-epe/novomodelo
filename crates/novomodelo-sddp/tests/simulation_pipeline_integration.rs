@@ -20,6 +20,7 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
+use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::HashMap;
 use std::sync::mpsc;
 
@@ -44,7 +45,7 @@ use novomodelo_sddp::{
         NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         StageIdx, Traversal,
     },
-    simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec},
+    simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec, SimulationTailrace},
     test_support::{
         StageContextFixture, all_enabled_cut_state_layouts, hydro_only_bus_geometry,
         hydro_only_bus_solution, hydro_only_bus_template, permissive_state_boxes,
@@ -458,6 +459,7 @@ fn single_workspace(solver: MockSolver) -> Vec<SolverWorkspace<MockSolver>> {
         cut_state_layouts: &cut_state_layouts,
         study_dims: &sd,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -485,7 +487,7 @@ fn single_workspace(solver: MockSolver) -> Vec<SolverWorkspace<MockSolver>> {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-/// Acceptance criterion: `n_scenarios=4`, single rank → exactly 4 results in
+/// `n_scenarios=4`, single rank → exactly 4 results in
 /// channel and cost buffer has length 4.
 #[test]
 fn simulate_single_rank_4_scenarios_produces_4_results() {
@@ -531,6 +533,7 @@ fn simulate_single_rank_4_scenarios_produces_4_results() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -556,6 +559,7 @@ fn simulate_single_rank_4_scenarios_produces_4_results() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -586,7 +590,7 @@ fn simulate_single_rank_4_scenarios_produces_4_results() {
     assert_eq!(received, 4, "channel should have received 4 results");
 }
 
-/// Acceptance criterion: solver infeasible at scenario 2, stage 1 (0-based)
+/// Solver infeasible at scenario 2, stage 1 (0-based)
 /// → `SimulationError::LpInfeasible` with correct `scenario_id` and `stage_id`.
 ///
 /// With 4 scenarios and 2 stages, the solve calls are numbered 0..7 in
@@ -641,6 +645,7 @@ fn simulate_infeasible_returns_lp_infeasible_error() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -666,6 +671,7 @@ fn simulate_infeasible_returns_lp_infeasible_error() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -742,6 +748,7 @@ fn simulate_infeasible_at_scenario2_stage3() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -767,6 +774,7 @@ fn simulate_infeasible_at_scenario2_stage3() {
             contract_prices_per_stage: &vec![Vec::new(); 4],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -795,7 +803,7 @@ fn simulate_infeasible_at_scenario2_stage3() {
     }
 }
 
-/// Acceptance criterion: drop receiver before calling simulate → `ChannelClosed`.
+/// Drop receiver before calling simulate → `ChannelClosed`.
 #[test]
 fn simulate_channel_closed_returns_error() {
     let n_stages = 2;
@@ -842,6 +850,7 @@ fn simulate_channel_closed_returns_error() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -867,6 +876,7 @@ fn simulate_channel_closed_returns_error() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -888,7 +898,7 @@ fn simulate_channel_closed_returns_error() {
     );
 }
 
-/// Acceptance criterion: `total_cost` in cost buffer equals sum of
+/// `total_cost` in cost buffer equals sum of
 /// `(objective - primal[theta])` across all stages for each scenario.
 ///
 /// With objective=100.0 and theta=30.0: `stage_cost` = (100 - 30) * `COST_SCALE_FACTOR` = `70_000_000` per stage.
@@ -942,6 +952,7 @@ fn simulate_total_cost_equals_sum_of_stage_costs() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -967,6 +978,7 @@ fn simulate_total_cost_equals_sum_of_stage_costs() {
             contract_prices_per_stage: &vec![Vec::new(); 3],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1040,6 +1052,7 @@ fn simulate_cost_buffer_scenario_ids_match_assigned_range() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1065,6 +1078,7 @@ fn simulate_cost_buffer_scenario_ids_match_assigned_range() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1139,6 +1153,7 @@ fn simulate_channel_receives_results_in_scenario_order() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1164,6 +1179,7 @@ fn simulate_channel_receives_results_in_scenario_order() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1184,7 +1200,7 @@ fn simulate_channel_receives_results_in_scenario_order() {
     assert_eq!(received, vec![0, 1, 2]);
 }
 
-/// New acceptance criterion: cost buffer from 1 workspace equals cost buffer from 4 workspaces.
+/// Cost buffer from 1 workspace equals cost buffer from 4 workspaces.
 ///
 /// Both runs must produce identical `(scenario_id, total_cost, category_costs)` tuples for all
 /// 20 scenarios. The cost buffer must be sorted by `scenario_id` in both cases.
@@ -1234,6 +1250,7 @@ fn test_simulation_parallel_cost_determinism() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1259,6 +1276,7 @@ fn test_simulation_parallel_cost_determinism() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1283,6 +1301,7 @@ fn test_simulation_parallel_cost_determinism() {
         cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
         study_dims: &study_dims(),
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -1325,6 +1344,7 @@ fn test_simulation_parallel_cost_determinism() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1350,6 +1370,7 @@ fn test_simulation_parallel_cost_determinism() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1399,7 +1420,7 @@ fn test_simulation_parallel_cost_determinism() {
 
 // ── Integration tests for event emission ─────────────────────────────────
 
-/// Acceptance criterion: with `event_sender: Some(&tx)` and 10 scenarios,
+/// With `event_sender: Some(&tx)` and 10 scenarios,
 /// at least 1 `SimulationProgress` event is received with `scenarios_complete > 0`
 /// and a finite non-NaN `scenario_cost`.
 #[test]
@@ -1449,6 +1470,7 @@ fn simulate_emits_progress_events() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1474,6 +1496,7 @@ fn simulate_emits_progress_events() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1523,8 +1546,8 @@ fn simulate_emits_progress_events() {
     }
 }
 
-/// Acceptance criterion: with `event_sender: None`, no events are sent and
-/// the function returns the same cost buffer as before.
+/// With `event_sender: None`, simulation still fills one cost entry per
+/// scenario.
 #[test]
 fn simulate_no_events_when_sender_is_none() {
     let n_stages = 2;
@@ -1569,6 +1592,7 @@ fn simulate_no_events_when_sender_is_none() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1594,6 +1618,7 @@ fn simulate_no_events_when_sender_is_none() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1674,6 +1699,7 @@ fn simulate_progress_events_received_before_return() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1699,6 +1725,7 @@ fn simulate_progress_events_received_before_return() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1733,7 +1760,7 @@ fn simulate_progress_events_received_before_return() {
     );
 }
 
-/// Acceptance criterion: each `SimulationProgress` event carries the raw
+/// Each `SimulationProgress` event carries the raw
 /// `scenario_cost` of the completed scenario.
 ///
 /// With `MockSolver` returning a fixed solution, all scenarios have the same
@@ -1790,6 +1817,7 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1815,6 +1843,7 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1854,7 +1883,7 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
     }
 }
 
-/// Acceptance criterion: `SimulationFinished` event is the last event
+/// `SimulationFinished` event is the last event
 /// emitted after all `SimulationProgress` events.
 #[test]
 fn simulate_emits_simulation_finished_as_last_event() {
@@ -1904,6 +1933,7 @@ fn simulate_emits_simulation_finished_as_last_event() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1929,6 +1959,7 @@ fn simulate_emits_simulation_finished_as_last_event() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1978,7 +2009,7 @@ fn simulate_emits_simulation_finished_as_last_event() {
     );
 }
 
-/// Acceptance criterion: each `SimulationProgress` event carries a finite,
+/// Each `SimulationProgress` event carries a finite,
 /// non-NaN `scenario_cost`. Statistics accumulation is deferred to the
 /// progress thread; this test verifies the per-scenario cost
 /// field is always valid.
@@ -2029,6 +2060,7 @@ fn simulate_progress_scenario_cost_is_finite() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2054,6 +2086,7 @@ fn simulate_progress_scenario_cost_is_finite() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2138,6 +2171,7 @@ fn simulate_frozen_path_issues_zero_add_rows() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2163,6 +2197,7 @@ fn simulate_frozen_path_issues_zero_add_rows() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2240,6 +2275,7 @@ fn simulate_fallback_path_issues_expected_add_rows() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2265,6 +2301,7 @@ fn simulate_fallback_path_issues_expected_add_rows() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2345,6 +2382,7 @@ fn simulate_frozen_length_mismatch_returns_error() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2370,6 +2408,7 @@ fn simulate_frozen_length_mismatch_returns_error() {
             contract_prices_per_stage: &vec![Vec::new(); 3],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2492,6 +2531,7 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2517,6 +2557,7 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
             contract_prices_per_stage: &vec![Vec::new(); 1],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2635,6 +2676,7 @@ fn simulate_with_empty_stage_bases_cold_starts() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2660,6 +2702,7 @@ fn simulate_with_empty_stage_bases_cold_starts() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2764,9 +2807,9 @@ fn warm_basis_for_node(node_id: NodeId) -> CapturedBasis {
     cb
 }
 
-/// Acceptance: a branching simulation warm-starts from the VISITED node's
+/// A branching simulation warm-starts from the VISITED node's
 /// own basis, not whichever node's basis happens to land at that stage index.
-/// The pre-fix, stage-keyed lookup (`stage_bases.get(t)`) would resolve node
+/// A stage-keyed lookup (`stage_bases.get(t)`) would resolve node
 /// 2's stage-1 solve to `node_bases[1]` — leaf A's basis, whose `node_id`
 /// mismatches — and `run_stage_solve`'s node-tag guard would silently reject
 /// it as cold. A node-keyed lookup warm-starts every stage-1 solve regardless
@@ -2841,6 +2884,7 @@ fn simulate_branching_k_fan_warm_starts_from_visited_node_basis() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, node_graph.n_pools),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2866,6 +2910,7 @@ fn simulate_branching_k_fan_warm_starts_from_visited_node_basis() {
             contract_prices_per_stage: &vec![Vec::new(); 2],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],

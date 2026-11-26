@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
 use novomodelo_core::{
-    AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, NoiseMethod,
-    PostStudyStage, PostStudyStages, PostStudyThermalBound, ScenarioSourceConfig, Stage,
-    StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal, WaterBucketStages,
+    AnticipatedConfig, Block, DeficitSegment, EntityId, PostStudyStage, PostStudyStages,
+    PostStudyThermalBound, Stage, System, SystemBuilder, WaterBucketStages,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -11,6 +10,7 @@ use super::{ResolvedStateLayout, build_extended_delivery_anchors, resolve_state_
 use crate::bucket_topology::TransitBucketTopology;
 use crate::lp::builder::{FactGroups, encode_time_value_facts};
 use crate::lp::indexer::AnticipatedPlants;
+use crate::test_support::builders::{self, BusSpec, StageSpec, ThermalSpec};
 use crate::test_support::{geometry_hydro, ymd};
 use crate::time_value::{DeliveryCalendar, TimeValue, WaterDeliveryBasis};
 
@@ -31,27 +31,20 @@ fn system_with_post_study(n_post: usize) -> System {
     let stages: Vec<Stage> = STUDY_MONTHS
         .iter()
         .enumerate()
-        .map(|(index, &(month, duration_hours))| Stage {
-            index,
-            id: i32::try_from(index).expect("small stage index"),
-            start_date: ymd(2024, month, 1),
-            end_date: ymd(2024, month + 1, 1),
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|(index, &(month, duration_hours))| {
+            builders::make_stage(
+                index,
+                StageSpec {
+                    start_date: ymd(2024, month, 1),
+                    end_date: ymd(2024, month + 1, 1),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours,
+                    }],
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect();
     let post_study = PostStudyStages {
@@ -77,29 +70,28 @@ fn system_with_post_study(n_post: usize) -> System {
     upstream.downstream_id = Some(EntityId(0));
     upstream.travel_time_hours = Some(ARC_TRAVEL_HOURS);
     SystemBuilder::new()
-        .buses(vec![Bus {
-            id: EntityId(0),
-            name: "B".to_string(),
-            operational_start_date: ymd(2024, 1, 1),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        }])
+        .buses(vec![builders::make_bus(
+            EntityId(0),
+            BusSpec {
+                name: "B".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        )])
         .hydros(vec![geometry_hydro(0), upstream])
-        .thermals(vec![Thermal {
-            id: THERMAL_ID,
-            name: "T".to_string(),
-            operational_start_date: ymd(2024, 1, 1),
-            bus_id: EntityId(0),
-            min_generation_mw: 0.0,
-            max_generation_mw: 500.0,
-            cost_per_mwh: 50.0,
-            anticipated_config: Some(AnticipatedConfig::LeadTime(LEAD_TIME_HOURS)),
-            entry_stage_id: None,
-            exit_stage_id: None,
-        }])
+        .thermals(vec![builders::make_thermal(
+            THERMAL_ID,
+            ThermalSpec {
+                name: "T".to_string(),
+                max_generation_mw: 500.0,
+                cost_per_mwh: 50.0,
+                anticipated_config: Some(AnticipatedConfig::LeadTime(LEAD_TIME_HOURS)),
+                ..ThermalSpec::default()
+            },
+        )])
         .stages(stages)
         .post_study_stages(Some(post_study))
         .build()

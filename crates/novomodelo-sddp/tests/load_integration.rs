@@ -16,6 +16,7 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
+use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
@@ -387,6 +388,7 @@ fn test_stochastic_load_training_completes() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -424,6 +426,7 @@ fn test_stochastic_load_training_completes() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -515,6 +518,7 @@ fn test_deterministic_load_training_matches_baseline() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(3),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -538,6 +542,7 @@ fn test_deterministic_load_training_matches_baseline() {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -599,6 +604,7 @@ fn test_stochastic_load_seed_determinism() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(3),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -635,6 +641,7 @@ fn test_stochastic_load_seed_determinism() {
                 cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
                 study_dims: &study_dims(),
                 inflow_method: &InflowNonNegativityMethod::None,
+                inflow_residual: InflowResidualDistribution::Normal,
                 stochastic: &stochastic,
                 initial_state: &initial_state,
                 inflow_scheme: SamplingScheme::InSample,

@@ -107,9 +107,9 @@ command -v cs_emit_production_lines >/dev/null \
 # number is not what makes them leaks — "the epic's safety mechanism", "untouched by
 # this ticket" and the plural "Tickets 016-020" all named the plan and all evaded the
 # earlier digit-anchored forms (`[Ee]pic[ -][0-9]+` cannot match "epic's", and the "s"
-# in "Tickets" displaces the required separator). `\b` keeps Rust test names allowed
-# without a carve-out: identifiers join with `_`, which is a word character, so
-# `ticket_016_regression` does not match while the prose "ticket 016" does.
+# in "Tickets" displaces the required separator). `\b` confines the scan to prose:
+# identifiers join with `_`, which is a word character, so `ticket_016_regression`
+# does not match while the prose "ticket 016" does; review checks test names (N4).
 readonly PATTERN='\b[Ee]pics?\b|\b[Tt]ickets?\b|\b[Ss]prints?\b|T0[0-9][0-9]|\bF[0-9]?-[0-9]{2,}\b|\bW[0-9]+ (reset|rebake|workstream|phase)\b|\bW-[0-9]+\b|\b[Tt]he campaign\b|\b[Rr]equirement [0-9]+[a-z]?\b|\b[Rr]equirements [0-9]+\b|\b[Dd]ecision [A-Z][0-9]+\b|\bOption [A-Z]\b|\bFix [0-9]\b|\bAC: |\bAC[0-9]\b|\bAC-[0-9]'
 
 # Section-reference pass: flag `§<n>` unless the line anchors it to a named

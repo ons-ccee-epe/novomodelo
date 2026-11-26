@@ -258,6 +258,7 @@ pub(crate) fn season_dense_index(
 )]
 mod tests {
     use super::*;
+    use crate::test_support::make_stage;
     use novomodelo_core::scenario::AnnualComponent;
 
     fn model(
@@ -282,33 +283,18 @@ mod tests {
     /// Minimal `Stage` carrying only `id`/`season_id` as load-bearing fields —
     /// mirrors `closure.rs`'s `par_a_stage` fixture construction.
     fn stage_with_season(index: usize, id: i32, season_id: usize) -> Stage {
-        use chrono::NaiveDate;
-        use novomodelo_core::temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-        };
+        use novomodelo_core::temporal::Block;
 
-        Stage {
-            index,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = make_stage(id);
+        stage.index = index;
+        stage.season_id = Some(season_id);
+        stage.blocks = vec![Block {
+            index: 0,
+            name: "SINGLE".to_string(),
+            duration_hours: 744.0,
+        }];
+        stage.scenario_config.branching_factor = 10;
+        stage
     }
 
     /// A 2-season `Weekly` `SeasonMap` with sparse, non-contiguous ids `21`/`26`
@@ -344,8 +330,8 @@ mod tests {
     /// Uniform AR(1) order across every season decouples the periodic closure
     /// (each season's `implied_periodic_acf` row only ever hits the `j == kp`
     /// branch), so `r_m = sqrt(1 - psi_m^2)` exactly — an analytically known
-    /// closure value, giving an exact (not approximate) "previously stored"
-    /// oracle to compare against. Two stages share season 0 to also exercise
+    /// closure value, giving an exact (not approximate) `stored` oracle to
+    /// compare against. Two stages share season 0 to also exercise
     /// "every stage of a hydro gets its season's r".
     #[test]
     fn derived_ratio_uniform_matches_stored() {
@@ -371,13 +357,13 @@ mod tests {
         }
     }
 
-    /// Reproduces the `t2_mixed_orders_gate_passes` fixture bit-for-bit
+    /// Reproduces the `mixed_orders_pass_stationarity_gate` fixture bit-for-bit
     /// (`orders = [3, 1, 2, 1]` against the periodic Yule-Walker fit of a
     /// plausible sample ACF table) — the closure-derived `r` and the YW-fitted
     /// `r` are known (from that test) to differ only in season 0 (the
     /// max-order season), by a gap in `[1e-5, 1e-3)`, and to agree elsewhere to
-    /// better than `1e-9`. Here the YW-fitted values stand in for the
-    /// "previously stored" column value that assembly used to trust.
+    /// better than `1e-9`. Here `stored` holds the YW-fitted values, seeded as
+    /// each model's `residual_std_ratio` before the derivation overwrites it.
     #[test]
     fn derived_ratio_mixed_order_shifts() {
         let psi: [Vec<f64>; 4] = [
@@ -540,12 +526,11 @@ mod tests {
     }
 
     /// [`resolve_stage_seasons`] must densify sparse/non-contiguous raw
-    /// `season_id`s (e.g. a `Weekly` cycle's `21`/`26`) to `0..n_seasons` —
-    /// pins a downstream regression where a `Weekly`-cycle case with 2
-    /// declared seasons (ids 21 and 26) panicked with "index out of bounds:
-    /// the len is 2 but the index is 21" because the raw id was previously
-    /// used as the array index directly. Both the `season_map`-present and the
-    /// no-`season_map` fallback paths must densify identically.
+    /// `season_id`s (e.g. a `Weekly` cycle's `21`/`26`) to `0..n_seasons`: on a
+    /// `Weekly`-cycle case with 2 declared seasons (ids 21 and 26), using the raw
+    /// id as the array index panics with "index out of bounds: the len is 2 but
+    /// the index is 21". Both the `season_map`-present and the no-`season_map`
+    /// fallback paths must densify identically.
     #[test]
     fn resolve_stage_seasons_densifies_sparse_ids() {
         let stages = vec![stage_with_season(0, 0, 21), stage_with_season(1, 1, 26)];
@@ -629,7 +614,7 @@ mod tests {
     #[test]
     fn derived_residual_ratios_follow_the_calendar_cycle_when_season_ids_are_out_of_order() {
         const OUT_OF_ORDER_IDS: [usize; 4] = [2, 0, 3, 1];
-        let calendar_ordered = novomodelo_stochastic::test_support::quarterly_season_map();
+        let calendar_ordered = novomodelo_core::test_support::quarterly_season_map();
         let mut out_of_order = calendar_ordered.clone();
         for (def, id) in out_of_order.seasons.iter_mut().zip(OUT_OF_ORDER_IDS) {
             def.id = id;

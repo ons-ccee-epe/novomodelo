@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use novomodelo_comm::{Communicator, ReduceOp};
 use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
-use novomodelo_io::config::BackwardScheduler;
+use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
 use novomodelo_solver::{
     ActiveProfile, RowBatch, SolverInterface, SolverStatistics, StageTemplate,
 };
@@ -280,9 +280,8 @@ pub struct BackwardPassState {
 
     /// Backward-pass work-unit scheduler, carrying the opening-block size
     /// when the `ByNode` method is selected. Defaults to
-    /// [`BackwardScheduler::ByScenario`] (byte-neutral with the pre-scheduler
-    /// path); override with [`Self::set_scheduler`] before the first `run()`
-    /// call.
+    /// [`BackwardScheduler::ByScenario`]; override with [`Self::set_scheduler`]
+    /// before the first `run()` call.
     scheduler: BackwardScheduler,
 
     /// Whether the by-node scheduler claims hardest-`(stage,
@@ -296,7 +295,7 @@ pub struct BackwardPassState {
     /// [`Self::set_binding_tracking`], which states the rank contract.
     binding_tracking: bool,
 
-    /// Whether every pin recomputes its brackets and every solve its σ·η and cut-row W.
+    /// Whether every pin recomputes its brackets and every solve its noise term and cut-row W.
     #[cfg(any(test, feature = "test-support"))]
     solve_cache_bypass: bool,
 
@@ -649,8 +648,7 @@ impl BackwardPassState {
     /// (`ForwardPassState::run`'s `Traversal::Enumerated` match arm):
     /// `Traversal::Enumerated` routes to the node-native
     /// [`Self::run_enumerated_backward`], `Traversal::Sampled` to
-    /// [`Self::run_sampled_backward`] (the pre-existing per-level driver,
-    /// byte-frozen).
+    /// [`Self::run_sampled_backward`] (the per-level driver).
     ///
     /// # Errors
     ///
@@ -1618,8 +1616,8 @@ fn assert_predecessor_states_distinct(
 /// A single-node level carries exactly one node at its stage (a mid-horizon
 /// leaf beside it is rejected at setup), so every trial point that reached the
 /// stage visited that node: route all with no per-record lookup. This is the
-/// chain and terminal-fan case, and reproduces the pre-routing `0..local_work`
-/// slice byte-for-byte. Only a multi-node level reads `TrajectoryRecord::node_id`
+/// chain and terminal-fan case: the routed set is the whole `0..local_work`
+/// slice. Only a multi-node level reads `TrajectoryRecord::node_id`
 /// to split siblings that own distinct pools.
 fn build_trial_routing(
     node_graph: &NodeGraph,
@@ -2040,10 +2038,11 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         n_openings,
         "the reified successor outcome set must have as many outcomes as flattened weights"
     );
+    let normal_residual = training_ctx.inflow_residual == InflowResidualDistribution::Normal;
     #[cfg(any(test, feature = "test-support"))]
-    let stage_noise_table = !state.solve_cache_bypass;
+    let stage_noise_table = normal_residual && !state.solve_cache_bypass;
     #[cfg(not(any(test, feature = "test-support")))]
-    let stage_noise_table = true;
+    let stage_noise_table = normal_residual;
     let fill_result = if stage_noise_table && !trial_points.is_empty() {
         state
             .stage_noise
@@ -2306,7 +2305,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
         // routed subset is scattered across the global scenario axis, so an
         // even split of `trial_points.len()` would misalign with the
         // contiguous per-worker basis window and index out of the slice. On a
-        // single-node level the window tiling reproduces the pre-routing
+        // single-node level the window tiling equals the
         // `partition(local_work, n_workers, w)` assignment exactly.
         let (w_start, w_end) = basis_slice.scenario_window();
         let owns = move |m: usize| w_start <= m && m < w_end;
@@ -2395,6 +2394,7 @@ mod tests {
     use crate::test_support::RankStub;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::scenario::{InflowModel, SamplingScheme};
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::{
         Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
@@ -2672,103 +2672,64 @@ mod tests {
         n_stages: usize,
         branching_factor: usize,
     ) -> novomodelo_stochastic::StochasticContext {
-        use chrono::NaiveDate;
-        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+        use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+        use novomodelo_core::entities::hydro::HydroPenalties;
         use novomodelo_core::{
-            Bus, DeficitSegment, EntityId, SystemBuilder,
+            DeficitSegment, EntityId, SystemBuilder,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
-            temporal::{
-                Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-                StageStateConfig,
-            },
+            temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
         };
         use novomodelo_stochastic::context::{
             ClassSchemes, OpeningTreeInputs, build_stochastic_context,
         };
         use std::collections::BTreeMap;
 
-        let bus = Bus {
-            id: EntityId(0),
-            name: "B0".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(1),
-            name: "H1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
+        let bus = builders::make_bus(
+            EntityId(0),
+            BusSpec {
+                name: "B0".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
             },
-        };
-        hydro.declare_mirror_unit_group(EntityId(0));
+        );
+        let hydro = builders::make_hydro(
+            EntityId(1),
+            HydroSpec {
+                name: "H1".to_string(),
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        );
 
-        let make_stage = |idx: usize| Stage {
-            index: idx,
-            id: idx as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor,
-                noise_method: NoiseMethod::Saa,
-            },
-        };
-
-        let stages: Vec<Stage> = (0..n_stages).map(make_stage).collect();
+        let stages: Vec<Stage> = (0..n_stages)
+            .map(|idx| {
+                builders::make_stage(
+                    idx,
+                    StageSpec {
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        scenario_config: ScenarioSourceConfig {
+                            branching_factor,
+                            noise_method: NoiseMethod::Saa,
+                        },
+                        ..StageSpec::default()
+                    },
+                )
+            })
+            .collect();
         let inflow_models: Vec<_> = (0..n_stages)
             .map(|idx| InflowModel {
                 hydro_id: EntityId(1),
@@ -3234,6 +3195,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3428,6 +3390,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&layout, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3615,6 +3578,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(state, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3784,13 +3748,13 @@ mod tests {
         );
     }
 
-    /// U1 regression: the successor pool must be resolved by the child's NODE
-    /// POSITION, never by conflating it with the successor's STAGE index. With
+    /// The successor pool must be resolved by the child's NODE POSITION, never
+    /// by conflating it with the successor's STAGE index. With
     /// `NodeGraph::nodes`/`successors` typed `TypedVec<NodePos, _>`, indexing
-    /// with a `StageIdx` is now a COMPILE ERROR — `ng.nodes[successor_stage]`
-    /// does not type-check — so the historical runtime misindex this test used
-    /// to construct by hand is unrepresentable without an explicit, visible
-    /// re-wrap. What this test still pins: on a genuine fan, the child's own
+    /// with a `StageIdx` is a COMPILE ERROR — `ng.nodes[successor_stage]`
+    /// does not type-check — so a stage-for-node misindex is unrepresentable
+    /// without an explicit, visible re-wrap. What this test pins: on a genuine
+    /// fan, the child's own
     /// `NodePos` and a `NodePos` reconstructed from the successor stage's raw
     /// value resolve to DIFFERENT, non-interchangeable pools — proving the two
     /// index spaces are not numeric synonyms on this fixture, so the type-level
@@ -3858,11 +3822,11 @@ mod tests {
         let interior_pos = NodePos(1);
         let child = ng.successors[interior_pos][0].child;
         let successor_stage = ng.nodes[interior_pos].stage.next();
-        // The wrong-but-once-compiling alternative, now reachable only through
-        // an explicit re-wrap: `ng.nodes[successor_stage]` itself is a compile
-        // error (a `StageIdx` cannot index a `NodePos`-typed array), so a
-        // maintainer must deliberately reconstruct a `NodePos` from the raw
-        // stage value to even express the historical bug.
+        // The wrong alternative, reachable only through an explicit re-wrap:
+        // `ng.nodes[successor_stage]` itself is a compile error (a `StageIdx`
+        // cannot index a `NodePos`-typed array), so a maintainer must
+        // deliberately reconstruct a `NodePos` from the raw stage value to
+        // express it.
         let stage_misindexed_as_node_pos = NodePos(successor_stage.0);
 
         let pool_by_node_position = ng.nodes[child].pool_id;
@@ -3997,6 +3961,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(state, node_graph.n_pools),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4215,6 +4180,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, node_graph.n_pools),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4479,10 +4445,10 @@ mod tests {
         assert_predecessor_states_distinct(&predecessors, &arena);
     }
 
-    /// The false positive the old wrong-axis assert produced under CLP: two
-    /// DISTINCT nodes (a deterministic trunk's parent and child) settle on the
-    /// SAME persisted state. Each is a single predecessor of a different node,
-    /// so no node has >= 2 predecessors — the helper is vacuous and does NOT fire.
+    /// Two DISTINCT nodes (a deterministic trunk's parent and child) settle on
+    /// the SAME persisted state, as they can under CLP. Each is a single
+    /// predecessor of a different node, so no node has >= 2 predecessors — the
+    /// helper is vacuous and does NOT fire.
     #[cfg(debug_assertions)]
     #[test]
     fn predecessor_states_distinct_ignores_parent_child_same_state() {
@@ -4708,6 +4674,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4835,6 +4802,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4889,9 +4857,9 @@ mod tests {
         );
     }
 
-    /// AC2: a cut generated at iteration `g` that binds at a later
+    /// A cut generated at iteration `g` that binds at a later
     /// iteration `i > g` under DCS must have its `last_active_iter` advanced to
-    /// `i` by the (unchanged) per-stage metadata sync, fed by the DCS-maintained
+    /// `i` by the per-stage metadata sync, fed by the DCS-maintained
     /// binding-count contribution.
     ///
     /// This drives the real [`BackwardPassState::sync_stage_metadata`] with a
@@ -5101,7 +5069,7 @@ mod tests {
         }
     }
 
-    /// AC: analytical product-weighted cut regression. `aggregate_cut`'s
+    /// Analytical product-weighted cut regression. `aggregate_cut`'s
     /// result over the assembled weights must equal the closed-form flat sum
     /// `Σ_(m,ψ) P(n→m)·q_{m,ψ}·outcome`, with the outcome vector ordered by
     /// ascending child node id then ω.
@@ -5160,7 +5128,7 @@ mod tests {
         assert!((coefficients[1] - expected_c1).abs() < 1e-12);
     }
 
-    /// AC: `CVaR` tie-break order. Two tied-objective outcomes with distinct
+    /// `CVaR` tie-break order. Two tied-objective outcomes with distinct
     /// product weights: `CVaR`'s greedy allocation processes tied entries in
     /// their array (= canonical child-id-then-ω) index order — `child 1`
     /// (index 0) is allocated its full upper bound first, `child 2` (index 1)
@@ -5291,7 +5259,7 @@ mod tests {
         let state = state_layout(3, 0);
         let horizon = HorizonMode::Finite { num_stages: 5 };
 
-        // No scheduler set ⇒ empty (the pre-existing ByScenario/sampled default).
+        // No scheduler set ⇒ empty (the ByScenario/sampled default).
         let baseline = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         assert_eq!(baseline.by_node_scratch_location_capacity(), 0);
 
@@ -5335,7 +5303,7 @@ mod tests {
         }
 
         // Synthesized chain: successor node position == successor stage, so the
-        // backward basis key `(m, successor_node)` is the pre-change
+        // backward basis key `(m, successor_node)` is the
         // `(m, successor_stage)` flat slot `[m*num_nodes + node]` byte-for-byte
         // (num_nodes == num_stages on the chain).
         let n_stages = 4usize;
@@ -5363,7 +5331,7 @@ mod tests {
     #[test]
     fn backward_engine_has_no_graph_shape_dispatch() {
         // Chain parity is degeneracy, not dispatch: no backward engine path
-        // branches on a graph-shape predicate to reach preserved legacy code.
+        // branches on a graph-shape predicate.
         let sources: [(&str, &str); 6] = [
             (
                 "backward_pass_state",
@@ -5399,7 +5367,7 @@ mod tests {
         }
     }
 
-    // ── fusion: real-solver AC1/AC2 solve-count checks ─────────────────────
+    // ── fusion: real-solver solve-count checks ─────────────────────────────
 
     /// Run one real (`ActiveSolver`) enumerated forward+backward round on
     /// `setup`'s whole graph, returning the raw [`BackwardResult`] — in
@@ -5473,6 +5441,7 @@ mod tests {
             cut_state_layouts: &setup.inputs.cut_state_layouts,
             study_dims: &setup.inputs.stage_data.study_dims,
             inflow_method: &setup.inputs.stage_data.study_dims.inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &setup.inputs.stochastic,
             initial_state: &setup.inputs.initial.state,
             inflow_scheme: tr.inflow_scheme,
@@ -5588,7 +5557,7 @@ mod tests {
         (result, state_machine)
     }
 
-    /// AC1: on an all-External terminal fan (every child of the sole
+    /// On an all-External terminal fan (every child of the sole
     /// cut-generating node is a fusion-eligible External terminal leaf), the
     /// real backward performs ZERO LP solves — every child's outcome is
     /// filled from the forward-captured fused slice instead of being solved.
@@ -5606,11 +5575,11 @@ mod tests {
         );
     }
 
-    /// AC2: on a terminal-Generated fan (no child is fusion-eligible), the
+    /// On a terminal-Generated fan (no child is fusion-eligible), the
     /// real backward still solves every opening of every child — exhaustive
     /// integration is unaffected by fusion.
     #[test]
-    fn enumerated_backward_still_solves_every_opening_for_generated_terminal_fan() {
+    fn enumerated_backward_solves_every_opening_for_generated_terminal_fan() {
         let mut setup = crate::test_support::terminal_generated_fan_setup(2, 1);
         let (result, _) = run_real_enumerated_round(&mut setup, None);
         assert!(

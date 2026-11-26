@@ -29,9 +29,7 @@
 use chrono::NaiveDate;
 use novomodelo_core::entities::thermal::AnticipatedConfig;
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
-    HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages, PostStudyThermalBound,
-    PumpingBlockBounds, ResolvedBounds, System, SystemBuilder, ThermalBlockBounds,
+    EntityId, PostStudyStage, PostStudyStages, PostStudyThermalBound, System, SystemBuilder,
     WaterBucketStages,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
@@ -121,90 +119,6 @@ fn post_study_stages(min_k: f64, max_k: f64) -> PostStudyStages {
     }
 }
 
-fn bounds() -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 2,
-            k_max: 1,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 0.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds::default(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 1.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
-    use novomodelo_core::HydroPenalties;
-    use novomodelo_core::resolved::{
-        BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, ResolvedPenalties,
-    };
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 2,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 /// `with_commitment` toggles the declared `post_study_stages` destination;
 /// `(min_k, max_k)` are read only when `with_commitment` is `true`.
 fn build_system(with_commitment: bool, min_k: f64, max_k: f64) -> System {
@@ -221,24 +135,28 @@ fn build_system(with_commitment: bool, min_k: f64, max_k: f64) -> System {
         },
     );
 
-    let mut builder = SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages())
-        .bounds(bounds())
-        .penalties(penalties());
-    if with_commitment {
-        builder = builder.post_study_stages(Some(post_study_stages(min_k, max_k)));
-    }
-    builder.build().expect("fixture System must build")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            let mut builder = SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages());
+            if with_commitment {
+                builder = builder.post_study_stages(Some(post_study_stages(min_k, max_k)));
+            }
+            builder
+        },
+        1,
+        |_, _, _| {},
+    )
 }
 
 fn config() -> novomodelo_io::config::Config {
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, ParallelismConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig,
+        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     Config {
         schema: None,
@@ -246,6 +164,7 @@ fn config() -> novomodelo_io::config::Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: InflowNonNegativityMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             // Unscaled: the analytical assertions compare `template.objective`
             // directly against `C * H * D` with no COST_SCALE_FACTOR back-out.
             cost_scale_factor: Some(1.0),
@@ -259,7 +178,7 @@ fn config() -> novomodelo_io::config::Config {
             solver: TrainingSolverConfig::default(),
             parallelism: ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),

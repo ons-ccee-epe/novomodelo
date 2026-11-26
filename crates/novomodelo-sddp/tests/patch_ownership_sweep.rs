@@ -37,9 +37,13 @@ use novomodelo_solver::{ActiveSolver, StageTemplate};
 
 use common::in_code_studies::{
     ChronologicalNoiseSpec, NEGATIVE_DRAW_INFLOW_MEAN_M3S, chronological_noise_study,
-    mixed_lead_anticipated_study, negative_draw_par1_spec, stochastic_parallel_study,
+    fpha_lateral_lag_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
+    stochastic_parallel_study,
 };
-use common::{StubComm, build_setup_in_code, fresh_setup_with, stored_trial_states};
+use common::{
+    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with,
+    stored_trial_states,
+};
 
 #[test]
 fn capture_at_initial_state_matches_node_capture() {
@@ -391,6 +395,23 @@ fn every_noise_dimension_patches_only_its_own_entity() {
     sweep_setup(
         label,
         &chronological_pumping_setup,
+        &[],
+        &mut violations,
+        &mut vacuity,
+    );
+
+    let (fpha_lateral_system, fpha_lateral_config, fpha_lateral_hydro_models) =
+        fpha_lateral_lag_study();
+    let fpha_lateral_setup = build_setup_in_code_with_models(
+        fpha_lateral_system,
+        &fpha_lateral_config,
+        fpha_lateral_hydro_models,
+    );
+    let label = "in-code/fpha-lateral-lag";
+    swept.push(label.to_string());
+    sweep_setup(
+        label,
+        &fpha_lateral_setup,
         &[],
         &mut violations,
         &mut vacuity,

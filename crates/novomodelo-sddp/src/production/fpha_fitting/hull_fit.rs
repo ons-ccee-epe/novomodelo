@@ -227,8 +227,6 @@ mod tests {
             v_max: 30_000.0,
             n_volume_points: 6,
             n_flow_points: 6,
-            n_spillage_points: 2,
-            max_planes_per_hydro: 10,
             single_volume: false,
         }
     }
@@ -319,8 +317,6 @@ mod tests {
             v_max: 15_002.0,
             n_volume_points: 2,
             n_flow_points: 6,
-            n_spillage_points: 2,
-            max_planes_per_hydro: 10,
             single_volume: true,
         }
     }

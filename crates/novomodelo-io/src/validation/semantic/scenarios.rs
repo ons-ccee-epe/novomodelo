@@ -5,10 +5,7 @@ use std::path::Path;
 
 use chrono::Datelike;
 use novomodelo_core::scenario::SamplingScheme;
-use novomodelo_core::{
-    EntityId, Hydro, HydroGenerationModel, Stage, long_term_mean_inflow_by_hydro,
-};
-use novomodelo_stochastic::derive_external_sample_moments;
+use novomodelo_core::{EntityId, Hydro, HydroGenerationModel, Stage};
 use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
 };
@@ -259,24 +256,22 @@ pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut Validation
     );
 }
 
-// ── Rule 55: precomputed FPHA planes at zero turbining ────────────────────────
+// ── Rule 55: precomputed FPHA planes at zero flow ─────────────────────────────
 
 /// Rule 55: evaluates each precomputed FPHA plane the LP reads at a study stage at
-/// the corner `(v_min, q = 0, S_ref)` of the stage's fitting window
-/// ([`FphaColumnLayout::resolve_fitting_window`]) and spillage fit range
-/// ([`FphaColumnLayout::resolve_spillage_fit_max_m3s`]), with κ on γ₀ only, as the
+/// `(v_min, q = 0, s = 0)`, with `v_min` the lower bound of the stage's fitting
+/// window ([`FphaColumnLayout::resolve_fitting_window`]) and κ on γ₀ only, as the
 /// LP scales it. One warning per hydro with a plane below 0 MW there names its
-/// earliest crossing of 0 MW.
+/// lowest.
 pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
     data: &ParsedData,
     ctx: &mut ValidationContext,
 ) {
-    struct Crossing {
-        s_star: f64,
+    struct Shortfall {
+        power_mw: f64,
         stage_id: i32,
         plane_id: i32,
         v_min: f64,
-        s_ref: f64,
     }
 
     if data.production_models.is_empty() || data.fpha_hyperplanes.is_empty() {
@@ -289,7 +284,6 @@ pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
             .or_default()
             .push(row);
     }
-    let mlt = long_term_mean_inflow_by_hydro(&data.inflow_history);
 
     for hydro in &data.hydros {
         let Some(config) = data
@@ -302,9 +296,8 @@ pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
         if !config.uses_fpha() || config.uses_computed_fpha() || !hydro.has_turbine_capacity() {
             continue;
         }
-        let mean = mlt.get(&hydro.id).copied().unwrap_or(0.0);
 
-        let mut crossings: Vec<Crossing> = Vec::new();
+        let mut shortfalls: Vec<Shortfall> = Vec::new();
         for stage in data.stages.stages.iter().filter(|s| s.id >= 0) {
             let res = config.resolve_stage(stage);
             if res.model != Some(HydroGenerationModel::Fpha) {
@@ -317,11 +310,6 @@ pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
             ) else {
                 continue;
             };
-            let s_ref = FphaColumnLayout::resolve_spillage_fit_max_m3s(
-                res.fpha_config,
-                mean,
-                hydro.max_turbined_m3s,
-            );
             let Some(rows) = planes
                 .get(&(hydro.id, Some(stage.id)))
                 .or_else(|| planes.get(&(hydro.id, None)))
@@ -331,50 +319,41 @@ pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
             for row in rows {
                 let intercept = row.gamma_0 * row.kappa;
                 let storage_term = row.gamma_v * v_min;
-                let spillage_term = row.gamma_s * s_ref;
-                let a = intercept + storage_term;
-                let corner = a + spillage_term;
-                let magnitude = intercept
-                    .abs()
-                    .max(storage_term.abs())
-                    .max(spillage_term.abs());
-                if corner < -envelope_tolerance(magnitude) {
-                    crossings.push(Crossing {
-                        s_star: if a > 0.0 { a / row.gamma_s.abs() } else { 0.0 },
+                let power_mw = intercept + storage_term;
+                if power_mw < -envelope_tolerance(intercept.abs().max(storage_term.abs())) {
+                    shortfalls.push(Shortfall {
+                        power_mw,
                         stage_id: stage.id,
                         plane_id: row.plane_id,
                         v_min,
-                        s_ref,
                     });
                 }
             }
         }
 
-        let Some(worst) = crossings.iter().min_by(|x, y| {
-            x.s_star
-                .total_cmp(&y.s_star)
+        let Some(lowest) = shortfalls.iter().min_by(|x, y| {
+            x.power_mw
+                .total_cmp(&y.power_mw)
                 .then(x.stage_id.cmp(&y.stage_id))
                 .then(x.plane_id.cmp(&y.plane_id))
         }) else {
             continue;
         };
-        let n_pairs = crossings.len();
-        let stages = compress_stage_ids(&crossings.iter().map(|c| c.stage_id).collect());
-        let Crossing {
-            s_star,
+        let n_pairs = shortfalls.len();
+        let stages = compress_stage_ids(&shortfalls.iter().map(|c| c.stage_id).collect());
+        let Shortfall {
+            power_mw,
             stage_id,
             plane_id,
             v_min,
-            s_ref,
-        } = *worst;
+        } = *lowest;
         let entity = format!("Hydro {}", hydro.id.0);
         let message = format!(
             "FPHA plane below zero at zero turbining: {entity} -- {n_pairs} (stage, plane) \
-             pair(s) at stages {stages} fall below 0 MW with no turbined flow; the earliest \
-             crosses 0 MW at {s_star} m³/s of spillage (stage {stage_id}, plane {plane_id}, \
-             storage {v_min} hm³, spillage up to {s_ref} m³/s), so while it spills the hydro \
-             turbines water at 0 MW, or reports fpha_violation_mw where turbining cannot lift \
-             the plane to 0 MW"
+             pair(s) at stages {stages} fall below 0 MW with no turbined flow and no \
+             spillage; the lowest reads {power_mw} MW (stage {stage_id}, plane {plane_id}, \
+             storage {v_min} hm³), so the hydro turbines water at 0 MW, or reports \
+             fpha_violation_mw where turbining cannot lift the plane to 0 MW"
         );
         ctx.emit(
             &rules::SEMANTIC_FPHA_PRECOMPUTED_PLANE_NEGATIVE_AT_ZERO_TURBINING,
@@ -440,8 +419,7 @@ pub(super) fn check_scenario_models(data: &ParsedData, ctx: &mut ValidationConte
     // Rule 12: the parser rejects std_m3s < 0; this layer only warns on == 0.0
     // (valid but unusual deterministic inflow) -- suppressed when every applicable
     // scenario source resolves inflow to the External scheme, which never runs PAR
-    // generation and for which the warning is meaningless; rule 50 covers a zero σ
-    // for that class instead.
+    // generation and for which the warning is meaningless.
     if inflow_scheme_is_external_everywhere(data) {
         return;
     }
@@ -735,12 +713,11 @@ struct ClassExternal {
     raw_c: Vec<usize>,
 }
 
-/// Rules 45-48, 50: external-library coherence across the slot-occupying external
+/// Rules 45-48: external-library coherence across the slot-occupying external
 /// classes of the training scenario source — the shared per-stage raw
 /// column-count vector `raw_c(t)` (rule 45), the exact `scenario_id` set
 /// per (class, stage) (rule 46), out-of-range `stage_id` rejection (rule
-/// 47), the prefix-coherence warning (rule 48), and the External-scheme
-/// deterministic-inflow σ check (rule 50, in [`extract_class`]). Rules 45-47
+/// 47) and the prefix-coherence warning (rule 48). Rules 45-47
 /// fire for every study; the prefix-coherence warning only when `nodes[]` is
 /// declared. Reads raw parsed values only — the standardized-library width
 /// assertion runs at study setup, where the standardized libraries exist.
@@ -762,15 +739,6 @@ pub(super) fn check_external_library_coherence(data: &ParsedData, ctx: &mut Vali
     let resolver = StageIdResolver::from_study_stage_ids(&study_ids);
     let n_stages = study_ids.len();
 
-    // AR order > 0 for rule 50's inflow decision (`extract_class`): any declared
-    // lag coefficient or annual component.
-    let hydros_with_ar_dynamics: HashSet<i32> = data
-        .inflow_ar_coefficients
-        .iter()
-        .map(|r| r.hydro_id.0)
-        .chain(data.inflow_annual_components.iter().map(|r| r.hydro_id.0))
-        .collect();
-
     // check_prefix_coherence (the sole reader of ClassExternal.cells' values)
     // runs only under a declared nodes[] graph; skip populating values otherwise.
     let policy_graph_declared = !data.stages.policy_graph.nodes.is_empty();
@@ -786,7 +754,6 @@ pub(super) fn check_external_library_coherence(data: &ParsedData, ctx: &mut Vali
                 .map(|r| (r.hydro_id.0, r.stage_id, r.scenario_id, r.value_m3s)),
             &resolver,
             n_stages,
-            &hydros_with_ar_dynamics,
             policy_graph_declared,
             ctx,
         ));
@@ -801,7 +768,6 @@ pub(super) fn check_external_library_coherence(data: &ParsedData, ctx: &mut Vali
                 .map(|r| (r.bus_id.0, r.stage_id, r.scenario_id, r.value_mw)),
             &resolver,
             n_stages,
-            &hydros_with_ar_dynamics,
             policy_graph_declared,
             ctx,
         ));
@@ -816,7 +782,6 @@ pub(super) fn check_external_library_coherence(data: &ParsedData, ctx: &mut Vali
                 .map(|r| (r.ncs_id.0, r.stage_id, r.scenario_id, r.value)),
             &resolver,
             n_stages,
-            &hydros_with_ar_dynamics,
             policy_graph_declared,
             ctx,
         ));
@@ -829,18 +794,8 @@ pub(super) fn check_external_library_coherence(data: &ParsedData, ctx: &mut Vali
     }
 }
 
-/// Extract one external class, running A2 (`stage_id` resolution, rule 47), A1
-/// (exact `scenario_id` set, rule 46), and rule 50's inflow-only σ check as it
-/// builds the [`ClassExternal`]. Rule 50 no longer applies to load/NCS: under
-/// External their μ is defined by the external file itself, so there is no
-/// seasonal μ left to disagree with. For inflow, σ is derived from these SAME
-/// external cells via [`derive_external_sample_moments`] -- the reduction the
-/// engine also uses, so the validator and the engine agree on "σ = 0" --
-/// rather than from `inflow_seasonal_stats`; a constant (σ = 0) column is
-/// accepted for a hydro absent from `hydros_with_ar_dynamics` (AR(0): its
-/// deterministic base is exactly μ) and rejected for one present in it
-/// (AR(p > 0): a deterministic value would have to equal a PAR output this
-/// loader cannot compute upstream).
+/// Extract one external class, running A2 (`stage_id` resolution, rule 47) and
+/// A1 (exact `scenario_id` set, rule 46) as it builds the [`ClassExternal`].
 ///
 /// `populate_values`: when `false` (no declared `nodes[]`), the returned
 /// [`ClassExternal::cells`] carries no values -- only [`check_prefix_coherence`]
@@ -853,7 +808,6 @@ fn extract_class(
     rows: impl Iterator<Item = (i32, i32, i32, f64)>,
     resolver: &StageIdResolver,
     n_stages: usize,
-    hydros_with_ar_dynamics: &HashSet<i32>,
     populate_values: bool,
     ctx: &mut ValidationContext,
 ) -> ClassExternal {
@@ -862,7 +816,6 @@ fn extract_class(
     let mut entities: BTreeSet<i32> = BTreeSet::new();
     let mut union_by_stage: Vec<BTreeSet<i32>> = vec![BTreeSet::new(); n_stages];
     let mut entity_scen: HashMap<(usize, i32), BTreeSet<i32>> = HashMap::new();
-    let mut inflow_sample_rows: Vec<(EntityId, i32, i32, f64)> = Vec::new();
 
     for (i, (entity_id, stage_id, scenario_id, value)) in rows.enumerate() {
         // A2 (rule 47): an out-of-range stage_id is rejected through the shared
@@ -903,30 +856,7 @@ fn extract_class(
             .entry((stage_idx, entity_id))
             .or_default()
             .insert(scenario_id);
-        // A negative scenario_id is already rejected below (rule 46's
-        // out-of-range check, keyed off entity_scen, is unaffected by this
-        // filter) -- excluded here only to keep the moment reduction's own
-        // debug_assert from firing on a row this function itself flags.
-        if name == "inflow" && scenario_id >= 0 {
-            let stage_idx_i32 = i32::try_from(stage_idx).unwrap_or(i32::MAX);
-            inflow_sample_rows.push((EntityId(entity_id), stage_idx_i32, scenario_id, value));
-        }
     }
-
-    let n_entities = entities.len();
-    let inflow_moments: Vec<(f64, f64)> = if name == "inflow" {
-        let inflow_entity_ids: Vec<EntityId> = entities.iter().copied().map(EntityId).collect();
-        derive_external_sample_moments(
-            &inflow_sample_rows,
-            &inflow_entity_ids,
-            n_stages,
-            |&(entity_id, stage_idx, scenario_id, value)| {
-                (entity_id, stage_idx, scenario_id, value)
-            },
-        )
-    } else {
-        Vec::new()
-    };
 
     let mut raw_c = vec![0usize; n_stages];
     for (t, union) in union_by_stage.iter().enumerate() {
@@ -940,29 +870,10 @@ fn extract_class(
         // A1 (rule 46): every entity present at this stage must carry exactly the
         // scenario_id set {0..raw_c-1} — a set check, not a bound check, so a
         // 1-based deck (which is in-bounds below raw_c but shifted) is rejected.
-        for (e_idx, &e) in entities.iter().enumerate() {
+        for &e in &entities {
             let Some(es) = entity_scen.get(&(t, e)) else {
                 continue;
             };
-
-            if name == "inflow" {
-                let (_, sigma) = inflow_moments[t * n_entities + e_idx];
-                if sigma == 0.0 && hydros_with_ar_dynamics.contains(&e) {
-                    ctx.emit(
-                        &rules::SEMANTIC_EXTERNAL_INFLOW_CONSTANT_UNDER_AR_MODEL,
-                        file,
-                        Some(format!("{name} entity {e} stage {stage_id}")),
-                        format!(
-                            "{name} external library at stage {stage_id}, entity {e}: every \
-                             scenario value is constant (σ = 0), but this hydro's inflow follows \
-                             an autoregressive model of order > 0; a deterministic value here \
-                             would have to equal that model's own deterministic PAR output at \
-                             every stage, which this loader does not compute upstream"
-                        ),
-                    );
-                }
-            }
-
             let out_of_range: Vec<i32> = es
                 .iter()
                 .copied()
@@ -2065,7 +1976,7 @@ mod tests {
         assert_eq!(given, reversed);
     }
 
-    // ── Rule 55: precomputed FPHA planes at zero turbining ────────────────────
+    // ── Rule 55: precomputed FPHA planes at zero flow ─────────────────────────
 
     const ZERO_TURBINING_PREFIX: &str = "FPHA plane below zero at zero turbining:";
 
@@ -2091,13 +2002,23 @@ mod tests {
         }
     }
 
+    fn intercept_row(
+        hydro_id: i32,
+        stage_id: Option<i32>,
+        plane_id: i32,
+        gamma_0: f64,
+    ) -> FphaHyperplaneRow {
+        FphaHyperplaneRow {
+            gamma_0,
+            ..make_fpha_row(hydro_id, stage_id, plane_id)
+        }
+    }
+
     fn precomputed_layout() -> FphaColumnLayout {
         FphaColumnLayout {
             source: "precomputed".to_string(),
             volume_discretization_points: None,
             turbine_discretization_points: None,
-            spillage_discretization_points: None,
-            max_planes_per_hydro: None,
             fitting_window: None,
             spillage_fit_max_m3s: None,
             turbined_fit_max_m3s: None,
@@ -2124,24 +2045,25 @@ mod tests {
         }
     }
 
-    /// derived: v_min is 0 and S_ref = 2 · 1 000, so the corners are
-    /// 100 − 0.02 · 2 000 = 60, 100 with γₛ 0, 62.5 − 0.031 25 · 2 000 = 0 and
-    /// 2 · 50 − 0.031 25 · 2 000 = 37.5, κ scaling γ₀ only.
+    /// derived: at v_min 0 and s = 0 the planes read 100, 100, 0 and 2 · 50 = 100,
+    /// κ scaling γ₀ only; at 2 000 m³/s of spillage, twice `max_turbined_m3s`,
+    /// planes 0, 2 and 3 read 100 − 0.125 · 2 000 = −150, −0.5 · 2 000 = −1 000 and
+    /// 100 − 0.25 · 2 000 = −400.
     #[test]
-    fn precomputed_plane_at_or_above_zero_at_the_corner_is_silent() {
+    fn precomputed_plane_below_zero_only_while_spilling_is_silent() {
         let rows = vec![
-            make_fpha_row(1, None, 0),
-            spill_row(1, None, 1, 0.0),
+            spill_row(1, None, 0, -0.125),
+            make_fpha_row(1, None, 1),
             FphaHyperplaneRow {
-                gamma_0: 62.5,
+                gamma_0: 0.0,
                 gamma_v: 0.0,
-                ..spill_row(1, None, 2, -0.031_25)
+                ..spill_row(1, None, 2, -0.5)
             },
             FphaHyperplaneRow {
                 gamma_0: 50.0,
                 gamma_v: 0.0,
                 kappa: 2.0,
-                ..spill_row(1, None, 3, -0.031_25)
+                ..spill_row(1, None, 3, -0.25)
             },
         ];
         let data = zero_turbining_data(
@@ -2159,22 +2081,25 @@ mod tests {
         );
     }
 
-    /// derived: hydro 1's plane 1 at γₛ −0.125 has corner 100 − 0.125 · 2 000 = −150
-    /// and crosses at 100 / 0.125 = 800; at stage 4 it is `make_fpha_row` (corner
-    /// 60), and at stage 5 γₛ −0.25 crosses at 100 / 0.25 = 400. Hydro 2's global
-    /// plane crosses at 800 at all six stages, so stage and plane ids break the tie.
+    /// derived: at v_min 0 and s = 0 hydro 1's plane 1 reads γ₀ = −10 at stages 0-3,
+    /// `make_fpha_row`'s 100 at stage 4 and −40 at stage 5, the lowest. Hydro 2's
+    /// global plane reads 2 · −5 = −10 at all six stages, so stage and plane ids
+    /// break the tie.
     #[test]
-    fn precomputed_plane_below_zero_at_the_corner_warns_once_per_hydro() {
+    fn precomputed_plane_below_zero_at_zero_flow_warns_once_per_hydro() {
         let mut rows = Vec::new();
         for s in 0..=5 {
             rows.push(make_fpha_row(1, Some(s), 0));
             rows.push(match s {
                 4 => make_fpha_row(1, Some(4), 1),
-                5 => spill_row(1, Some(5), 1, -0.25),
-                _ => spill_row(1, Some(s), 1, -0.125),
+                5 => intercept_row(1, Some(5), 1, -40.0),
+                _ => intercept_row(1, Some(s), 1, -10.0),
             });
         }
-        rows.push(spill_row(2, None, 0, -0.125));
+        rows.push(FphaHyperplaneRow {
+            kappa: 2.0,
+            ..intercept_row(2, None, 0, -5.0)
+        });
         let data_for = |rows: Vec<FphaHyperplaneRow>| {
             zero_turbining_data(
                 vec![make_hydro(1, None), make_hydro(2, None)],
@@ -2194,8 +2119,7 @@ mod tests {
                 "Hydro 1",
                 [
                     "Hydro 1 -- 5 (stage, plane) pair(s) at stages 0-3, 5",
-                    "at 400 m³/s of spillage (stage 5, plane 1, storage 0 hm³, \
-                     spillage up to 2000 m³/s)",
+                    "the lowest reads -40 MW (stage 5, plane 1, storage 0 hm³)",
                 ],
             ),
             (
@@ -2203,7 +2127,7 @@ mod tests {
                 "Hydro 2",
                 [
                     "Hydro 2 -- 6 (stage, plane) pair(s) at stages 0-5",
-                    "at 800 m³/s of spillage (stage 0, plane 0,",
+                    "the lowest reads -10 MW (stage 0, plane 0,",
                 ],
             ),
         ] {
@@ -2226,35 +2150,13 @@ mod tests {
         assert_eq!(messages(&warnings), messages(&reversed));
     }
 
-    /// derived: γ₀ −10 with γᵥ = γₛ = 0 is −10 MW at every spillage.
     #[test]
-    fn precomputed_plane_negative_for_every_spillage_warns_at_zero_spillage() {
-        let row = FphaHyperplaneRow {
-            gamma_0: -10.0,
-            gamma_v: 0.0,
-            ..spill_row(1, None, 0, 0.0)
-        };
+    fn precomputed_plane_warning_names_both_outcomes() {
         let data = zero_turbining_data(
             vec![make_hydro(1, None)],
             vec![0],
             vec![fpha_everywhere(1)],
-            vec![row],
-        );
-
-        let warnings = zero_turbining_warnings(&data);
-
-        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
-        let msg = &warnings[0].message;
-        assert!(msg.contains("at 0 m³/s of spillage"), "got: {msg}");
-    }
-
-    #[test]
-    fn precomputed_plane_warning_names_both_outcomes_while_spilling() {
-        let data = zero_turbining_data(
-            vec![make_hydro(1, None)],
-            vec![0],
-            vec![fpha_everywhere(1)],
-            vec![spill_row(1, None, 0, -0.125)],
+            vec![intercept_row(1, None, 0, -10.0)],
         );
 
         let warnings = zero_turbining_warnings(&data);
@@ -2263,8 +2165,8 @@ mod tests {
         let msg = &warnings[0].message;
         assert!(
             msg.ends_with(
-                "so while it spills the hydro turbines water at 0 MW, or reports \
-                 fpha_violation_mw where turbining cannot lift the plane to 0 MW"
+                "so the hydro turbines water at 0 MW, or reports fpha_violation_mw where \
+                 turbining cannot lift the plane to 0 MW"
             ),
             "got: {msg}"
         );
@@ -2276,7 +2178,10 @@ mod tests {
             vec![make_hydro(1, None)],
             vec![0, 1, 2],
             vec![fpha_from(1, 1, None)],
-            vec![spill_row(1, None, 0, -0.125), make_fpha_row(1, Some(2), 0)],
+            vec![
+                intercept_row(1, None, 0, -10.0),
+                make_fpha_row(1, Some(2), 0),
+            ],
         );
 
         let warnings = zero_turbining_warnings(&data);
@@ -2289,8 +2194,8 @@ mod tests {
         );
     }
 
-    /// derived: at v_min 400 the corner is 100 + 0.5 · 400 − 0.125 · 2 000 = 50; at
-    /// v_min 200 it crosses at (100 + 0.5 · 200) / 0.125 = 1 600.
+    /// derived: with γᵥ 0.5 the plane reads −150 + 0.5 · 400 = 50 at v_min 400 and
+    /// −150 + 0.5 · 200 = −50 at v_min 200.
     #[test]
     fn precomputed_plane_check_reads_v_min_from_the_fitting_window() {
         let window_from = |volume_min_hm3: f64| FphaColumnLayout {
@@ -2307,7 +2212,7 @@ mod tests {
                 vec![make_hydro(1, None)],
                 vec![0],
                 vec![fpha_from(1, 0, layout)],
-                vec![spill_row(1, None, 0, -0.125)],
+                vec![intercept_row(1, None, 0, -150.0)],
             ))
         };
 
@@ -2317,60 +2222,18 @@ mod tests {
 
         assert!(high.is_empty(), "no warning expected, got: {high:?}");
         assert_eq!(low.len(), 1, "exactly one warning: {low:?}");
-        for expected in ["at 1600 m³/s", "storage 200 hm³"] {
-            assert!(
-                low[0].message.contains(expected),
-                "missing {expected:?} in: {}",
-                low[0].message
-            );
-        }
+        assert!(
+            low[0]
+                .message
+                .contains("reads -50 MW (stage 0, plane 0, storage 200 hm³)"),
+            "got: {}",
+            low[0].message
+        );
         assert_eq!(unwindowed.len(), 1, "exactly one warning: {unwindowed:?}");
         assert!(
             unwindowed[0].message.contains("storage 0 hm³"),
             "got: {}",
             unwindowed[0].message
-        );
-    }
-
-    /// derived: S_ref 500 gives 100 − 0.125 · 500 = 37.5; a history mean of 100 gives
-    /// S_ref 2 · 100 = 200 and 100 − 0.125 · 200 = 75; neither gives 2 · 1 000.
-    #[test]
-    fn precomputed_plane_check_resolves_the_spillage_range_like_the_fit() {
-        let data_with = |layout: Option<FphaColumnLayout>| {
-            zero_turbining_data(
-                vec![make_hydro(1, None)],
-                vec![0],
-                vec![fpha_from(1, 0, layout)],
-                vec![spill_row(1, None, 0, -0.125)],
-            )
-        };
-        let declared = data_with(Some(FphaColumnLayout {
-            spillage_fit_max_m3s: Some(500.0),
-            ..precomputed_layout()
-        }));
-        let from_history = ParsedData {
-            inflow_history: make_history_rows(1, 12),
-            ..data_with(None)
-        };
-        let neither = data_with(None);
-
-        let declared = zero_turbining_warnings(&declared);
-        let from_history = zero_turbining_warnings(&from_history);
-        let neither = zero_turbining_warnings(&neither);
-
-        assert!(
-            declared.is_empty(),
-            "no warning expected, got: {declared:?}"
-        );
-        assert!(
-            from_history.is_empty(),
-            "no warning expected, got: {from_history:?}"
-        );
-        assert_eq!(neither.len(), 1, "exactly one warning: {neither:?}");
-        assert!(
-            neither[0].message.contains("spillage up to 2000 m³/s"),
-            "got: {}",
-            neither[0].message
         );
     }
 
@@ -2407,7 +2270,7 @@ mod tests {
                 vec![make_hydro(1, None)],
                 vec![0, 1],
                 vec![config_with_first_source(source)],
-                vec![spill_row(1, None, 0, -0.125)],
+                vec![intercept_row(1, None, 0, -10.0)],
             ))
         };
 
@@ -2428,7 +2291,7 @@ mod tests {
                 vec![hydro],
                 vec![0],
                 vec![fpha_everywhere(1)],
-                vec![spill_row(1, None, 0, -0.125)],
+                vec![intercept_row(1, None, 0, -10.0)],
             ))
         };
         let mut dormant = make_hydro(1, None);
@@ -2562,7 +2425,7 @@ mod tests {
     }
 
     /// A stationary mixed-order (`orders = [3, 1, 2, 1]`) hydro -- the same
-    /// fixture `t2_mixed_orders_gate_passes` verifies stationary --
+    /// fixture `mixed_orders_pass_stationarity_gate` verifies stationary --
     /// produces no stationarity rejection.
     #[test]
     fn par_gate_accepts_stationary() {
@@ -2790,7 +2653,7 @@ mod tests {
     /// `LoadFactorEntry` with a `block_id` not present in the stage's blocks
     /// still produces 1 rule-17 `BusinessRuleViolation` error.
     #[test]
-    fn test_rule17_invalid_block_id_still_errors() {
+    fn test_rule17_invalid_block_id_errors() {
         let mut data = make_data_5b(
             vec![],
             make_stages_with_block(0),
@@ -2834,8 +2697,7 @@ mod tests {
     /// A deterministic load (`std_mw == 0.0`) with defined block factors
     /// produces zero ModelQuality warnings mentioning "deterministic" or "no
     /// effect" — block factors are applied at σ = 0 (see
-    /// `test_block_factors_applied_at_zero_sigma` in `novomodelo-stochastic`), so
-    /// the retired rule-18 claim does not resurface.
+    /// `test_block_factors_applied_at_zero_sigma` in `novomodelo-stochastic`).
     #[test]
     fn test_deterministic_load_emits_no_factor_warning() {
         let mut data = make_data_5b(
@@ -3526,7 +3388,7 @@ mod tests {
     /// tolerance is still rejected — the tolerance must have power, not just
     /// admit the reported round-off.
     #[test]
-    fn test_filling_sufficiency_beyond_tolerance_still_errors() {
+    fn test_filling_sufficiency_beyond_tolerance_errors() {
         let zeta = 720.0 * M3S_TO_HM3;
         let rate = 30.0;
         let capacity = zeta * rate + zeta * rate;
@@ -4212,12 +4074,11 @@ mod tests {
         );
     }
 
-    // ── Rule 50: external inflow σ = 0, all-stages scope ──────────────────────
+    // ── External σ = 0 columns ────────────────────────────────────────────────
 
     /// Two-stage graph: stage 0 is a single-node trunk (column 0 only, always
     /// a constant column); stage 1 fans into two children pointing at columns
-    /// 0 and 1, whose values the caller controls -- the branching shape rule
-    /// 50's all-stages scope must cover identically at both positions.
+    /// 0 and 1, whose values the caller controls.
     fn trunk_and_fan_graph(hydro: i32, fan_col0: f64, fan_col1: f64) -> ParsedData {
         let inflow = vec![
             inflow_row(hydro, 0, 0, 10.0),
@@ -4262,9 +4123,6 @@ mod tests {
         data
     }
 
-    /// One AR lag coefficient for `hydro` -- enough to give the hydro an AR
-    /// order > 0 for rule 50's inflow decision, which reads only the set of
-    /// hydros declaring any coefficient, not which stage it is declared at.
     fn ar_coefficient_row(hydro: i32, stage_id: i32) -> InflowArCoefficientRow {
         InflowArCoefficientRow {
             hydro_id: EntityId::from(hydro),
@@ -4274,63 +4132,28 @@ mod tests {
         }
     }
 
-    /// A zero σ at stage 0 — the single-node trunk every path shares — is
-    /// rejected for an AR(p > 0) hydro, naming the entity and the stage, even
-    /// though stage 0 never branches; the message states the real,
-    /// deterministic-PAR-output reason and never repeats the retired
-    /// "inversion is undefined" phrasing.
+    /// A constant external inflow column under an autoregressive model is
+    /// accepted at the trunk and at the fan stage: the noise inversion uses the
+    /// model's own σ, which is positive, so the constant replays as recorded.
     #[test]
-    fn rule_50_inflow_ar_positive_zero_sigma_rejects_at_trunk_stage() {
-        let mut data = trunk_and_fan_graph(1, 20.0, 30.0);
-        data.inflow_ar_coefficients = vec![ar_coefficient_row(1, 0)];
-        let ctx = run(&data);
-        assert!(
-            ctx.errors().iter().any(|e| {
-                e.kind == ErrorKind::BusinessRuleViolation
-                    && e.message.contains("entity 1")
-                    && e.message.contains("stage 0")
-                    && e.message.contains("deterministic PAR output")
-            }),
-            "a zero σ at the trunk stage must be rejected for an AR(p > 0) hydro, naming \
-             entity and stage and stating the deterministic-PAR-output reason: {:?}",
-            error_msgs(&ctx)
-        );
-        assert!(
-            !error_msgs(&ctx)
-                .iter()
-                .any(|m| m.contains("inversion is undefined")),
-            "the rejection must not repeat the retired 'inversion is undefined' phrasing: {:?}",
-            error_msgs(&ctx)
-        );
-    }
-
-    /// A zero σ at stage 1 — the fan, both columns equal-valued — is rejected
-    /// the same way for an AR(p > 0) hydro, proving the reject is not
-    /// trunk-only.
-    #[test]
-    fn rule_50_inflow_ar_positive_zero_sigma_rejects_at_fan_stage() {
+    fn external_constant_inflow_column_under_an_ar_model_is_accepted() {
         let mut data = trunk_and_fan_graph(1, 20.0, 20.0);
-        data.inflow_ar_coefficients = vec![ar_coefficient_row(1, 1)];
+        for stage in &mut data.stages.stages {
+            stage.season_id = Some(0);
+        }
+        data.inflow_ar_coefficients = vec![ar_coefficient_row(1, 0), ar_coefficient_row(1, 1)];
         let ctx = run(&data);
         assert!(
-            ctx.errors().iter().any(|e| {
-                e.kind == ErrorKind::BusinessRuleViolation
-                    && e.message.contains("entity 1")
-                    && e.message.contains("stage 1")
-                    && e.message.contains("deterministic PAR output")
-            }),
-            "a zero σ at the fan stage must be rejected for an AR(p > 0) hydro, naming \
-             entity and stage, not only at trunk stages: {:?}",
+            !ctx.has_errors(),
+            "a constant inflow column under an AR model must be accepted: {:?}",
             error_msgs(&ctx)
         );
     }
 
-    /// An AR(0) hydro's deterministic (σ = 0) external inflow is accepted:
-    /// its deterministic base is exactly μ, so the constant external value
-    /// simply IS that base — no rule 50 error, the flip of the retired
-    /// unconditional-inflow-reject behavior.
+    /// An AR(0) hydro's constant external inflow column is accepted: its
+    /// deterministic base is the column's mean, so the constant is the base.
     #[test]
-    fn rule_50_inflow_ar0_zero_sigma_accepted() {
+    fn external_constant_inflow_column_without_an_ar_model_is_accepted() {
         let data = external_data(
             vec![0],
             vec![inflow_row(1, 0, 0, 100.0), inflow_row(1, 0, 1, 100.0)],
@@ -4349,10 +4172,9 @@ mod tests {
         );
     }
 
-    /// An External-scheme deck with NO seasonal-stats file for that class (an
-    /// absent `load_seasonal_stats.parquet`, the file that used to be the
-    /// sole source of rule 50's load σ) validates without error —
-    /// seasonal-stats files are optional under External.
+    /// An External-scheme deck with no seasonal-stats file for that class (no
+    /// `load_seasonal_stats.parquet`) validates without error — seasonal-stats
+    /// files are optional under External.
     #[test]
     fn external_load_deck_validates_without_error_when_seasonal_stats_absent() {
         let load = vec![
@@ -4382,11 +4204,11 @@ mod tests {
         );
     }
 
-    /// A σ = 0 external NCS column whose values all equal μ is accepted --
-    /// rule 50 no longer applies any σ check to NCS at all, so the seasonal μ
-    /// is irrelevant either way (see the "differs" companion below).
+    /// A σ = 0 external NCS column whose values all equal μ is accepted; the
+    /// seasonal μ plays no part under External (see the "differs" companion
+    /// below).
     #[test]
-    fn rule_50_ncs_zero_sigma_accepts_when_value_equals_mean() {
+    fn external_ncs_zero_sigma_accepts_when_value_equals_mean() {
         let ncs = vec![
             ExternalNcsRow {
                 stage_id: 0,
@@ -4418,11 +4240,9 @@ mod tests {
 
     /// The same σ = 0 NCS column with one value diverging from μ is likewise
     /// accepted: under External, NCS's μ is defined by the external file
-    /// itself, so there is no seasonal μ left to disagree with — the retired
-    /// "σ = 0 requires every value to equal μ" branch no longer applies to
-    /// load/NCS.
+    /// itself, so there is no seasonal μ left to disagree with.
     #[test]
-    fn rule_50_ncs_zero_sigma_accepts_when_value_differs_from_seasonal_mean() {
+    fn external_ncs_zero_sigma_accepts_when_value_differs_from_seasonal_mean() {
         let ncs = vec![
             ExternalNcsRow {
                 stage_id: 0,
@@ -4447,16 +4267,15 @@ mod tests {
         let ctx = run(&data);
         assert!(
             !ctx.has_errors(),
-            "a σ = 0 NCS column with a value differing from the seasonal μ must be accepted \
-             now that rule 50 no longer checks load/NCS: {:?}",
+            "a σ = 0 NCS column with a value differing from the seasonal μ must be accepted: {:?}",
             error_msgs(&ctx)
         );
     }
 
     /// A σ = 0 external load library whose values all equal μ is accepted the
-    /// same way as NCS -- rule 50 does not check load/NCS at all.
+    /// same way as NCS.
     #[test]
-    fn rule_50_load_zero_sigma_accepts_when_value_equals_mean() {
+    fn external_load_zero_sigma_accepts_when_value_equals_mean() {
         let load = vec![
             ExternalLoadRow {
                 stage_id: 0,
@@ -4488,10 +4307,10 @@ mod tests {
 
     /// A σ = 0 external load column with a value differing from the seasonal
     /// μ is accepted: under External, load's μ is defined by the external
-    /// file itself, so editing `load_seasonal_stats.parquet` is no longer
-    /// required to keep a deterministic load value from being rejected.
+    /// file itself, so the seasonal μ in `load_seasonal_stats.parquet` does not
+    /// constrain a deterministic load value.
     #[test]
-    fn rule_50_load_zero_sigma_accepts_when_value_differs_from_seasonal_mean() {
+    fn external_load_zero_sigma_accepts_when_value_differs_from_seasonal_mean() {
         let load = vec![
             ExternalLoadRow {
                 stage_id: 0,
@@ -4516,8 +4335,7 @@ mod tests {
         let ctx = run(&data);
         assert!(
             !ctx.has_errors(),
-            "a σ = 0 load column diverging from a declared seasonal μ must be accepted now \
-             that rule 50 no longer checks load: {:?}",
+            "a σ = 0 load column diverging from a declared seasonal μ must be accepted: {:?}",
             error_msgs(&ctx)
         );
     }
@@ -4526,8 +4344,7 @@ mod tests {
 
     /// An External inflow class with `std_m3s == 0.0` does not emit rule 12's
     /// warning — the external library never runs PAR generation, so the
-    /// "deterministic inflow" framing is meaningless (rule 50 rejects the same
-    /// zero σ instead).
+    /// "deterministic inflow" framing is meaningless.
     #[test]
     fn rule_12_suppressed_for_external_inflow_scheme() {
         let mut data = make_data_5b(
@@ -4563,7 +4380,7 @@ mod tests {
     /// The same `std_m3s == 0.0` row under the default (generated) inflow
     /// scheme still emits rule 12's warning.
     #[test]
-    fn rule_12_still_fires_for_generated_inflow_scheme() {
+    fn rule_12_fires_for_generated_inflow_scheme() {
         let data = make_data_5b(
             vec![make_hydro_ordered_penalties(1)],
             make_stages_5b(vec![0]),
@@ -4589,9 +4406,9 @@ mod tests {
     }
 
     /// A valid generated-only study (no external rows, positive σ everywhere)
-    /// is unaffected by both the rule 50 reject and the rule 12 scheme gate.
+    /// produces no error and no rule 12 warning.
     #[test]
-    fn generated_only_study_unaffected_by_rule_50_and_rule_12_changes() {
+    fn generated_only_study_with_positive_sigma_has_no_findings() {
         let data = make_data_5b(
             vec![make_hydro_ordered_penalties(1)],
             make_stages_5b(vec![0, 1]),

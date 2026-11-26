@@ -142,15 +142,10 @@ fn hydro_name(system: &System, entity_id: EntityId) -> String {
 mod tests {
     use chrono::{Months, NaiveDate};
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, Bus, ContractBlockBounds, DeficitSegment, EntityId,
-        Hydro, HydroBlockBounds, HydroStageBounds, HydroUnitGroup, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, SystemBuilder, ThermalBlockBounds,
+        DeficitSegment, EntityId, Hydro, HydroUnitGroup, ResolvedBounds, SystemBuilder,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
 
     // The summary tests construct production and evaporation result types owned by
@@ -158,63 +153,30 @@ mod tests {
     // module rather than only `summary`'s own narrow `use` block.
     use crate::HydroEnergyProductivityOverride;
     use crate::production::hydro_models::*;
-    use crate::test_support::{make_unit_group, minimal_hydros};
+    use crate::test_support::builders::{BusSpec, HydroSpec, StageSpec};
+    use crate::test_support::{build_with_resolved_tables, make_unit_group, minimal_hydros};
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 10000.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
     fn make_hydro(id: i32, model: HydroGenerationModel) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 100.0,
-            max_storage_hm3: 2000.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: model,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 500.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 1000.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_penalties(),
-        };
-        hydro.declare_mirror_unit_group(EntityId::from(10));
-        hydro
+        crate::test_support::builders::make_hydro(
+            EntityId::from(id),
+            HydroSpec {
+                name: format!("Hydro{id}"),
+                bus_id: EntityId::from(10),
+                min_storage_hm3: 100.0,
+                max_storage_hm3: 2000.0,
+                generation_model: model,
+                max_turbined_m3s: 500.0,
+                max_generation_mw: 1000.0,
+                penalties: HydroPenalties {
+                    fpha_violation_cost: 10000.0,
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        )
     }
 
     /// Build a minimal single-bus `System` with the given hydros and one study stage.
@@ -225,103 +187,63 @@ mod tests {
     }
 
     /// Build the single-bus `System` of [`make_system_for_summary`] with `n_stages`
-    /// one-block study stages and a resolved bounds table whose every (hydro, stage)
-    /// holds capacity, then let `edit` change it. `edit` addresses hydros by
-    /// canonical position.
+    /// one-block study stages and the bounds the hydros' own limits resolve to, then
+    /// let `edit` change them. `edit` addresses hydros by canonical position.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so hydros is cloned into each build"
+    )]
     fn make_system_with_bounds(
         hydros: Vec<Hydro>,
         n_stages: usize,
         edit: impl FnOnce(&mut ResolvedBounds),
     ) -> novomodelo_core::System {
-        let bus = Bus {
-            id: EntityId(10),
-            name: "B10".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let first_start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-        let stages = (0..n_stages)
-            .map(|index| {
-                let months = u32::try_from(index).unwrap();
-                Stage {
-                    index,
-                    id: i32::try_from(index).unwrap(),
-                    start_date: first_start + Months::new(months),
-                    end_date: first_start + Months::new(months + 1),
-                    season_id: Some(0),
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "S".to_string(),
-                        duration_hours: 744.0,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 3,
-                        noise_method: NoiseMethod::Saa,
-                    },
-                }
-            })
-            .collect();
-        let mut bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: hydros.len(),
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 0.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 500.0,
-                    max_generation_mw: 1000.0,
-                    ..HydroBlockBounds::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+        let bus = crate::test_support::builders::make_bus(
+            EntityId(10),
+            BusSpec {
+                name: "B10".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
             },
         );
-        edit(&mut bounds);
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(hydros)
-            .stages(stages)
-            .bounds(bounds)
-            .correlation(CorrelationModel::default())
-            .build()
-            .unwrap()
+        let first_start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let stages: Vec<Stage> = (0..n_stages)
+            .map(|index| {
+                let months = u32::try_from(index).unwrap();
+                crate::test_support::builders::make_stage(
+                    index,
+                    StageSpec {
+                        start_date: first_start + Months::new(months),
+                        end_date: first_start + Months::new(months + 1),
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        scenario_config: ScenarioSourceConfig {
+                            branching_factor: 3,
+                            noise_method: NoiseMethod::Saa,
+                        },
+                        ..StageSpec::default()
+                    },
+                )
+            })
+            .collect();
+        build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(hydros.clone())
+                    .stages(stages.clone())
+                    .correlation(CorrelationModel::default())
+            },
+            0,
+            |_, bounds, _| edit(bounds),
+        )
     }
 
     /// Build a `PrepareHydroModelsResult` for a set of hydro IDs where every
@@ -669,14 +591,14 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion: 2 constant + 2 FPHA (10 planes) + 3 evaporation / 1 without.
+    /// 2 constant + 2 FPHA (10 planes) + 3 evaporation / 1 without.
 
     #[test]
-    // Rationale: acceptance test exercises constant + FPHA + evaporation counts
+    // Rationale: the test exercises constant + FPHA + evaporation counts
     // in a single fixture; splitting into helpers would obscure the coverage
     // contract.
     #[allow(clippy::too_many_lines)]
-    fn build_hydro_model_summary_acceptance_criterion() {
+    fn build_hydro_model_summary_mixed_system() {
         // IDs 1,2 constant; IDs 3,4 FPHA with 5 planes each.
         // IDs 1,2,3 have evaporation; ID 4 does not.
         let constant_ids = [1i32, 2];

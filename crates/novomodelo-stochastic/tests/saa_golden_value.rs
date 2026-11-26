@@ -1,6 +1,7 @@
 //! Golden-value regression guard for SAA opening tree generation: any change to
-//! seed derivation, RNG, or loop order that alters the SAA output for the pinned
-//! `base_seed = 42` configuration breaks the constants below.
+//! seed derivation, RNG, or loop order that alters the SAA stream, as drawn and
+//! correlated before moment matching, for the pinned `base_seed = 42`
+//! configuration breaks the constants below.
 
 #![allow(
     clippy::unwrap_used,
@@ -9,11 +10,8 @@
     clippy::float_cmp
 )]
 
-use novomodelo_core::{EntityId, NoiseMethod, ScenarioSourceConfig, Stage};
-use novomodelo_stochastic::{
-    ClassDimensions, generate_opening_tree,
-    tree::{MomentMatching, OpeningTreeGenerationInputs},
-};
+use novomodelo_core::{NoiseMethod, ScenarioSourceConfig, Stage};
+use novomodelo_stochastic::{ClassDimensions, tree::generate::unmatched_stage_noise};
 
 mod common;
 use common::{StageSpec, identity_correlation};
@@ -45,60 +43,21 @@ const GOLDEN_S0_O2_D1: f64 = -1.619_991_803_182_488_7;
 
 #[test]
 fn saa_golden_value_regression() {
-    let stages = vec![
-        make_stage(0, 0, 3),
-        make_stage(1, 1, 3),
-        make_stage(2, 2, 3),
-    ];
+    let stage = make_stage(0, 0, 3);
     let corr = identity_correlation(&[1, 2]);
-    let entity_order = vec![EntityId(1), EntityId(2)];
 
     let dims = ClassDimensions {
         n_hydros: 2,
         n_load_buses: 0,
         n_ncs: 0,
     };
-    let tree = generate_opening_tree(
-        42,
-        &stages,
-        &corr,
-        &entity_order,
-        dims,
-        &OpeningTreeGenerationInputs {
-            moment_matching: MomentMatching::None,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let stage_noise = unmatched_stage_noise(42, &stage, 0, 3, dims, None, &corr).unwrap();
+    let opening = |o: usize| &stage_noise[o * 2..(o + 1) * 2];
 
-    assert_eq!(
-        tree.opening(0, 0)[0],
-        GOLDEN_S0_O0_D0,
-        "stage=0 opening=0 dim=0"
-    );
-    assert_eq!(
-        tree.opening(0, 0)[1],
-        GOLDEN_S0_O0_D1,
-        "stage=0 opening=0 dim=1"
-    );
-    assert_eq!(
-        tree.opening(0, 1)[0],
-        GOLDEN_S0_O1_D0,
-        "stage=0 opening=1 dim=0"
-    );
-    assert_eq!(
-        tree.opening(0, 1)[1],
-        GOLDEN_S0_O1_D1,
-        "stage=0 opening=1 dim=1"
-    );
-    assert_eq!(
-        tree.opening(0, 2)[0],
-        GOLDEN_S0_O2_D0,
-        "stage=0 opening=2 dim=0"
-    );
-    assert_eq!(
-        tree.opening(0, 2)[1],
-        GOLDEN_S0_O2_D1,
-        "stage=0 opening=2 dim=1"
-    );
+    assert_eq!(opening(0)[0], GOLDEN_S0_O0_D0, "stage=0 opening=0 dim=0");
+    assert_eq!(opening(0)[1], GOLDEN_S0_O0_D1, "stage=0 opening=0 dim=1");
+    assert_eq!(opening(1)[0], GOLDEN_S0_O1_D0, "stage=0 opening=1 dim=0");
+    assert_eq!(opening(1)[1], GOLDEN_S0_O1_D1, "stage=0 opening=1 dim=1");
+    assert_eq!(opening(2)[0], GOLDEN_S0_O2_D0, "stage=0 opening=2 dim=0");
+    assert_eq!(opening(2)[1], GOLDEN_S0_O2_D1, "stage=0 opening=2 dim=1");
 }

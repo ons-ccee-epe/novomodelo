@@ -84,12 +84,49 @@ pub enum TrainingSelection {
     Sampled {
         /// Number of forward-pass trajectories per iteration.
         forward_passes: u32,
+        /// Storage at which the first training iteration's backward pass builds
+        /// its cuts. `forward`, the default, uses the storage each forward pass
+        /// reached. `storage_grid` holds trial `k` of `N` (`N` =
+        /// `forward_passes`) at `k/N` of the way from each reservoir's minimum
+        /// to its maximum storage at every stage, so the lowest trial sits `1/N`
+        /// above the minimum and the highest at the maximum. Inflow history and
+        /// the first iteration's upper bound stay those of the forward pass, and
+        /// reservoirs that are filling or out of service keep the forward pass's
+        /// storage.
+        #[serde(default)]
+        first_iteration_trial_storage: FirstIterationTrialStorage,
     },
     /// Exhaustive enumeration of the scenario openings.
     // A braced variant, not a unit one: serde enforces `deny_unknown_fields`
     // only for braced variants of an internally tagged enum, and this variant
     // must reject a stray `forward_passes`.
     Enumerated {},
+}
+
+impl TrainingSelection {
+    /// A `sampled` selection of `forward_passes` trajectories that keeps the
+    /// forward pass's storage in the first iteration.
+    #[must_use]
+    pub const fn sampled(forward_passes: u32) -> Self {
+        Self::Sampled {
+            forward_passes,
+            first_iteration_trial_storage: FirstIterationTrialStorage::Forward,
+        }
+    }
+}
+
+/// Trial storage of the first training iteration's backward pass
+/// (`config.json → training.selection.first_iteration_trial_storage`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum FirstIterationTrialStorage {
+    /// The storage each forward pass reached.
+    #[default]
+    Forward,
+    /// An even grid of storage levels between each reservoir's minimum and
+    /// maximum storage.
+    StorageGrid,
 }
 
 /// Effective training forward-pass resolution
@@ -772,9 +809,9 @@ pub struct LipschitzConfig {
 )]
 mod tests {
     use super::{
-        BackwardScheduler, DualEdgeWeight, NonZeroU32, NonZeroUsize, PresolveMode, PriceStrategy,
-        RowSelectionConfig, ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection,
+        BackwardScheduler, DualEdgeWeight, FirstIterationTrialStorage, NonZeroU32, NonZeroUsize,
+        PresolveMode, PriceStrategy, RowSelectionConfig, ScaleStrategy, SelectionMethod,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection,
     };
     use crate::config::tests::removed_selection_method_names;
 
@@ -968,7 +1005,7 @@ mod tests {
     }
 
     /// A removed method is rejected with the message that names it and
-    /// `level1`, with or without the parameters it used to take.
+    /// `level1`, with or without a parameter beside the method tag.
     #[test]
     fn a_removed_selection_method_names_level1() {
         for removed in removed_selection_method_names() {
@@ -995,7 +1032,7 @@ mod tests {
     /// A misspelled method stays serde's unknown-variant error listing the
     /// accepted spellings, and is not reported as a removed method.
     #[test]
-    fn a_misspelled_selection_method_is_still_an_unknown_variant() {
+    fn a_misspelled_selection_method_is_an_unknown_variant() {
         let err = serde_json::from_str::<TrainingConfig>(&training_json_with_selection(
             r#"{ "method": "lml2" }"#,
         ))
@@ -1033,7 +1070,7 @@ mod tests {
     /// Any other key under `level1` stays serde's unknown-field error, whose
     /// list of expected fields is the variant's own.
     #[test]
-    fn a_foreign_level1_key_is_still_an_unknown_field() {
+    fn a_foreign_level1_key_is_an_unknown_field() {
         let err = selection_error(r#"{ "method": "level1", "tie_tolrance": 1 }"#);
         assert!(
             err.contains("unknown field `tie_tolrance`, expected `check_frequency`"),
@@ -1095,9 +1132,9 @@ mod tests {
     }
 
     /// A `training.solver.backward` block setting `presolve`, `use_warm_start`,
-    /// and `factor_pivot_threshold` round-trips into the new fields.
+    /// and `factor_pivot_threshold` round-trips into those fields.
     #[test]
-    fn backward_solver_profile_new_fields_round_trip() {
+    fn backward_solver_profile_tuning_overrides_round_trip() {
         let json = r#"{
             "selection": { "method": "sampled", "forward_passes": 4 },
             "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }],
@@ -1255,11 +1292,10 @@ mod tests {
         );
     }
 
-    /// The retired `trial_point` / `opening_block` spellings are unknown-variant
-    /// deserialize errors — no `serde(alias)` accepts them (clean break, no
-    /// deprecated-with-fallback).
+    /// The `trial_point` / `opening_block` spellings are unknown-variant
+    /// deserialize errors: no `serde(alias)` accepts them.
     #[test]
-    fn retired_scheduler_spellings_are_deserialize_error() {
+    fn trial_point_and_opening_block_scheduler_spellings_are_deserialize_errors() {
         for method in ["trial_point", "opening_block"] {
             let json = format!(
                 r#"{{
@@ -1273,7 +1309,7 @@ mod tests {
             let result = serde_json::from_str::<TrainingConfig>(&json);
             assert!(
                 result.is_err(),
-                "retired scheduler spelling '{method}' must be an unknown-variant error"
+                "scheduler spelling '{method}' must be an unknown-variant error"
             );
         }
     }
@@ -1309,12 +1345,12 @@ mod tests {
         );
     }
 
-    /// The retired root-level scheduler keys are hard-rejected, never silently
-    /// ignored: the scheduler lives under `training.parallelism`, and the
-    /// backward solve order is intrinsic (no config field selects it).
+    /// Root-level scheduler keys are hard-rejected, never silently ignored: the
+    /// scheduler lives under `training.parallelism`, and the backward solve
+    /// order is intrinsic (no config field selects it).
     #[test]
-    fn removed_root_scheduler_keys_are_rejected() {
-        for stale in [
+    fn root_scheduler_keys_are_rejected() {
+        for key in [
             r#""backward_scheduler": "opening_block""#,
             r#""opening_block_size": 4"#,
             r#""backward_opening_order": "sigma_key""#,
@@ -1323,13 +1359,13 @@ mod tests {
                 r#"{{
                     "selection": {{ "method": "sampled", "forward_passes": 4 }},
                     "stopping_rules": [{{ "type": "iteration_limit", "limit": 100 }}],
-                    {stale}
+                    {key}
                 }}"#
             );
             let result = serde_json::from_str::<TrainingConfig>(&json);
             assert!(
                 result.is_err(),
-                "removed root key must be rejected, got Ok for: {stale}"
+                "root scheduler key must be rejected, got Ok for: {key}"
             );
         }
     }
@@ -1342,15 +1378,12 @@ mod tests {
             "selection": { "method": "sampled", "forward_passes": 8 }
         }"#;
         let cfg: TrainingConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            cfg.selection,
-            Some(TrainingSelection::Sampled { forward_passes: 8 })
-        );
+        assert_eq!(cfg.selection, Some(TrainingSelection::sampled(8)));
     }
 
-    /// The removed root `forward_passes` alias is an unknown-field deserialize
-    /// error under `deny_unknown_fields`; the count lives solely in the
-    /// `selection.sampled` arm.
+    /// A root `forward_passes` key is an unknown-field deserialize error under
+    /// `deny_unknown_fields`; the count lives solely in the `selection.sampled`
+    /// arm.
     #[test]
     fn root_forward_passes_alias_is_deserialize_error() {
         let alias = r#"{
@@ -1367,10 +1400,45 @@ mod tests {
             "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }]
         }"#;
         let cfg: TrainingConfig = serde_json::from_str(arm).unwrap();
+        assert_eq!(cfg.selection, Some(TrainingSelection::sampled(4)));
+    }
+
+    #[test]
+    fn sampled_selection_reads_the_first_iteration_trial_storage() {
+        let parse = |selection: &str| {
+            serde_json::from_str::<TrainingConfig>(&format!(
+                r#"{{
+                    "stopping_rules": [{{ "type": "iteration_limit", "limit": 100 }}],
+                    "selection": {selection}
+                }}"#
+            ))
+            .expect("valid training config")
+            .selection
+        };
+
         assert_eq!(
-            cfg.selection,
-            Some(TrainingSelection::Sampled { forward_passes: 4 })
+            parse(r#"{ "method": "sampled", "forward_passes": 4 }"#),
+            Some(TrainingSelection::sampled(4))
         );
+        assert_eq!(
+            parse(
+                r#"{ "method": "sampled", "forward_passes": 4,
+                     "first_iteration_trial_storage": "storage_grid" }"#
+            ),
+            Some(TrainingSelection::Sampled {
+                forward_passes: 4,
+                first_iteration_trial_storage: FirstIterationTrialStorage::StorageGrid,
+            })
+        );
+    }
+
+    #[test]
+    fn enumerated_selection_with_trial_storage_is_deserialize_error() {
+        let json = r#"{
+            "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }],
+            "selection": { "method": "enumerated", "first_iteration_trial_storage": "storage_grid" }
+        }"#;
+        assert!(serde_json::from_str::<TrainingConfig>(json).is_err());
     }
 
     /// A count under `enumerated` is unrepresentable — `deny_unknown_fields` on

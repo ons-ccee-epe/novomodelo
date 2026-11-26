@@ -7,16 +7,16 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
+use novomodelo_core::entities::hydro::HydroPenalties;
 use novomodelo_core::{
     Block, BlockBoundsCountsSpec, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus,
     BusStagePenalties, CascadeTopology, ConstraintExpression, ContractBlockBounds, ContractType,
     EnergyContract, EntityId, FillingConfig, GenericConstraint, Hydro, HydroBlockBounds,
     HydroBlockOverride, HydroGenerationModel, HydroStageBounds, LineBlockBounds,
-    LineStagePenalties, LinearTerm, NcsStagePenalties, NoiseMethod, NonControllableSource,
-    PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation,
-    ResolvedBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-    ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig,
-    Thermal, ThermalBlockBounds, VariableRef,
+    LineStagePenalties, LinearTerm, NcsStagePenalties, NonControllableSource, PenaltiesCountsSpec,
+    PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
+    ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, SlackConfig,
+    Stage, StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -27,6 +27,9 @@ use crate::indexer::{
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
 use crate::resolved_parameters::ResolvedParameters;
+use crate::test_support::builders::{
+    self, BusSpec, ContractSpec, HydroSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
+};
 use crate::test_support::ctx_fixture::CtxFixture;
 use crate::test_support::{
     anticipated_plants_at, constant_lead_resolution, identity_hydro_cell_index, make_unit_group,
@@ -37,9 +40,8 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 
 use super::super::DeliveryRing;
 use super::super::entries::build_stage_inflow_coupling;
-use super::super::test_support::zero_hydro_penalties;
 use super::{
-    RangeCursor, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
+    RangeCursor, StageGeometry, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
     build_anticipated_decision_row_pos, build_anticipated_fishing_row_pos,
     build_anticipated_slot_row_pos, build_transit_bucket_row_pos, entity_flat,
     evaporation_slot_boundaries, fold_endpoint, variable_ref_is_block_independent,
@@ -174,28 +176,24 @@ fn minimal_stage() -> Stage {
 /// `stage_idx = 0`, while the phase gate reads `stage.id` alone — decoupling
 /// the two lets one bounds/model row serve every phase under test.
 fn stage_with_id(stage_id: i32) -> Stage {
-    Stage {
-        index: 0,
-        id: stage_id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    let mut stage = builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "BLK0".to_string(),
+                duration_hours: 744.0,
+            }],
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    );
+    stage.id = stage_id;
+    stage
 }
 
 /// Build a single hydro for the FPHA/evaporation membership fixtures.
@@ -210,89 +208,69 @@ fn membership_hydro(
     filling: Option<FillingConfig>,
     entry: Option<i32>,
 ) -> Hydro {
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(id),
-        name: format!("H{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: entry,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: if fpha {
-            HydroGenerationModel::Fpha
-        } else {
-            HydroGenerationModel::ConstantProductivity
+    builders::make_hydro(
+        EntityId(id),
+        HydroSpec {
+            name: format!("H{id}"),
+            bus_id: EntityId(1),
+            entry_stage_id: entry,
+            max_storage_hm3: 100.0,
+            generation_model: if fpha {
+                HydroGenerationModel::Fpha
+            } else {
+                HydroGenerationModel::ConstantProductivity
+            },
+            max_turbined_m3s: 50.0,
+            max_generation_mw: 45.0,
+            filling,
+            penalties: HydroPenalties {
+                fpha_violation_cost: 10000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 50.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 45.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling,
-        penalties: zero_hydro_penalties(),
-    };
-    hydro.declare_mirror_unit_group(EntityId(1));
-    hydro
+    )
 }
 
 /// Placeholder thermal at position `idx`, inert past its `id`: these tests
 /// need only the count `ctx.thermals.len()` reserves in `StageLayout`, never
 /// a bound or cost.
 fn dormant_thermal(idx: usize) -> Thermal {
-    Thermal {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 0.0,
-        anticipated_config: None,
-    }
+    builders::make_thermal(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        ThermalSpec {
+            operational_start_date: NaiveDate::default(),
+            ..ThermalSpec::default()
+        },
+    )
 }
 
 /// Placeholder bus at position `idx`, inert past its `id`: these tests need
 /// only the count `ctx.buses.len()` reserves in `StageLayout`, never a
 /// deficit segment or excess cost.
 fn dormant_bus(idx: usize) -> Bus {
-    Bus {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        deficit_segments: Vec::new(),
-        excess_cost: 0.0,
-    }
+    builders::make_bus(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        BusSpec {
+            operational_start_date: NaiveDate::default(),
+            deficit_segments: Vec::new(),
+            ..BusSpec::default()
+        },
+    )
 }
 
 /// Placeholder contract at position `idx`, inert past its `id` and
 /// `contract_type`: these tests need only the per-direction counts
 /// `StageLayout` derives from `ctx.contracts`, never a price or MW bound.
 fn dormant_contract(idx: usize, contract_type: ContractType) -> EnergyContract {
-    EnergyContract {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        contract_type,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        price_per_mwh: 0.0,
-        min_mw: 0.0,
-        max_mw: 0.0,
-    }
+    builders::make_contract(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        ContractSpec {
+            operational_start_date: NaiveDate::default(),
+            contract_type,
+            ..ContractSpec::default()
+        },
+    )
 }
 
 /// `StageLayout` built from a context with `n_anticipated == 0` has
@@ -1019,15 +997,15 @@ fn block_storage_col_resolves_all_boundaries() {
 /// `StageLayout::block_storage_col` and `StageGeometry::block_storage_col` both
 /// resolve their endpoint arms to the exact same columns `StateSpace`'s own
 /// `storage_incoming_col`/`storage_outgoing_col` accessors return, for every
-/// hydro — the migration-proof pin for routing `StorageBoundaryGrid`'s endpoint
-/// arms through those accessors instead of its own copied state bases.
+/// hydro, so `StorageBoundaryGrid`'s endpoint arms route through those
+/// accessors, never through copied state bases.
 #[test]
 fn storage_boundary_endpoints_match_state_space_accessors() {
     let mut fixtures = TwoHydroFixtures::new();
     let ctx = fixtures.make_ctx();
     let stage = stage_with_blocks(BlockMode::Chronological, 3);
     let layout = StageLayout::new(&ctx, &stage, 0);
-    let geometry = layout.geometry.clone();
+    let geometry = &layout.geometry;
     assert!(ctx.state.hydro_count >= 2);
     let mut compared = 0;
     for h in 0..ctx.state.hydro_count {
@@ -1134,8 +1112,6 @@ fn parallel_inflow_coupling_enters_each_target_water_row_once() {
 /// hydro on a chronological stage.
 #[test]
 fn water_balance_row_collapses_parallel_blocks_and_strides_chronological_blocks() {
-    use super::StageGeometry;
-
     let parallel = StageGeometry {
         water_balance: BlockRowFamily::one_per_entity(2..4),
         n_blks: 3,
@@ -1171,8 +1147,6 @@ fn water_balance_row_collapses_parallel_blocks_and_strides_chronological_blocks(
 /// regardless of `block_mode`.
 #[test]
 fn load_balance_row_strides_buses_by_the_block_count() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         load_balance: BlockRowFamily::per_block(10..22),
         n_blks: 4,
@@ -1193,8 +1167,6 @@ fn load_balance_row_strides_buses_by_the_block_count() {
 /// `family.start + local`.
 #[test]
 fn stage_geometry_entity_col_accessors_match_hand_offsets() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         anticipated_decision: 40..43,
         inflow_slack: 10..13,
@@ -1226,13 +1198,59 @@ fn stage_geometry_entity_col_accessors_match_hand_offsets() {
 #[test]
 #[should_panic(expected = "outside")]
 fn inflow_slack_col_rejects_a_hydro_past_the_family() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         inflow_slack: 10..13,
         ..crate::test_support::equipment_free_geometry(&[0]).remove(0)
     };
     let _ = geometry.inflow_slack_col(HydroSys::new(3));
+}
+
+/// `plant_release_cols` lists a split plant's cell turbine columns in cell
+/// order, then its spillage column.
+#[test]
+fn plant_release_cols_lists_every_cell_turbine_then_the_spillage() {
+    let mut fixtures = TwoHydroMultiBusFixtures::new(true);
+    let ctx = fixtures.make_ctx();
+    let stage = stage_with_blocks(BlockMode::Parallel, 3);
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    let geometry = &layout.geometry;
+    let plant = HydroSys::new(1);
+    let blk = BlockIdx::new(1);
+
+    let release: Vec<usize> = geometry
+        .plant_release_cols(ctx.hydro_cell_index, plant, blk)
+        .collect();
+
+    assert_eq!(
+        release,
+        vec![
+            geometry.turbine_col(HydroCell::new(1), blk),
+            geometry.turbine_col(HydroCell::new(2), blk),
+            geometry.spillage_col(plant, blk),
+        ]
+    );
+}
+
+/// `effective_inflow_slack_col` yields the plant's slack column under the two
+/// truncation methods and `None` under `Penalty` and `None`.
+#[test]
+fn effective_inflow_slack_col_is_some_only_under_truncation() {
+    use crate::inflow_method::InflowNonNegativityMethod;
+
+    let geometry = StageGeometry {
+        inflow_slack: 10..13,
+        ..crate::test_support::equipment_free_geometry(&[0]).remove(0)
+    };
+    let plant = HydroSys::new(1);
+    let slack_of = |method| geometry.effective_inflow_slack_col(method, plant);
+
+    assert_eq!(slack_of(InflowNonNegativityMethod::Truncation), Some(11));
+    assert_eq!(
+        slack_of(InflowNonNegativityMethod::TruncationWithPenalty),
+        Some(11)
+    );
+    assert_eq!(slack_of(InflowNonNegativityMethod::Penalty), None);
+    assert_eq!(slack_of(InflowNonNegativityMethod::None), None);
 }
 
 // ── FPHA-local inverse map ───────────────────────────────────────────────
@@ -1371,7 +1389,10 @@ fn fpha_mix_with_dead_blocks(n_blks: usize, dead_blocks: &[usize]) -> FphaMixFix
             n_stages: 1,
         },
         &PenaltiesDefaults {
-            hydro: zero_hydro_penalties(),
+            hydro: HydroPenalties {
+                fpha_violation_cost: 10000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },
             ncs: NcsStagePenalties {
@@ -2045,7 +2066,7 @@ fn assert_block_strided_addresses(layout: &StageLayout) -> [usize; 6] {
     }
 
     let n_blks = layout.clock.n_blks();
-    let geometry = layout.geometry.clone();
+    let geometry = &layout.geometry;
     let oper = &layout.oper_violation;
 
     [
@@ -2164,7 +2185,7 @@ fn anticipated_decision_columns_placed_between_thermal_and_line_fwd() {
 ///
 /// `n_ant_state = n_anticipated * k_max = 2 * 3 = 6` and the in-LP ring's TWO
 /// `n_ant_state`-wide blocks (`commit_out` outgoing +
-/// `commit_in` incoming) together shift `theta` from the legacy
+/// `commit_in` incoming) together shift `theta` from the anticipation-free
 /// `N*(3+L) = 0` to `0 + 2*6 = 12`, so decisions begin at 13.
 ///
 /// The general formula (any N, L, B) is
@@ -2372,8 +2393,8 @@ fn build_anticipated_slot_row_pos_study_only_byte_identity() {
 /// 2`, depth `2` reaches delivery target `m = 5` — a POST-STUDY stage
 /// (`m >= n_decision`). `decider[5] = Some(1)`: not a fresh deposit at stage
 /// 2 (`Some(1) != Some(2)`) and ready (`1 <= 2`), so slot `5 % 4 = 1` must be
-/// `Some` — an interior carry — rather than masked by the retired
-/// `m >= n_stages` bound.
+/// `Some` — an interior carry — rather than masked by an
+/// `m >= n_stages` study-horizon bound.
 #[test]
 fn build_anticipated_slot_row_pos_extended_axis_carries_post_study_target_m5() {
     let k_max = 4;
@@ -2618,8 +2639,8 @@ fn anticipated_slot_row_pos_masks_per_plant_at_the_extended_axis_bound() {
 /// Leads `(1, 3)`, `k_max = 3`, 4 study stages, no post-study calendar. At
 /// every stage the mask's commitment-hold tail must equal the union, over
 /// every stage, of the LP's own carry map ([`build_anticipated_slot_row_pos`])
-/// plus its deposit map ([`build_anticipated_decision_row_pos`]) — never the
-/// retired per-plant-lead-bounded rule, under which the lead-1 plant's slot 1
+/// plus its deposit map ([`build_anticipated_decision_row_pos`]) — never a
+/// per-plant-lead-bounded rule, under which the lead-1 plant's slot 1
 /// at stage 0 would be excluded even though the LP latches it (a fresh
 /// deposit).
 #[test]
@@ -2854,7 +2875,7 @@ fn test_layout_state_out_def_rows_zero_when_all_inactive() {
 
 /// Zero-anticipated layouts emit no `anticipated_state_out_def` rows.
 #[test]
-fn test_layout_no_anticipated_unchanged_num_cols() {
+fn test_layout_no_anticipated_emits_no_state_out_def_rows() {
     let mut fixtures = ZeroEntityFixtures::new();
     let ctx = fixtures.make_ctx(vec![], &[]);
     let stage = minimal_stage();
@@ -2930,18 +2951,17 @@ struct PumpingFixtures {
 impl PumpingFixtures {
     fn new(n_pumping: usize, n_stages: usize) -> Self {
         let stations = (0..n_pumping)
-            .map(|i| PumpingStation {
-                id: EntityId(i as i32),
-                name: format!("P{i}"),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(0),
-                source_hydro_id: EntityId(0),
-                destination_hydro_id: EntityId(1),
-                entry_stage_id: None,
-                exit_stage_id: None,
-                consumption_mw_per_m3s: 0.5,
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 10.0,
+            .map(|i| {
+                builders::make_pumping_station(
+                    EntityId(i as i32),
+                    PumpingSpec {
+                        name: format!("P{i}"),
+                        destination_hydro_id: EntityId(1),
+                        consumption_mw_per_m3s: 0.5,
+                        max_flow_m3s: 10.0,
+                        ..PumpingSpec::default()
+                    },
+                )
             })
             .collect();
         Self {
@@ -2980,7 +3000,7 @@ impl PumpingFixtures {
 ///
 /// Pinning `n_pumping == 0`, `col_pumping_start == col_ncs_start`, and the
 /// exact `num_cols`/equipment starts proves that reserving the pumping region
-/// does not move any pre-existing column when there are no stations.
+/// does not move any other column when there are no stations.
 #[test]
 fn pumping_layout_inert_when_no_stations() {
     let mut fixtures = ZeroEntityFixtures::new();
@@ -3006,7 +3026,7 @@ fn pumping_layout_inert_when_no_stations() {
         "col_pumping_start must equal col_ncs_start (col_ncs_end) when no stations"
     );
 
-    // Pre-existing column starts for the zero-entity, single-block layout:
+    // Column starts for the zero-entity, single-block layout:
     // theta == 0, every equipment/slack/NCS region empty starting at theta+1.
     let idx = state_layout(ctx.hydros.len(), ctx.state.max_par_order);
     let expected_start = idx.theta + 1;
@@ -3796,34 +3816,28 @@ fn fpha_slack_range_follows_floor_family() {
 
 /// Minimal non-controllable source for the equipment column pins.
 fn make_ncs(id: i32) -> NonControllableSource {
-    NonControllableSource {
-        id: EntityId(id),
-        name: format!("W{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        max_generation_mw: 100.0,
-        allow_curtailment: true,
-        curtailment_cost: 0.0,
-    }
+    builders::make_ncs(
+        EntityId(id),
+        NcsSpec {
+            name: format!("W{id}"),
+            bus_id: EntityId(1),
+            ..NcsSpec::default()
+        },
+    )
 }
 
 /// Minimal pumping station for the equipment column pins.
 fn make_pumping_station(id: i32) -> PumpingStation {
-    PumpingStation {
-        id: EntityId(id),
-        name: format!("P{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        source_hydro_id: EntityId(1),
-        destination_hydro_id: EntityId(2),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        consumption_mw_per_m3s: 0.0,
-        min_flow_m3s: 0.0,
-        max_flow_m3s: 0.0,
-    }
+    builders::make_pumping_station(
+        EntityId(id),
+        PumpingSpec {
+            name: format!("P{id}"),
+            bus_id: EntityId(1),
+            source_hydro_id: EntityId(1),
+            destination_hydro_id: EntityId(2),
+            ..PumpingSpec::default()
+        },
+    )
 }
 
 /// Per-family count of addresses [`compare_column_addresses`] compared, so a
@@ -4035,16 +4049,15 @@ fn transit_bucket_addressing_matches_state_space_bucket_accessors() {
 
 /// Compares every index of the builder's eight hand-built row families on
 /// `layout` against a frozen reference formula (job 3,
-/// `docs/design/lp-builder-contract.md`): the left side below is written
-/// once and never changes across this migration's commits; the right side
-/// tracks each site's own production expression, so this test pins the new
-/// accessor or primitive against the old derivation as production moves onto
-/// it. Returns how many addresses each family compared, in family order
+/// `docs/design/lp-builder-contract.md`): the left side below is the frozen
+/// reference, the right side each site's own production expression, so any
+/// change to a production row address fails here. Returns how many addresses
+/// each family compared, in family order
 /// (fishing, state-out-def, slot definition, transit definition, filling
 /// target, floor, evaporation, generic); a family empty on this particular
 /// `layout` compares zero.
 fn assert_row_addresses(layout: &StageLayout) -> [usize; 8] {
-    let geom = layout.geometry.clone();
+    let geom = &layout.geometry;
     let anticipated = &layout.anticipated;
     let mut counts = [0usize; 8];
 
@@ -4427,28 +4440,24 @@ fn two_sided_real_layout_allocates_minus_slack_column() {
     };
     let ctx = fixture.ctx();
 
-    let stage = Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::default(),
-        end_date: NaiveDate::default(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 730.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    let stage = builders::make_stage(
+        0,
+        StageSpec {
+            start_date: NaiveDate::default(),
+            end_date: NaiveDate::default(),
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "BLK0".to_string(),
+                duration_hours: 730.0,
+            }],
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
+    );
 
     let layout = StageLayout::new(&ctx, &stage, 0);
 

@@ -121,13 +121,12 @@ estimates the spatial correlation unless `scenarios/correlation.json` is
 supplied. The module docs of `scenarios/estimation.rs` give the full path
 matrix. `config.estimation` controls the fit:
 
-| Field                         | Type                         | Default     | Description                                                                                                                                                                                                          |
-| ----------------------------- | ---------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `max_order`                   | `u32`                        | `6`         | Maximum AR lag order considered during model selection                                                                                                                                                               |
-| `order_selection`             | `"pacf"` \| `"pacf_annual"`  | `"pacf"`    | PACF significance testing, optionally with an annual component (PAR(p)-A)                                                                                                                                            |
-| `min_observations_per_season` | `u32`                        | `30`        | Minimum observations required per `(entity, season)` group                                                                                                                                                           |
-| `max_coefficient_magnitude`   | `f64` \| `null`              | `null`      | Reduces an (entity, season) fit to order 0 when any AR coefficient's magnitude exceeds this bound; `null` disables the check                                                                                         |
-| `correlation_target`          | `"inflows"` \| `"residuals"` | `"inflows"` | Series the spatial correlation is estimated from when no `scenarios/correlation.json` is supplied: the standardized historical inflows or the AR residuals. Evaluation option, expected to be removed once evaluated |
+| Field                         | Type                        | Default  | Description                                                                                                                  |
+| ----------------------------- | --------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `max_order`                   | `u32`                       | `6`      | Maximum AR lag order considered during model selection                                                                       |
+| `order_selection`             | `"pacf"` \| `"pacf_annual"` | `"pacf"` | PACF significance testing, optionally with an annual component (PAR(p)-A)                                                    |
+| `min_observations_per_season` | `u32`                       | `30`     | Minimum observations required per `(entity, season)` group                                                                   |
+| `max_coefficient_magnitude`   | `f64` \| `null`             | `null`   | Reduces an (entity, season) fit to order 0 when any AR coefficient's magnitude exceeds this bound; `null` disables the check |
 
 The estimation path additionally requires `season_definitions` in
 `stages.json` (to group observations by season) and at least one history

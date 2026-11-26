@@ -57,7 +57,7 @@ pub struct PenaltiesOverrides<'a> {
 /// ```
 /// use chrono::NaiveDate;
 /// use novomodelo_core::EntityId;
-/// use novomodelo_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource};
+/// use novomodelo_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource, TailraceFlow};
 /// use novomodelo_io::constraints::HydroPenaltyOverrideRow;
 /// use novomodelo_io::resolution::{resolve_penalties, PenaltiesEntitySlices, PenaltiesOverrides};
 ///
@@ -94,6 +94,8 @@ pub struct PenaltiesOverrides<'a> {
 ///     max_storage_hm3: 100.0,
 ///     min_outflow_m3s: 0.0,
 ///     max_outflow_m3s: None,
+///     min_spillage_m3s: None,
+///     max_spillage_m3s: None,
 ///     generation_model: HydroGenerationModel::ConstantProductivity,
 ///     specific_productivity_mw_per_m3s_per_m: None,
 ///     min_turbined_m3s: 0.0,
@@ -109,6 +111,7 @@ pub struct PenaltiesOverrides<'a> {
 ///     diversion: None,
 ///     filling: None,
 ///     penalties,
+///     tailrace_flow: TailraceFlow::default(),
 /// };
 ///
 /// let hydros = vec![make_hydro(0), make_hydro(1)];
@@ -420,13 +423,9 @@ pub fn resolve_penalties(
 )]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
-    use novomodelo_core::entities::{
-        Bus, DeficitSegment, HydroGenerationModel, HydroPenalties, Line, NonControllableSource,
-    };
+    use crate::test_support::{make_bus_with_deficit, make_global, penalties_all};
+    use novomodelo_core::entities::{Bus, HydroPenalties, Line, NonControllableSource};
     use novomodelo_core::{HydroPenaltyOverrides, resolve_hydro_penalties};
-
-    use crate::test_support::make_global;
 
     /// Build a 0-based consecutive stage_index map: {0→0, 1→1, …, (n-1)→(n-1)}.
     fn si(n: usize) -> HashMap<i32, usize> {
@@ -468,102 +467,40 @@ mod tests {
 
     /// Build a `Hydro` with all 11 penalty fields set to the given value.
     fn make_hydro(id: i32, penalty_value: f64) -> Hydro {
-        Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 50.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: penalty_value,
-                diversion_cost: penalty_value,
-                turbined_cost: penalty_value,
-                storage_violation_below_cost: penalty_value,
-                filling_target_violation_cost: penalty_value,
-                turbined_violation_below_cost: penalty_value,
-                outflow_violation_below_cost: penalty_value,
-                outflow_violation_above_cost: penalty_value,
-                generation_violation_below_cost: penalty_value,
-                fpha_violation_cost: penalty_value,
-                evaporation_violation_cost: penalty_value,
-                water_withdrawal_violation_cost: penalty_value,
-                water_withdrawal_violation_pos_cost: penalty_value,
-                water_withdrawal_violation_neg_cost: penalty_value,
-                evaporation_violation_pos_cost: penalty_value,
-                evaporation_violation_neg_cost: penalty_value,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.max_storage_hm3 = 100.0;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 50.0;
+        hydro.penalties = penalties_all(penalty_value);
+        hydro
     }
 
     /// Build a `Hydro` with distinct penalty values for each field.
     fn make_hydro_distinct_penalties(id: i32) -> Hydro {
-        Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 50.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.02,
-                turbined_cost: 0.03,
-                storage_violation_below_cost: 1000.0,
-                filling_target_violation_cost: 5000.0,
-                turbined_violation_below_cost: 500.0,
-                outflow_violation_below_cost: 400.0,
-                outflow_violation_above_cost: 300.0,
-                generation_violation_below_cost: 200.0,
-                fpha_violation_cost: 2000.0,
-                evaporation_violation_cost: 150.0,
-                water_withdrawal_violation_cost: 100.0,
-                water_withdrawal_violation_pos_cost: 100.0,
-                water_withdrawal_violation_neg_cost: 100.0,
-                evaporation_violation_pos_cost: 150.0,
-                evaporation_violation_neg_cost: 150.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.max_storage_hm3 = 100.0;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 50.0;
+        hydro.penalties = HydroPenalties {
+            spillage_cost: 0.01,
+            diversion_cost: 0.02,
+            turbined_cost: 0.03,
+            storage_violation_below_cost: 1000.0,
+            filling_target_violation_cost: 5000.0,
+            turbined_violation_below_cost: 500.0,
+            outflow_violation_below_cost: 400.0,
+            outflow_violation_above_cost: 300.0,
+            generation_violation_below_cost: 200.0,
+            fpha_violation_cost: 2000.0,
+            evaporation_violation_cost: 150.0,
+            water_withdrawal_violation_cost: 100.0,
+            water_withdrawal_violation_pos_cost: 100.0,
+            water_withdrawal_violation_neg_cost: 100.0,
+            evaporation_violation_pos_cost: 150.0,
+            evaporation_violation_neg_cost: 150.0,
+            inflow_nonnegativity_cost: 1000.0,
+        };
+        hydro
     }
 
     fn make_hydro_with_directional_costs(id: i32) -> Hydro {
@@ -576,46 +513,21 @@ mod tests {
     }
 
     fn make_bus(id: i32, excess_cost: f64) -> Bus {
-        Bus {
-            id: EntityId::from(id),
-            name: format!("Bus {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost,
-        }
+        let mut bus = make_bus_with_deficit(id, 500.0);
+        bus.excess_cost = excess_cost;
+        bus
     }
 
     fn make_line(id: i32, exchange_cost: f64) -> Line {
-        Line {
-            id: EntityId::from(id),
-            name: format!("Line {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId::from(1),
-            target_bus_id: EntityId::from(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 100.0,
-            reverse_capacity_mw: 100.0,
-            losses_percent: 0.0,
-            exchange_cost,
-        }
+        let mut line = crate::test_support::make_line(id, 1, 2);
+        line.exchange_cost = exchange_cost;
+        line
     }
 
     fn make_ncs(id: i32, curtailment_cost: f64) -> NonControllableSource {
-        NonControllableSource {
-            id: EntityId::from(id),
-            name: format!("NCS {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            max_generation_mw: 100.0,
-            allow_curtailment: true,
-            curtailment_cost,
-        }
+        let mut ncs = crate::test_support::make_ncs(id, 1);
+        ncs.curtailment_cost = curtailment_cost;
+        ncs
     }
 
     fn all_none_hydro_override(hydro_id: i32, stage_id: i32) -> HydroPenaltyOverrideRow {
@@ -987,12 +899,12 @@ mod tests {
         }
     }
 
-    // ── Test: acceptance criterion — hydro spillage_cost ─────────────────────
+    // ── Test: hydro spillage_cost ────────────────────────────────────────────
 
     /// 2 hydros, 3 stages, override row for
     /// hydro_id=0, stage_id=1, spillage_cost=Some(0.05). Verifies exact cells.
     #[test]
-    fn test_ac_hydro_spillage_cost_override() {
+    fn test_hydro_spillage_cost_override() {
         let hydros = vec![make_hydro(0, 0.01), make_hydro(1, 0.01)];
         let override_row = HydroPenaltyOverrideRow {
             hydro_id: EntityId::from(0),
@@ -1013,12 +925,12 @@ mod tests {
         assert!((result.hydro_penalties(1, 1).spillage_cost - 0.01).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — bus excess_cost ───────────────────────────
+    // ── Test: bus excess_cost ──────────────────────────────────────────────────
 
     /// 1 bus with excess_cost=100.0, 2 stages,
     /// override at stage 0 to 250.0. Verifies exact cells.
     #[test]
-    fn test_ac_bus_excess_cost_override() {
+    fn test_bus_excess_cost_override() {
         let buses = vec![make_bus(0, 100.0)];
         let override_row = BusPenaltyOverrideRow {
             bus_id: EntityId::from(0),
@@ -1032,13 +944,13 @@ mod tests {
         assert!((result.bus_penalties(0, 1).excess_cost - 100.0).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — filling_target_violation_cost only ────────
+    // ── Test: filling_target_violation_cost only ───────────────────────────────
 
     /// a hydro override where only
     /// filling_target_violation_cost is Some(99999.0) and all other 10 fields
     /// are None. Verifies only that field is updated.
     #[test]
-    fn test_ac_single_field_filling_target_violation_cost() {
+    fn test_single_field_filling_target_violation_cost() {
         let hydros = vec![make_hydro_distinct_penalties(0)];
         let override_row = HydroPenaltyOverrideRow {
             hydro_id: EntityId::from(0),

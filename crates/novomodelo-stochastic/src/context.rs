@@ -45,8 +45,6 @@ pub struct OpeningTreeInputs<'a> {
     /// receive identical noise. `None` draws independent noise per stage; when
     /// `Some`, length must equal the number of study stages.
     pub noise_group_ids: Option<Vec<u32>>,
-    /// Moment matching applied to a generated tree; ignored when `user_tree` is `Some`.
-    pub moment_matching: MomentMatching,
 }
 
 use crate::{
@@ -58,7 +56,6 @@ use crate::{
     provenance::{ComponentProvenance, StochasticProvenance},
     sampling::historical::HistoricalScenarioLibrary,
     tree::{
-        MomentMatching,
         generate::{ClassDimensions, OpeningTreeGenerationInputs, generate_opening_tree},
         opening_tree::OpeningTreeView,
     },
@@ -153,7 +150,7 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 ///         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
 ///         StageStateConfig,
 ///     },
-///     entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
+///     entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow},
 /// };
 /// use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 /// use chrono::NaiveDate;
@@ -194,6 +191,8 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 /// #         max_storage_hm3: 100.0,
 /// #         min_outflow_m3s: 0.0,
 /// #         max_outflow_m3s: None,
+/// #         min_spillage_m3s: None,
+/// #         max_spillage_m3s: None,
 /// #         generation_model: HydroGenerationModel::ConstantProductivity,
 /// #         specific_productivity_mw_per_m3s_per_m: None,
 /// #         min_turbined_m3s: 0.0,
@@ -219,6 +218,7 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 /// #             evaporation_violation_pos_cost: 0.0, evaporation_violation_neg_cost: 0.0,
 /// #             inflow_nonnegativity_cost: 1000.0,
 /// #         },
+/// #         tailrace_flow: TailraceFlow::default(),
 /// #     };
 /// #     hydro.declare_mirror_unit_group(EntityId(0));
 /// #     hydro
@@ -508,8 +508,8 @@ where
 /// default (`order`/`has_annual` start at their zero value for a hydro with no
 /// models), so it is synthesized here from `moments` rather than left out:
 /// otherwise the override never fires for that hydro and `PrecomputedPar`
-/// defaults its mean/std to `0.0`, which V3.7 then rejects as a
-/// deterministic-anchor mismatch against the real external value.
+/// defaults its mean/std to `0.0`, which replays zero inflow in place of the
+/// external values.
 fn external_ar0_inflow_models(
     system: &System,
     hydro_ids: &[EntityId],
@@ -669,7 +669,6 @@ pub fn build_stochastic_context(
         historical_library,
         external_scenario_counts,
         noise_group_ids,
-        moment_matching,
     } = opening_tree_inputs;
 
     let study_stages: Vec<_> = system
@@ -707,8 +706,6 @@ pub fn build_stochastic_context(
 
         StochasticProvenance {
             opening_tree: opening_tree_prov,
-            opening_tree_moment_matching: (opening_tree_prov == ComponentProvenance::Generated)
-                .then_some(moment_matching),
             inflow_model: inflow_prov,
             inflow_scheme: schemes.inflow,
             load_scheme: schemes.load,
@@ -737,7 +734,6 @@ pub fn build_stochastic_context(
                 historical_library,
                 external_scenario_counts: external_scenario_counts.as_deref(),
                 noise_group_ids: noise_group_ids.as_deref(),
-                moment_matching,
             },
         )?
     };
@@ -826,68 +822,32 @@ mod tests {
     use std::collections::BTreeMap;
 
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
+        EntityId, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
             ExternalLoadRow, ExternalScenarioRow, InflowModel, LoadModel, NcsModel, SamplingScheme,
         },
-        temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
-        test_support::{BusSpec, HydroSpec, StageSpec, single_block},
+        test_support::InflowModelSpec,
     };
 
     use super::{
         ClassSchemes, OpeningTreeInputs, build_inflow_par, build_stochastic_context,
         noise_entity_order,
     };
-    use crate::{StochasticError, tree::MomentMatching};
-
-    fn make_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
-        novomodelo_core::test_support::make_stage(StageSpec {
-            id,
-            index: Some(index),
-            season_id: Some(0),
-            blocks: single_block("SINGLE", 744.0),
-            scenario_config: ScenarioSourceConfig {
-                branching_factor,
-                noise_method: NoiseMethod::Saa,
-            },
-            ..Default::default()
-        })
-    }
-
-    fn make_bus(id: i32) -> Bus {
-        novomodelo_core::test_support::make_bus(BusSpec {
-            id,
-            name: format!("Bus{id}"),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            ..Default::default()
-        })
-    }
-
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            ..Default::default()
-        })
-    }
+    use crate::{
+        StochasticError,
+        test_support::{deficit_bus, saa_stage, sized_hydro},
+    };
 
     fn make_inflow_model(hydro_id: i32, stage_id: i32, std: f64, coeffs: Vec<f64>) -> InflowModel {
-        InflowModel {
-            hydro_id: EntityId(hydro_id),
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
+            hydro_id,
             stage_id,
             mean_m3s: 100.0,
             std_m3s: std,
             ar_coefficients: coeffs,
-            residual_std_ratio: 1.0,
-            annual: None,
-        }
+            ..Default::default()
+        })
     }
 
     fn identity_correlation(entity_ids: &[i32]) -> CorrelationModel {
@@ -925,15 +885,11 @@ mod tests {
         assert_send_sync::<super::StochasticContext>();
     }
 
-    /// AC: build succeeds with a valid system; accessors return expected dimensions.
+    /// Build succeeds with a valid system; accessors return expected dimensions.
     #[test]
     fn build_succeeds_with_valid_system() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -944,7 +900,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -972,15 +928,11 @@ mod tests {
         assert_eq!(ctx.base_seed(), 42);
     }
 
-    /// AC: `par_lp()` returns a cache with the expected dimensions.
+    /// `par_lp()` returns a cache with the expected dimensions.
     #[test]
     fn par_lp_has_expected_dimensions() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -991,7 +943,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1018,15 +970,11 @@ mod tests {
         assert_eq!(ctx.par().n_stages(), 3);
     }
 
-    /// AC: `opening_tree()` has the expected stage and dimension counts.
+    /// `opening_tree()` has the expected stage and dimension counts.
     #[test]
     fn opening_tree_has_expected_dimensions() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 5),
-            make_stage(1, 1, 5),
-            make_stage(2, 2, 5),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 5), saa_stage(1, 1, 5), saa_stage(2, 2, 5)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1037,7 +985,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1064,11 +1012,11 @@ mod tests {
         assert_eq!(ctx.opening_tree().dim(), 2);
     }
 
-    /// AC: `tree_view()` returns a view with matching dimensions.
+    /// `tree_view()` returns a view with matching dimensions.
     #[test]
     fn tree_view_returns_valid_view() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![make_stage(0, 0, 4), make_stage(1, 1, 4)];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 4), saa_stage(1, 1, 4)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1077,7 +1025,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1106,16 +1054,16 @@ mod tests {
         assert_eq!(view.opening(0, 0), ctx.opening_tree().opening(0, 0));
     }
 
-    /// AC: invalid PAR parameters (AR order > 0 with zero std) returns `InvalidParParameters`.
+    /// Invalid PAR parameters (AR order > 0 with zero std) returns `InvalidParParameters`.
     #[test]
     fn build_fails_on_invalid_par() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3)];
         // AR(1) with std == 0.0 is the fatal case.
         let inflow_models = vec![make_inflow_model(1, 0, 0.0, vec![0.3])];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1143,19 +1091,19 @@ mod tests {
         );
     }
 
-    /// AC: `build_inflow_par` validates PAR parameters itself — a caller that
+    /// `build_inflow_par` validates PAR parameters itself — a caller that
     /// reaches it without going through `build_stochastic_context` (e.g. the
     /// opening-tree path) must still see an AR(1) model's zero standard
     /// deviation rejected.
     #[test]
     fn build_inflow_par_rejects_invalid_par() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3)];
         // AR(1) with std == 0.0 is the fatal case.
         let inflow_models = vec![make_inflow_model(1, 0, 0.0, vec![0.3])];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1171,11 +1119,11 @@ mod tests {
         );
     }
 
-    /// AC: non-positive-definite correlation matrix succeeds with spectral decomposition.
+    /// Non-positive-definite correlation matrix succeeds with spectral decomposition.
     #[test]
     fn build_succeeds_on_non_pd_correlation() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![make_stage(0, 0, 3)];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(2, 0, 20.0, vec![]),
@@ -1214,7 +1162,7 @@ mod tests {
         };
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1249,8 +1197,8 @@ mod tests {
     /// (independent) inflows rather than failing.
     #[test]
     fn build_succeeds_with_hydros_and_empty_correlation() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3), make_stage(1, 1, 3)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1261,7 +1209,7 @@ mod tests {
         assert!(empty_correlation.profiles.is_empty());
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1291,12 +1239,12 @@ mod tests {
     /// Pre-study stages (negative IDs) are excluded from the opening tree.
     #[test]
     fn pre_study_stages_excluded_from_opening_tree() {
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![sized_hydro(1)];
         // Two study stages (id >= 0) and one pre-study stage (id < 0).
         let stages = vec![
-            make_stage(0, -1, 3), // pre-study — must be excluded from tree
-            make_stage(1, 0, 3),
-            make_stage(2, 1, 3),
+            saa_stage(0, -1, 3), // pre-study — must be excluded from tree
+            saa_stage(1, 0, 3),
+            saa_stage(2, 1, 3),
         ];
         let inflow_models = vec![
             make_inflow_model(1, -1, 30.0, vec![]),
@@ -1305,7 +1253,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1344,15 +1292,11 @@ mod tests {
         }
     }
 
-    /// AC: system with hydros + load buses produces correct dim and `n_load_buses`.
+    /// System with hydros + load buses produces correct dim and `n_load_buses`.
     #[test]
     fn context_with_load_buses_has_expanded_dim() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1368,7 +1312,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1405,9 +1349,9 @@ mod tests {
     #[test]
     fn noise_entity_order_counts_every_ncs_including_zero_std() {
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
-            .hydros(vec![make_hydro(2), make_hydro(1)])
-            .stages(vec![make_stage(0, 0, 3)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
+            .hydros(vec![sized_hydro(2), sized_hydro(1)])
+            .stages(vec![saa_stage(0, 0, 3)])
             .inflow_models(vec![
                 make_inflow_model(1, 0, 30.0, vec![]),
                 make_inflow_model(2, 0, 20.0, vec![]),
@@ -1464,9 +1408,9 @@ mod tests {
     #[test]
     fn noise_entity_order_load_membership_is_external_additive() {
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
-            .hydros(vec![make_hydro(1)])
-            .stages(vec![make_stage(0, 0, 3)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
+            .hydros(vec![sized_hydro(1)])
+            .stages(vec![saa_stage(0, 0, 3)])
             .inflow_models(vec![make_inflow_model(1, 0, 30.0, vec![])])
             .load_models(vec![
                 make_load_model(0, 0, 50.0, 0.0),
@@ -1506,15 +1450,11 @@ mod tests {
         );
     }
 
-    /// AC: system with hydros only produces `dim` = `n_hydros` and `n_load_buses` = 0.
+    /// A system with hydros only produces `dim` = `n_hydros` and `n_load_buses` = 0.
     #[test]
-    fn context_without_load_has_original_dim() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+    fn context_without_load_has_hydro_only_dim() {
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1525,7 +1465,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1556,11 +1496,11 @@ mod tests {
         );
     }
 
-    /// AC: buses with `std_mw == 0.0` are excluded from the noise dimension.
+    /// Buses with `std_mw == 0.0` are excluded from the noise dimension.
     #[test]
     fn context_load_bus_deterministic_excluded() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3), make_stage(1, 1, 3)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1572,7 +1512,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1608,11 +1548,11 @@ mod tests {
         );
     }
 
-    /// AC: opening tree noise slices have length = `n_hydros` + `n_load_buses`.
+    /// Opening tree noise slices have length = `n_hydros` + `n_load_buses`.
     #[test]
     fn opening_tree_noise_length_matches_expanded_dim() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![make_stage(0, 0, 4), make_stage(1, 1, 4)];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 4), saa_stage(1, 1, 4)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1625,7 +1565,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1659,15 +1599,11 @@ mod tests {
         );
     }
 
-    /// AC: `normal_lp()` accessor returns correctly built `PrecomputedNormal`.
+    /// `normal_lp()` accessor returns correctly built `PrecomputedNormal`.
     #[test]
     fn normal_lp_accessible_from_context() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1680,7 +1616,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1727,18 +1663,11 @@ mod tests {
         );
     }
 
-    /// AC: `None` produces an identical result to the original 3-argument call.
-    ///
-    /// Verifies that passing `None` as `user_opening_tree` leaves behaviour
-    /// unchanged relative to the pre-refactor signature.
+    /// With no user-supplied tree, the opening tree is generated from the system.
     #[test]
-    fn build_with_none_matches_original() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+    fn build_with_no_user_tree_generates_the_opening_tree() {
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1749,7 +1678,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1784,7 +1713,7 @@ mod tests {
         );
     }
 
-    /// AC: a pre-constructed `OpeningTree` passed as `Some(tree)` is used as-is.
+    /// A pre-constructed `OpeningTree` passed as `Some(tree)` is used as-is.
     ///
     /// Verifies that `par_lp`, `correlation`, and `normal_lp` are still built
     /// from the system while tree generation is bypassed.
@@ -1792,12 +1721,8 @@ mod tests {
     fn build_with_user_supplied_tree_uses_provided_tree() {
         use crate::context::OpeningTree;
 
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1808,7 +1733,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1838,7 +1763,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),
@@ -1879,15 +1803,11 @@ mod tests {
         assert_eq!(ctx.n_load_buses(), 0, "no load buses in this system");
     }
 
-    /// AC: `entity_order()` returns the canonical `hydro_ids` ++ `load_bus_ids` order.
+    /// `entity_order()` returns the canonical `hydro_ids` ++ `load_bus_ids` order.
     #[test]
     fn test_entity_order_accessor() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1903,7 +1823,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(5)])
+            .buses(vec![deficit_bus(0), deficit_bus(5)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1934,17 +1854,13 @@ mod tests {
         );
     }
 
-    /// AC: `entity_order()` is populated even when a user-supplied tree is given.
+    /// `entity_order()` is populated even when a user-supplied tree is given.
     #[test]
     fn test_entity_order_with_user_tree() {
         use crate::context::OpeningTree;
 
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -1955,7 +1871,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -1981,7 +1897,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),
@@ -2002,15 +1917,11 @@ mod tests {
         );
     }
 
-    /// AC: `forward_seed()` returns Some(seed) when `scenario_source.seed` is supplied.
+    /// `forward_seed()` returns Some(seed) when `scenario_source.seed` is supplied.
     #[test]
     fn test_forward_seed_from_config() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -2021,7 +1932,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -2051,15 +1962,11 @@ mod tests {
         );
     }
 
-    /// AC: `forward_seed()` returns None when `scenario_source.seed` is absent.
+    /// `forward_seed()` returns None when `scenario_source.seed` is absent.
     #[test]
     fn test_forward_seed_none_when_absent() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![
-            make_stage(0, 0, 3),
-            make_stage(1, 1, 3),
-            make_stage(2, 2, 3),
-        ];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3), saa_stage(2, 2, 3)];
         let inflow_models = vec![
             make_inflow_model(1, 0, 30.0, vec![]),
             make_inflow_model(1, 1, 30.0, vec![]),
@@ -2070,7 +1977,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -2100,14 +2007,14 @@ mod tests {
         );
     }
 
-    /// AC (Unit Test): the AR-order branch selects derived-vs-seasonal
+    /// The AR-order branch selects derived-vs-seasonal
     /// correctly under `External` — an AR(0) hydro's PAR moments come from
     /// the external samples, while an AR(p > 0) hydro's stay byte-identical
     /// to the seasonal, unmodified build.
     #[test]
     fn external_inflow_override_applies_only_to_ar0_hydros() {
-        let hydros = vec![make_hydro(1), make_hydro(2)];
-        let stages = vec![make_stage(0, 0, 1), make_stage(1, 1, 1)];
+        let hydros = vec![sized_hydro(1), sized_hydro(2)];
+        let stages = vec![saa_stage(0, 0, 1), saa_stage(1, 1, 1)];
         // Hydro 1: AR(0), seasonal stats deliberately disagree with the
         // external file. Hydro 2: AR(1), stats must stay untouched.
         let inflow_models = vec![
@@ -2138,7 +2045,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -2201,19 +2108,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn external_inflow_without_seasonal_stats_takes_the_external_sample_moments() {
+        let external_rows = vec![
+            ExternalScenarioRow {
+                stage_id: 0,
+                scenario_id: 0,
+                hydro_id: EntityId(1),
+                value_m3s: 10.0,
+            },
+            ExternalScenarioRow {
+                stage_id: 0,
+                scenario_id: 1,
+                hydro_id: EntityId(1),
+                value_m3s: 30.0,
+            },
+        ];
+        let system = SystemBuilder::new()
+            .buses(vec![deficit_bus(0)])
+            .hydros(vec![sized_hydro(1)])
+            .stages(vec![saa_stage(0, 0, 1)])
+            .correlation(identity_correlation(&[1]))
+            .external_scenarios(external_rows)
+            .build()
+            .unwrap();
+
+        let ctx = build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs::default(),
+            ClassSchemes {
+                inflow: Some(SamplingScheme::External),
+                load: Some(SamplingScheme::InSample),
+                ncs: Some(SamplingScheme::InSample),
+            },
+        )
+        .unwrap();
+
+        assert!((ctx.par().deterministic_base(0, 0) - 20.0).abs() < 1e-10);
+        assert!((ctx.par().sigma(0, 0) - 10.0).abs() < 1e-10);
+    }
+
     /// Regression: a GAPPED (non-0-based) declared study-stage id must
     /// resolve to its canonical position — the same resolution novomodelo-io's
     /// rule-47 validator performs — never be treated as already being that
-    /// position. Study stages are declared `2, 5` (not `0, 1`); under the
-    /// pre-fix bug, `stage_idx = declared_id` always exceeds `n_stages` here,
+    /// position. Study stages are declared `2, 5` (not `0, 1`); read as
+    /// `stage_idx = declared_id`, the id always exceeds `n_stages` here,
     /// so the AR(0)/load overrides would silently never fire and the
     /// (deliberately disagreeing) seasonal stats would survive untouched.
     #[test]
     fn external_derivation_resolves_gapped_stage_ids() {
         let hydro_id = EntityId(1);
         let bus_id = EntityId(10);
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 2, 1), make_stage(1, 5, 1)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 2, 1), saa_stage(1, 5, 1)];
         let inflow_models = vec![
             make_inflow_model(1, 2, 30.0, vec![]),
             make_inflow_model(1, 5, 30.0, vec![]),
@@ -2264,7 +2215,7 @@ mod tests {
         ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0), make_bus(10)])
+            .buses(vec![deficit_bus(0), deficit_bus(10)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)

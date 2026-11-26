@@ -555,10 +555,10 @@ pub fn build_stage_cuts_payloads<'a>(
 /// order, via `to_discriminant_code`.
 ///
 /// The canonical discriminant space (`0..=6`) is a strict superset of the `HiGHS`
-/// code space this format previously stored, so pre-existing checkpoints (bytes
-/// `0..=4`) decode identically — while a CLP-captured `Superbasic`/`Fixed`, which
-/// `to_highs_code` would fold, now survives reload. Mirrored on load by
-/// `build_basis_cache_from_checkpoint`'s `from_discriminant_code`.
+/// code space (`0..=4`), so a checkpoint holding `HiGHS` codes decodes identically,
+/// and a CLP-captured `Superbasic`/`Fixed`, which `to_highs_code` folds, survives
+/// reload. Mirrored on load by `build_basis_cache_from_checkpoint`'s
+/// `from_discriminant_code`.
 #[must_use]
 pub fn convert_basis_store(bases: &CheckpointBasisStore) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
     bases
@@ -793,14 +793,14 @@ mod tests {
         NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         StageIdx, extended_delivery_stages, year_month_day_anchor,
     };
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec, ThermalSpec};
     use crate::test_support::{self, anticipated_slot};
     use crate::time_value::DeliveryCalendar;
     use novomodelo_core::commissioning::hydro_operating_active;
     use novomodelo_core::temporal::StageStateConfig;
     use novomodelo_core::{
-        AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro,
-        HydroGenerationModel, HydroPenalties, NoiseMethod, PostStudyStage, PostStudyStages,
-        ScenarioSourceConfig, Stage, StageRiskConfig, System, SystemBuilder, Thermal,
+        AnticipatedConfig, Block, Bus, DeficitSegment, EntityId, Hydro, HydroPenalties,
+        PostStudyStage, PostStudyStages, ResolvedPenalties, Stage, System, SystemBuilder, Thermal,
         WaterBucketStages,
         resolved::{
             BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds,
@@ -819,28 +819,6 @@ mod tests {
         storage: true,
         inflow_lags: false,
     };
-
-    fn penalties_zero() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
 
     fn bounds_defaults() -> BoundsDefaults {
         BoundsDefaults {
@@ -877,36 +855,23 @@ mod tests {
     }
 
     fn make_hydro(id: i32, entry: Option<i32>, exit: Option<i32>) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("Hydro{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: penalties_zero(),
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("Hydro{id}"),
+                bus_id: EntityId(1),
+                entry_stage_id: entry,
+                exit_stage_id: exit,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 50.0,
+                max_generation_mw: 45.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        )
     }
 
     fn anticipated_thermal(id: i32, lead_stages: u32) -> Thermal {
@@ -914,53 +879,47 @@ mod tests {
     }
 
     fn anticipated_thermal_cfg(id: i32, cfg: AnticipatedConfig) -> Thermal {
-        Thermal {
-            id: EntityId(id),
-            name: format!("Thermal{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: Some(cfg),
-        }
+        builders::make_thermal(
+            EntityId(id),
+            ThermalSpec {
+                name: format!("Thermal{id}"),
+                bus_id: EntityId(1),
+                cost_per_mwh: 50.0,
+                max_generation_mw: 100.0,
+                anticipated_config: Some(cfg),
+                ..ThermalSpec::default()
+            },
+        )
     }
 
     fn make_bus() -> Bus {
-        Bus {
-            id: EntityId(1),
-            name: "Bus1".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        }
+        builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "Bus1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
+            },
+        )
     }
 
     fn make_stage() -> Stage {
-        Stage {
-            index: 0,
-            id: 0,
-            start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: ALL_ENABLED,
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
+        builders::make_stage(
+            0,
+            StageSpec {
+                season_id: Some(0),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 720.0,
+                }],
+                state_config: ALL_ENABLED,
+                ..StageSpec::default()
             },
-        }
+        )
     }
 
     /// `System` with 2 hydros and 1 anticipated thermal (`lead_stages = 2`),
@@ -968,35 +927,37 @@ mod tests {
     /// supplied commissioning windows so `was_active` can be exercised.
     /// `post_study_stages` threads straight to the builder — `None` for a
     /// fixture with no post-horizon lane.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn system_2h_1ant(
         h1_window: (Option<i32>, Option<i32>),
         h2_window: (Option<i32>, Option<i32>),
         post_study_stages: Option<PostStudyStages>,
     ) -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 2,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 1,
-                k_max: 2,
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![
+                        make_hydro(1, h1_window.0, h1_window.1),
+                        make_hydro(2, h2_window.0, h2_window.1),
+                    ])
+                    .thermals(vec![anticipated_thermal(1, 2)])
+                    .stages(vec![make_stage()])
+                    .post_study_stages(post_study_stages.clone())
             },
-            &bounds_defaults(),
-        );
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![
-                make_hydro(1, h1_window.0, h1_window.1),
-                make_hydro(2, h2_window.0, h2_window.1),
-            ])
-            .thermals(vec![anticipated_thermal(1, 2)])
-            .stages(vec![make_stage()])
-            .bounds(bounds)
-            .post_study_stages(post_study_stages)
-            .build()
-            .expect("valid system")
+            2,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// A single post-study stage starting `start_date`, covering exactly one
@@ -1166,10 +1127,10 @@ mod tests {
         );
     }
 
-    /// A transit-bucket lag reaching a declared post-study stage now dates onto
+    /// A transit-bucket lag reaching a declared post-study stage dates onto
     /// that stage's own `[start, end)` interval, exactly as the anticipated
-    /// ring already does; a lag past the extended calendar still stays
-    /// sentinel in every date field. On this single-study-stage fixture lag 1
+    /// ring does; a lag past the extended calendar stays sentinel in every
+    /// date field. On this single-study-stage fixture lag 1
     /// (`t + lag == 1`) resolves to the declared post-study stage while lag 2
     /// (`t + lag == 2`) lands past it.
     #[test]
@@ -1377,25 +1338,22 @@ mod tests {
     /// are overwritten by `SystemBuilder::build`'s canonical-order sort, so a
     /// placeholder value is fine. `id` may be negative (a pre-study stage).
     fn make_stage_dated(id: i32, start: chrono::NaiveDate, end: chrono::NaiveDate) -> Stage {
-        Stage {
-            index: 0,
-            id,
-            start_date: start,
-            end_date: end,
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: ALL_ENABLED,
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
+        let mut stage = builders::make_stage(
+            0,
+            StageSpec {
+                start_date: start,
+                end_date: end,
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 720.0,
+                }],
+                state_config: ALL_ENABLED,
+                ..StageSpec::default()
             },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     /// A storage+lag-only `System` (no anticipated thermals): `n_hydro` hydros
@@ -1634,54 +1592,50 @@ mod tests {
         } else {
             (year, month + 1)
         };
-        Stage {
+        let mut stage = builders::make_stage(
             index,
-            id,
-            start_date: start,
-            end_date: chrono::NaiveDate::from_ymd_opt(end_year, end_month, 1).unwrap(),
-            season_id: Some((month - 1) as usize),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: ALL_ENABLED,
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
+            StageSpec {
+                start_date: start,
+                end_date: chrono::NaiveDate::from_ymd_opt(end_year, end_month, 1).unwrap(),
+                season_id: Some((month - 1) as usize),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 720.0,
+                }],
+                state_config: ALL_ENABLED,
+                ..StageSpec::default()
             },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     /// `System` with 1 hydro and 1 anticipated thermal carrying `cfg` over three
     /// consecutive monthly stages 2024-04, 2024-05, 2024-06 (ids 0, 1, 2).
     fn system_1h_1ant_3monthly(cfg: AnticipatedConfig) -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 3,
-                k_max: 2,
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![make_hydro(1, None, None)])
+                    .thermals(vec![anticipated_thermal_cfg(1, cfg)])
+                    .stages(vec![
+                        make_stage_ym(0, 0, 2024, 4),
+                        make_stage_ym(1, 1, 2024, 5),
+                        make_stage_ym(2, 2, 2024, 6),
+                    ])
             },
-            &bounds_defaults(),
-        );
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![make_hydro(1, None, None)])
-            .thermals(vec![anticipated_thermal_cfg(1, cfg)])
-            .stages(vec![
-                make_stage_ym(0, 0, 2024, 4),
-                make_stage_ym(1, 1, 2024, 5),
-                make_stage_ym(2, 2, 2024, 6),
-            ])
-            .bounds(bounds)
-            .build()
-            .expect("valid 3-stage system")
+            2,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// `System` with 1 hydro and two anticipated thermals of DIFFERENT
@@ -1690,29 +1644,28 @@ mod tests {
     /// [`system_1h_1ant_3monthly`]'s own; stage 3, when present, starts
     /// 2024-07-01), sharing one `k_max=2` ring.
     fn system_1h_2ant_monthly(n_stages: usize) -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 2,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 2,
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![make_hydro(1, None, None)])
+                    .thermals(vec![anticipated_thermal(1, 1), anticipated_thermal(2, 2)])
+                    .stages(
+                        (0..n_stages)
+                            .map(|i| make_stage_ym(i, i as i32, 2024, 4 + i as u32))
+                            .collect(),
+                    )
             },
-            &bounds_defaults(),
-        );
-        let stages = (0..n_stages)
-            .map(|i| make_stage_ym(i, i as i32, 2024, 4 + i as u32))
-            .collect();
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![make_hydro(1, None, None)])
-            .thermals(vec![anticipated_thermal(1, 1), anticipated_thermal(2, 2)])
-            .stages(stages)
-            .bounds(bounds)
-            .build()
-            .expect("valid multi-stage 2-anticipated-plant system")
+            2,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// `System` with 1 hydro and 1 anticipated thermal (`LeadStages(3)`, so the
@@ -1720,32 +1673,34 @@ mod tests {
     /// [`system_1h_1ant_3monthly`], carrying `post_study`. The extended-calendar
     /// fixture: at the terminal stage the three ring slots' modular delivery
     /// targets fan across in-study, post-study, and past-extended.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn system_1h_1ant_3monthly_lead3(post_study: PostStudyStages) -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 3,
-                k_max: 3,
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![make_hydro(1, None, None)])
+                    .thermals(vec![anticipated_thermal(1, 3)])
+                    .stages(vec![
+                        make_stage_ym(0, 0, 2024, 4),
+                        make_stage_ym(1, 1, 2024, 5),
+                        make_stage_ym(2, 2, 2024, 6),
+                    ])
+                    .post_study_stages(Some(post_study.clone()))
             },
-            &bounds_defaults(),
-        );
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![make_hydro(1, None, None)])
-            .thermals(vec![anticipated_thermal(1, 3)])
-            .stages(vec![
-                make_stage_ym(0, 0, 2024, 4),
-                make_stage_ym(1, 1, 2024, 5),
-                make_stage_ym(2, 2, 2024, 6),
-            ])
-            .bounds(bounds)
-            .post_study_stages(Some(post_study))
-            .build()
-            .expect("valid 3-stage lead-3 system with post-study calendar")
+            3,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// A post-study calendar of consecutive `(year, month)` monthly stages.
@@ -1769,33 +1724,35 @@ mod tests {
     /// depth (`k_max`) is bounded to 4, excising ring-axis targets `4..7`
     /// ([`PointResolution::ring_index`]) even though the plant's own lead
     /// reaches 7.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn system_1h_1ant_4monthly_lead7(post_study: PostStudyStages) -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 4,
-                k_max: 7,
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![make_hydro(1, None, None)])
+                    .thermals(vec![anticipated_thermal(1, 7)])
+                    .stages(vec![
+                        make_stage_ym(0, 0, 2024, 1),
+                        make_stage_ym(1, 1, 2024, 2),
+                        make_stage_ym(2, 2, 2024, 3),
+                        make_stage_ym(3, 3, 2024, 4),
+                    ])
+                    .post_study_stages(Some(post_study.clone()))
             },
-            &bounds_defaults(),
-        );
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![make_hydro(1, None, None)])
-            .thermals(vec![anticipated_thermal(1, 7)])
-            .stages(vec![
-                make_stage_ym(0, 0, 2024, 1),
-                make_stage_ym(1, 1, 2024, 2),
-                make_stage_ym(2, 2, 2024, 3),
-                make_stage_ym(3, 3, 2024, 4),
-            ])
-            .bounds(bounds)
-            .post_study_stages(Some(post_study))
-            .build()
-            .expect("valid 4-stage lead-7 system with post-study calendar")
+            7,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// `System` with 1 hydro and 1 anticipated thermal (`LeadStages(1)`, so
@@ -1804,51 +1761,49 @@ mod tests {
     /// 2026-01-15 — a real, day-accurate delivery span for a slot targeting
     /// it, not the enclosing calendar month.
     fn system_1h_1ant_short_then_five_week_terminal() -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 2,
-                k_max: 1,
-            },
-            &bounds_defaults(),
-        );
         let stage0_start = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
         let stage0_end = chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
         let stage1_end = chrono::NaiveDate::from_ymd_opt(2026, 2, 19).unwrap();
-        let stage = |index, id, start, end, season_id, duration_hours| Stage {
-            index,
-            id,
-            start_date: start,
-            end_date: end,
-            season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: ALL_ENABLED,
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        let stage = |index, id, start, end, season_id, duration_hours| {
+            let mut stage = builders::make_stage(
+                index,
+                StageSpec {
+                    start_date: start,
+                    end_date: end,
+                    season_id: Some(season_id),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "SINGLE".to_string(),
+                        duration_hours,
+                    }],
+                    state_config: ALL_ENABLED,
+                    ..StageSpec::default()
+                },
+            );
+            stage.id = id;
+            stage
         };
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![make_hydro(1, None, None)])
-            .thermals(vec![anticipated_thermal(1, 1)])
-            .stages(vec![
-                stage(0, 0, stage0_start, stage0_end, 0, 336.0),
-                stage(1, 1, stage0_end, stage1_end, 1, 840.0),
-            ])
-            .bounds(bounds)
-            .build()
-            .expect("valid 2-stage system with a non-month-aligned five-week terminal stage")
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![make_hydro(1, None, None)])
+                    .thermals(vec![anticipated_thermal(1, 1)])
+                    .stages(vec![
+                        stage(0, 0, stage0_start, stage0_end, 0, 336.0),
+                        stage(1, 1, stage0_end, stage1_end, 1, 840.0),
+                    ])
+            },
+            1,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// `n` consecutive monthly study stages (ids `0..n`), the last one ending
@@ -1870,28 +1825,30 @@ mod tests {
     /// hydro, and 1 anticipated thermal with `lead_stages = 2` (so
     /// `k_max = 2`), carrying `post_study` — the terminal-maturing-residue
     /// fixture.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn system_1h_1ant_64monthly_lead2(post_study: Option<PostStudyStages>) -> System {
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 64,
-                k_max: 2,
+        test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![make_bus()])
+                    .hydros(vec![make_hydro(1, None, None)])
+                    .thermals(vec![anticipated_thermal(1, 2)])
+                    .stages(monthly_stages_ending(64, 2031, 11))
+                    .post_study_stages(post_study.clone())
             },
-            &bounds_defaults(),
-        );
-        SystemBuilder::new()
-            .buses(vec![make_bus()])
-            .hydros(vec![make_hydro(1, None, None)])
-            .thermals(vec![anticipated_thermal(1, 2)])
-            .stages(monthly_stages_ending(64, 2031, 11))
-            .bounds(bounds)
-            .post_study_stages(post_study)
-            .build()
-            .expect("valid 64-stage lead-2 system")
+            2,
+            |system, bounds, penalties| {
+                *penalties = ResolvedPenalties::empty();
+                for t in 0..system.thermals().len() {
+                    for s in 0..bounds.thermal_stage_axis_len() {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     /// An `AnticipatedThermalState` ring slot's `interval_start` is the
@@ -2059,7 +2016,7 @@ mod tests {
 
     /// Leads `(1, 3)`, `k_max = 3`, 4 study stages, no post-study calendar:
     /// every anticipated slot's date must match the LP's own latch set
-    /// (carry plus deposit), never the retired per-plant-lead-bounded rule,
+    /// (carry plus deposit), never a per-plant-lead-bounded rule,
     /// under which the ℓ=1 plant's slot 1 (a fresh deposit at stage 0) would
     /// read the sentinel instead of its real date.
     #[test]
@@ -2261,7 +2218,7 @@ mod tests {
     /// terminal stage's own class, the "maturing residue" — recurs at `m=5`,
     /// also past the 1-stage-deep extended calendar: at the terminal stage
     /// the outgoing anchor is itself already one past the horizon, so no
-    /// residue can resolve in-study any more.
+    /// residue can resolve in-study.
     #[test]
     fn ring_slot_targeting_post_study_carries_a_real_anchor() {
         let start = chrono::NaiveDate::from_ymd_opt(2024, 7, 1).unwrap();

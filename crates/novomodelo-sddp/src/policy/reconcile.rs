@@ -1284,7 +1284,7 @@ mod tests {
     /// A storage slot no op references is a genuine superset drop, never a
     /// structural pad — `is_structural_pad` never widens to storage.
     #[test]
-    fn dropped_source_positions_still_reports_an_unreferenced_storage_slot() {
+    fn dropped_source_positions_reports_an_unreferenced_storage_slot() {
         let source = vec![storage_slot(1), storage_slot(2)];
         let rebind = vec![RebindOp::Copy(0)];
 
@@ -1330,9 +1330,9 @@ mod tests {
 
     /// Given a source and a target transit-bucket slot sharing the SAME
     /// arrival interval, when `build_rebind` runs, then it resolves to
-    /// `Blend` with a single unit-weight term — the exact-match acceptance
-    /// case, whose coefficient is bit-identical to the source's own — and
-    /// the reconciliation report tallies it as `fan_out`, never `copy`: the
+    /// `Blend` with a single unit-weight term — the exact-match case, whose
+    /// coefficient is bit-identical to the source's own — and the
+    /// reconciliation report tallies it as `fan_out`, never `copy`: the
     /// join mechanism changed even though the coefficient did not.
     #[test]
     fn transit_bucket_identical_arrival_interval_blends_at_unit_weight() {
@@ -1500,7 +1500,7 @@ mod tests {
     }
 
     /// Given a weekly-dated source bucket index read by a monthly-dated
-    /// target slot — the shape any deck, legacy included, has when it loads
+    /// target slot — the shape a deck has when it loads
     /// a boundary policy on a foreign bucket grid — when `build_rebind`
     /// runs, then the target takes `overlap / H_target` volume weights:
     /// full coverage blends to an hours-average, and a target reaching past
@@ -1938,7 +1938,7 @@ mod tests {
     /// via `resolve_by_identity`, naming the target's own position and
     /// identity — unaffected by the forward-family dispatch this module adds.
     #[test]
-    fn unrecognized_entity_type_still_rejects_by_identity() {
+    fn unrecognized_entity_type_rejects_by_identity() {
         let mut unrecognized = storage_slot(42);
         unrecognized.entity_type = 99;
         let source: Vec<EntitySlot> = vec![];
@@ -2032,9 +2032,8 @@ mod tests {
     /// Given a source anticipated slot whose OWN delivery interval is a
     /// 7-day stage (not a calendar month) and a target slot covering that
     /// same span, when `build_rebind` runs, then the fanned coefficient
-    /// equals the source's own value (weight `1.0`) — under the retired
-    /// month-reconstruction the same fixture would have produced `7/30` of
-    /// it.
+    /// equals the source's own value (weight `1.0`) — reconstructing the
+    /// source interval as its calendar month would give `7/30` of it.
     #[test]
     fn anticipated_source_interval_shorter_than_a_month_weights_by_its_own_hours() {
         let source_coeff = 42.0;
@@ -2146,8 +2145,8 @@ mod tests {
 
     /// Given a target anticipated slot whose fan-out weights come purely from
     /// its OWN `interval_start`/`interval_end` fields, when `build_rebind`
-    /// runs, then it fans out exactly as the (retired) parallel interval
-    /// vector would have.
+    /// runs, then its weight is that interval's overlap with the source month
+    /// over the month's hours (`14/31`).
     #[test]
     fn anticipated_target_reads_its_own_manifest_interval() {
         let source = vec![anticipated_slot_at(9, 0, 20_260_301)];

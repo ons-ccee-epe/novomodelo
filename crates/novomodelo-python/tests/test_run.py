@@ -96,22 +96,6 @@ def test_run_simulation_disabled_by_config(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_run_rejects_skip_simulation_parameter(tmp_path: pathlib.Path) -> None:
-    """run() raises TypeError when the removed skip_simulation parameter is passed."""
-    import novomodelo.run
-
-    with pytest.raises(TypeError, match="unexpected keyword argument") as exc_info:
-        novomodelo.run.run(
-            VALID_CASE,
-            output_dir=str(tmp_path),
-            skip_simulation=True,  # ty: ignore[unknown-argument]  # removed parameter
-        )
-
-    assert "skip_simulation" in str(exc_info.value), (
-        "TypeError message must mention 'skip_simulation'"
-    )
-
-
 def test_run_nonexistent_raises(tmp_path: pathlib.Path) -> None:
     """run() raises OSError when the case directory does not exist."""
     import novomodelo.run
@@ -232,94 +216,28 @@ def test_run_dict_keys_stable(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_correlation_target_is_reported_for_an_estimated_correlation(
+def test_correlation_source_is_reported_for_an_estimated_correlation(
     tmp_path: pathlib.Path,
 ) -> None:
-    """An estimated correlation reports its target in both dicts and the file; a
-    correlation that was not estimated reports None and writes the key as null."""
+    """An estimated correlation reports its source in both dicts and the file."""
     import json
 
     import novomodelo.run
 
-    estimated_out = tmp_path / "estimated"
-    result = novomodelo.run.run(
-        D12_PAR_ANNUAL_CASE,
-        output_dir=str(estimated_out),
-        config_overrides={"estimation.correlation_target": "residuals"},
-    )
-    written = json.loads(
-        (estimated_out / "training/model_provenance.json").read_text()
-    )["inflow"]["correlation_target"]
+    out = tmp_path / "estimated"
+    result = novomodelo.run.run(D12_PAR_ANNUAL_CASE, output_dir=str(out))
+    written = json.loads((out / "training/model_provenance.json").read_text())[
+        "inflow"
+    ]["correlation_source"]
     provenance, stochastic = result["provenance"], result["stochastic"]
     assert provenance is not None
     assert stochastic is not None
     assert provenance["correlation_source"] == "estimated"
-    assert provenance["correlation_target"] == "residuals"
     assert stochastic["correlation_source"] == "estimated"
-    assert stochastic["correlation_target"] == "residuals"
-    assert provenance["correlation_target"] == written
-    assert stochastic["correlation_target"] == written
-
-    not_estimated_out = tmp_path / "not_estimated"
-    result = novomodelo.run.run(VALID_CASE, output_dir=str(not_estimated_out))
-    inflow = json.loads(
-        (not_estimated_out / "training/model_provenance.json").read_text()
-    )["inflow"]
-    provenance, stochastic = result["provenance"], result["stochastic"]
-    assert provenance is not None
-    assert stochastic is not None
-    assert provenance["correlation_target"] is None
-    assert stochastic["correlation_target"] is None
-    assert "correlation_target" in inflow
-    assert inflow["correlation_target"] is None
+    assert written == "estimated"
 
 
-def test_moment_matching_is_reported_for_a_generated_tree(
-    tmp_path: pathlib.Path,
-) -> None:
-    """A generated tree reports its moment matching in both dicts and the file,
-    the default included."""
-    import json
-
-    import novomodelo.run
-
-    drawn_out = tmp_path / "drawn"
-    result = novomodelo.run.run(
-        VALID_CASE,
-        output_dir=str(drawn_out),
-        config_overrides={
-            "training.scenario_source.openings": {
-                "source": "generated",
-                "moment_matching": "none",
-            }
-        },
-    )
-    written = json.loads((drawn_out / "training/model_provenance.json").read_text())[
-        "inflow"
-    ]["opening_tree_moment_matching"]
-    provenance, stochastic = result["provenance"], result["stochastic"]
-    assert provenance is not None
-    assert stochastic is not None
-    assert provenance["opening_tree_moment_matching"] == "none"
-    assert stochastic["opening_tree_moment_matching"] == "none"
-    assert provenance["opening_tree_moment_matching"] == written
-    assert stochastic["opening_tree_moment_matching"] == written
-
-    default_out = tmp_path / "default"
-    result = novomodelo.run.run(VALID_CASE, output_dir=str(default_out))
-    inflow = json.loads((default_out / "training/model_provenance.json").read_text())[
-        "inflow"
-    ]
-    provenance, stochastic = result["provenance"], result["stochastic"]
-    assert provenance is not None
-    assert stochastic is not None
-    assert provenance["opening_tree_moment_matching"] == "per_coordinate"
-    assert stochastic["opening_tree_moment_matching"] == "per_coordinate"
-    assert "opening_tree_moment_matching" in inflow
-    assert inflow["opening_tree_moment_matching"] == "per_coordinate"
-
-
-def test_moment_matching_override_without_source_names_the_missing_tag(
+def test_openings_override_without_source_names_the_missing_tag(
     tmp_path: pathlib.Path,
 ) -> None:
     """An openings block without its source tag is refused, naming the tag."""
@@ -329,7 +247,5 @@ def test_moment_matching_override_without_source_names_the_missing_tag(
         novomodelo.run.run(
             VALID_CASE,
             output_dir=str(tmp_path),
-            config_overrides={
-                "training.scenario_source.openings.moment_matching": "per_coordinate"
-            },
+            config_overrides={"training.scenario_source.openings": {}},
         )

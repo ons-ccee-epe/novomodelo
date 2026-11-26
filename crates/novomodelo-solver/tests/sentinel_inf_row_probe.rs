@@ -130,7 +130,7 @@ fn inactive_cut_row_with_inf_bounds_preserves_lp_value() {
 /// Deactivating a dominated cut row leaves the LP optimum unchanged when another
 /// active cut still bounds theta.
 #[test]
-fn inactive_cut_row_with_inf_bounds_still_bounded_when_other_cut_active() {
+fn inactive_cut_row_with_inf_bounds_is_bounded_when_other_cut_active() {
     let template = build_three_row_template();
     let empty_rows = make_empty_row_batch();
 

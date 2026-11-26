@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn opening_column_sum_invariant() {
         // SUM(lp_solves) GROUP BY (iteration, phase, stage_id) over the per-opening
-        // schema equals what the old collapsed per-stage total reported.
+        // rows equals the stage's total solve count.
         let dir = tempfile::TempDir::new().unwrap();
         let mut rows = vec![SolverStatsRow {
             iteration: Some(1),

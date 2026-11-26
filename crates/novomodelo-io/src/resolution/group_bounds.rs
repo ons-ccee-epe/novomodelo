@@ -138,8 +138,8 @@ fn apply_group_bounds_row(row: &HydroUnitGroupBoundsRow, over: &mut HydroUnitGro
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
-    use novomodelo_core::entities::{HydroGenerationModel, HydroPenalties, HydroUnitGroup};
+    use crate::test_support::make_unit_group;
+    use novomodelo_core::entities::{HydroPenalties, HydroUnitGroup};
 
     fn make_penalties() -> HydroPenalties {
         HydroPenalties {
@@ -164,46 +164,17 @@ mod tests {
     }
 
     fn make_group(id: i32) -> HydroUnitGroup {
-        HydroUnitGroup {
-            id: EntityId::from(id),
-            name: format!("Group {id}"),
-            bus_id: EntityId::from(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-        }
+        make_unit_group(id, 1, 0.0, 100.0, 0.0, 50.0)
     }
 
     fn make_hydro(id: i32, group_ids: &[i32]) -> Hydro {
-        Hydro {
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            unit_groups: group_ids.iter().copied().map(make_group).collect(),
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: make_penalties(),
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.max_storage_hm3 = 100.0;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 100.0;
+        hydro.unit_groups = group_ids.iter().copied().map(make_group).collect();
+        hydro.penalties = make_penalties();
+        hydro
     }
 
     fn all_none_row(hydro_id: i32, group_id: i32, stage_id: i32) -> HydroUnitGroupBoundsRow {
@@ -224,7 +195,7 @@ mod tests {
         (0..n).map(|i| (i32::try_from(i).unwrap(), i)).collect()
     }
 
-    /// AC1: three plants declaring 1, 3, and 2 groups and an empty row slice
+    /// Three plants declaring 1, 3, and 2 groups and an empty row slice
     /// leave the table empty, and `override_at_block` returns the all-`None`
     /// default for every in-range and out-of-range index without panicking.
     #[test]
@@ -256,7 +227,7 @@ mod tests {
         }
     }
 
-    /// AC2: a stage-wide row on `(hydro_id=1, group=11, stage=2)` sets
+    /// A stage-wide row on `(hydro_id=1, group=11, stage=2)` sets
     /// `max_turbined_m3s` and `min_generation_mw`; a block row on the same
     /// group at `block=1` sets only `max_turbined_m3s`. Column-independent
     /// resolution must keep `min_generation_mw` from the stage-wide row at
@@ -297,7 +268,7 @@ mod tests {
         );
     }
 
-    /// AC3: plants declare `[1, 3, 2]` groups; a row names plant index 2's
+    /// Plants declare `[1, 3, 2]` groups; a row names plant index 2's
     /// group at position 1. The written slot is `plant_group_start[2] + 1 ==
     /// 5`, and plant 1's group position 1 (slot 2) stays untouched — the
     /// ragged CSR axis must not alias across plants.
@@ -330,7 +301,7 @@ mod tests {
         );
     }
 
-    /// AC4: a row naming an unknown group, a row with an out-of-study
+    /// A row naming an unknown group, a row with an out-of-study
     /// `stage_id`, and a row whose `block_id` equals its stage's block count
     /// are all skipped; the table stays empty and nothing panics.
     ///

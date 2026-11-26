@@ -1244,7 +1244,7 @@ mod tests {
       ]
     }"#;
 
-    // ── AC: valid 3-stage file with 6 pre-study stages (spec example SS1.9) ───
+    // ── valid 3-stage file with 6 pre-study stages (spec example SS1.9) ───────
 
     /// Given a valid `stages.json` with 3 study stages and 6 pre-study stages,
     /// `parse_stages` returns `Ok` with `stages.len() == 9`, sorted by `id`,
@@ -1313,7 +1313,7 @@ mod tests {
         assert_eq!(pss.scenario_config.noise_method, NoiseMethod::Saa);
     }
 
-    // ── AC: CVaR risk measure ─────────────────────────────────────────────────
+    // ── CVaR risk measure ─────────────────────────────────────────────────────
 
     /// Given a `stages.json` with `risk_measure: {"cvar": {"alpha": 0.95, "lambda": 0.5}}`,
     /// the corresponding stage has `risk_config == StageRiskConfig::CVaR { alpha: 0.95, lambda: 0.5 }`.
@@ -1347,7 +1347,7 @@ mod tests {
         }
     }
 
-    // ── AC: scenario_source in stages.json rejected ──────────────────────────
+    // ── scenario_source in stages.json rejected ──────────────────────────────
 
     /// Given a `stages.json` without `scenario_source`, `parse_stages` succeeds
     /// and returns a `StagesData` with no `scenario_source` field.
@@ -1399,7 +1399,7 @@ mod tests {
         }
     }
 
-    // ── AC: season_definitions with 12 monthly seasons ────────────────────────
+    // ── season_definitions with 12 monthly seasons ────────────────────────────
 
     /// Given `season_definitions` with 12 monthly seasons,
     /// `result.policy_graph.season_map` is `Some(SeasonMap { Monthly, ... })` with 12 seasons.
@@ -1443,7 +1443,7 @@ mod tests {
         assert_eq!(season_map.seasons[11].label, "December");
     }
 
-    // ── AC: no season_definitions -> season_map is None ───────────────────────
+    // ── no season_definitions -> season_map is None ───────────────────────────
 
     /// Given a `stages.json` without `season_definitions`, `policy_graph.season_map` is `None`.
     #[test]
@@ -1456,7 +1456,7 @@ mod tests {
         );
     }
 
-    // ── AC: derive season_id from start_date (Weekly, single-resolution) ─────
+    // ── derive season_id from start_date (Weekly, single-resolution) ─────────
 
     /// Given a `Weekly` single-resolution `season_map` and a stage with
     /// `season_id: None` starting in ISO week 3 (2024-01-15), when
@@ -1487,7 +1487,7 @@ mod tests {
         );
     }
 
-    // ── AC: declared Monthly season_id is an unchanged no-op ──────────────────
+    // ── declared Monthly season_id is an unchanged no-op ──────────────────────
 
     /// Given a `Monthly` study that declares every `season_id` explicitly and
     /// consistently, when `parse_stages` runs, each parsed `Stage.season_id`
@@ -1529,7 +1529,7 @@ mod tests {
         assert_eq!(data.stages[2].season_id, Some(2));
     }
 
-    // ── AC: a full-period mismatch is rejected ────────────────────────────────
+    // ── a full-period mismatch is rejected ────────────────────────────────────
 
     /// Given a single-resolution `Monthly` map and a FULL-MONTH-WIDTH stage
     /// (2024-03-01..2024-04-01, 31 days) declaring `season_id: Some(5)` (June)
@@ -1570,7 +1570,7 @@ mod tests {
         }
     }
 
-    // ── AC: a sub-period (Regime A) mismatch is trusted, not rejected ────────
+    // ── a sub-period (Regime A) mismatch is trusted, not rejected ────────────
 
     /// Given a single-resolution `Monthly` map and a ~7-day sub-period stage
     /// (2026-05-02..2026-05-09) declaring `season_id: Some(3)` (April) even
@@ -1608,7 +1608,7 @@ mod tests {
         );
     }
 
-    // ── AC: multi-resolution Custom map (d30-shaped) ──────────────────────────
+    // ── multi-resolution Custom map (d30-shaped) ──────────────────────────────
 
     /// `d30-multi-resolution-monthly-quarterly`-shaped `season_definitions`:
     /// 12 monthly + 4 quarterly `Custom` definitions whose calendar spans
@@ -1732,7 +1732,7 @@ mod tests {
         }
     }
 
-    // ── AC: chronological block_mode ──────────────────────────────────────────
+    // ── chronological block_mode ──────────────────────────────────────────────
 
     /// Given a stage with `block_mode: "chronological"`, that stage has `BlockMode::Chronological`.
     #[test]
@@ -1756,7 +1756,7 @@ mod tests {
         assert_eq!(data.stages[0].blocks.len(), 2);
     }
 
-    // ── AC: per-transition discount rate override ─────────────────────────────
+    // ── per-transition discount rate override ─────────────────────────────────
 
     /// Given a transition with `annual_discount_rate_override: 0.08`,
     /// the transition struct carries `annual_discount_rate_override == Some(0.08)`.
@@ -2323,12 +2323,12 @@ mod tests {
         }
     }
 
-    /// The removed per-stage `num_scenarios` spelling is a deserialize error
+    /// The per-stage `num_scenarios` spelling is a deserialize error
     /// naming the offending field (`deny_unknown_fields` rejects it at parse,
     /// surfaced as [`LoadError::ParseError`]); the canonical `num_openings`
     /// spelling loads and its count reaches `branching_factor`.
     #[test]
-    fn test_num_scenarios_removed_field_rejected() {
+    fn test_num_scenarios_field_rejected_and_num_openings_accepted() {
         let rejected = r#"{
           "policy_graph": { "type": "finite_horizon", "annual_discount_rate": 0.0, "transitions": [] },
           "stages": [
@@ -2341,7 +2341,7 @@ mod tests {
             LoadError::ParseError { message, .. } => {
                 assert!(
                     message.contains("num_scenarios") && message.contains("unknown field"),
-                    "removed field must surface as an unknown-field error naming it, got: {message}"
+                    "num_scenarios must surface as an unknown-field error naming it, got: {message}"
                 );
             }
             other => panic!("expected ParseError, got: {other:?}"),

@@ -5,8 +5,9 @@ use std::path::Path;
 use novomodelo_core::ScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, NumScenariosResolution,
-    PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
+    BackwardScheduler, CheckpointSchedule, FirstIterationTrialStorage, ForwardPassesResolution,
+    InflowResidualDistribution, NumScenariosResolution, PhaseSolverProfileConfig, SimulationRowSet,
+    StoppingRuleConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +123,9 @@ pub struct StudyParams {
     /// layer re-resolves [`Self::forward_passes`] from the node graph once it
     /// exists (config load holds no graph to derive the count from).
     pub training_enumerated: bool,
+    /// `training.selection.first_iteration_trial_storage`, resolved by
+    /// [`Config::first_iteration_trial_storage`](novomodelo_io::Config::first_iteration_trial_storage).
+    pub first_iteration_trial_storage: FirstIterationTrialStorage,
     /// Stopping rule set (rules + mode) governing when training halts.
     pub stopping_rule_set: StoppingRuleSet,
     /// Number of simulation scenarios (0 if simulation is disabled, or a
@@ -142,6 +146,8 @@ pub struct StudyParams {
     pub policy_path: String,
     /// Inflow non-negativity enforcement method.
     pub inflow_method: InflowNonNegativityMethod,
+    /// Inflow residual distribution (`modeling.inflow_residual.distribution`).
+    pub inflow_residual: InflowResidualDistribution,
     /// Optional cut selection strategy (None means cut selection is disabled).
     pub cut_selection: Option<CutSelectionStrategy>,
     /// `training.cut_selection.row_activity_tolerance`. Described on
@@ -276,6 +282,7 @@ impl StudyParams {
         let policy_path = config.policy.path.clone();
 
         let inflow_method = InflowNonNegativityMethod::from(&config.modeling.inflow_non_negativity);
+        let inflow_residual = config.modeling.inflow_residual.distribution;
 
         let cut_selection = parse_cut_selection_config(&config.training.cut_selection)
             .map_err(|msg| SddpError::Validation(format!("cut_selection config error: {msg}")))?;
@@ -326,6 +333,7 @@ impl StudyParams {
             seed,
             forward_passes,
             training_enumerated,
+            first_iteration_trial_storage: config.first_iteration_trial_storage(),
             stopping_rule_set,
             n_scenarios,
             simulation_enumerated,
@@ -333,6 +341,7 @@ impl StudyParams {
             io_channel_capacity,
             policy_path,
             inflow_method,
+            inflow_residual,
             cut_selection,
             cut_activity_tolerance,
             budget,
@@ -353,86 +362,20 @@ impl StudyParams {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use novomodelo_core::{EntityId, ParameterKind, ScalarParameter};
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationRowSet,
-        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-        TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        ParallelismConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationRowSet, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
-    use tracing::{Event, Level, Metadata, Subscriber, span};
+    use novomodelo_stochastic::test_support::WarnRecorder;
 
     use super::{BoundaryStateRequirements, StudyParams};
     use crate::config::CutManagementConfig;
     use crate::cut::CutSet;
-
-    // ---------------------------------------------------------------------------
-    // Minimal WARN-capturing subscriber for use in tests.
-    // ---------------------------------------------------------------------------
-
-    /// Records all WARN-level event messages into a shared `Vec<String>`.
-    struct WarnRecorder {
-        messages: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl WarnRecorder {
-        fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
-            let messages = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self {
-                    messages: Arc::clone(&messages),
-                },
-                messages,
-            )
-        }
-    }
-
-    impl Subscriber for WarnRecorder {
-        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-            *metadata.level() <= Level::WARN
-        }
-
-        fn new_span(&self, _attrs: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
-
-        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
-
-        fn event(&self, event: &Event<'_>) {
-            if *event.metadata().level() == Level::WARN {
-                struct MessageVisitor(String);
-                impl tracing::field::Visit for MessageVisitor {
-                    fn record_debug(
-                        &mut self,
-                        field: &tracing::field::Field,
-                        value: &dyn std::fmt::Debug,
-                    ) {
-                        if field.name() == "message" {
-                            self.0 = format!("{value:?}");
-                        }
-                    }
-
-                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                        if field.name() == "message" {
-                            self.0 = value.to_string();
-                        }
-                    }
-                }
-                let mut visitor = MessageVisitor(String::new());
-                event.record(&mut visitor);
-                self.messages.lock().unwrap().push(visitor.0);
-            }
-        }
-
-        fn enter(&self, _span: &span::Id) {}
-
-        fn exit(&self, _span: &span::Id) {}
-    }
 
     /// Minimal valid `Config` the `config_with_*` fixtures below mutate: one
     /// forward pass, an iteration-limit stopping rule, every other section
@@ -444,6 +387,7 @@ mod tests {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -455,7 +399,7 @@ mod tests {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -469,7 +413,7 @@ mod tests {
     /// budget-below-forward-passes warning fires.
     fn config_with_budget_below_forward_passes() -> Config {
         let mut config = base_test_config();
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.cut_selection = RowSelectionConfig {
             max_active_per_stage: Some(1),
             ..RowSelectionConfig::default()
@@ -864,7 +808,7 @@ mod tests {
     #[test]
     fn from_config_resolves_forward_passes_from_selection() {
         let mut via_selection = base_test_config();
-        via_selection.training.selection = Some(TrainingSelection::Sampled { forward_passes: 8 });
+        via_selection.training.selection = Some(TrainingSelection::sampled(8));
         let params_selection = StudyParams::from_config(&via_selection, Vec::new())
             .expect("sampled selection is a valid forward-pass source");
         assert_eq!(params_selection.forward_passes, 8);

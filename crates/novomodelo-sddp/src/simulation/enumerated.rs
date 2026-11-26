@@ -517,7 +517,10 @@ mod tests {
     use novomodelo_comm::LocalBackend;
     use novomodelo_solver::ActiveSolver;
 
-    use crate::{cut::CutSet, setup::node_graph::Traversal, test_support};
+    use crate::{
+        cut::CutSet, setup::node_graph::Traversal, simulation::tailrace::SimulationTailrace,
+        test_support,
+    };
 
     /// A hand-built small tree (the DECOMP K-fan: one root shared by every
     /// path, `k` branch nodes, `k` leaves) drives the sweep+scatter mechanics
@@ -574,6 +577,7 @@ mod tests {
             contract_prices_per_stage: &setup.inputs.stage_data.contract_prices_per_stage,
             contract_slots: &setup.inputs.stage_data.contract_slots,
             diversion_upstream: &setup.inputs.stage_data.stage_templates.diversion_upstream,
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &setup
                 .inputs
                 .stage_data

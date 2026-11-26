@@ -15,9 +15,8 @@
 //! | `end_date`   | DATE   | Yes      | Window end, exclusive (Date32)     |
 //! | `value_m3s`  | DOUBLE | Yes      | Mean inflow over the window (m³/s) |
 //!
-//! A file carrying the legacy `date` column, or missing `start_date`/
-//! `end_date`, is rejected outright — there is no inference/conversion path
-//! from the legacy point-dated layout.
+//! A file with a point-dated `date` column, or missing `start_date`/
+//! `end_date`, is rejected.
 //!
 //! ## Output ordering
 //!
@@ -52,12 +51,12 @@ use crate::windowed_history::{WindowedRecord, validate_windowed_records};
 
 pub use novomodelo_core::scenario::InflowHistoryRow;
 
-const LEGACY_LAYOUT_MESSAGE: &str = "scenarios/inflow_history.parquet uses the legacy \
-    point-dated layout; re-emit windowed columns \"start_date\"/\"end_date\" in place of \"date\"";
+const WINDOWED_COLUMNS_MESSAGE: &str = "scenarios/inflow_history.parquet must carry windowed \
+    \"start_date\"/\"end_date\" columns; a point-dated \"date\" column is not read";
 
 static INFLOW_HISTORY_COLUMNS: ParquetColumns = ParquetColumns {
     known: &["hydro_id", "start_date", "end_date", "value_m3s"],
-    retired: &[("date", LEGACY_LAYOUT_MESSAGE)],
+    retired: &[("date", WINDOWED_COLUMNS_MESSAGE)],
 };
 
 /// Parse `scenarios/inflow_history.parquet` and return a sorted row table.
@@ -92,10 +91,10 @@ pub fn parse_inflow_history(path: &Path) -> Result<Vec<InflowHistoryRow>, LoadEr
         let batch = batch?;
 
         if !batch.has_column("start_date") {
-            return Err(legacy_layout_error(path, "start_date"));
+            return Err(windowed_columns_error(path, "start_date"));
         }
         if !batch.has_column("end_date") {
-            return Err(legacy_layout_error(path, "end_date"));
+            return Err(windowed_columns_error(path, "end_date"));
         }
 
         let hydro_id_col = batch.required_int32("hydro_id")?;
@@ -145,11 +144,11 @@ pub fn parse_inflow_history(path: &Path) -> Result<Vec<InflowHistoryRow>, LoadEr
     Ok(rows)
 }
 
-fn legacy_layout_error(path: &Path, field: &str) -> LoadError {
+fn windowed_columns_error(path: &Path, field: &str) -> LoadError {
     LoadError::SchemaError {
         path: path.to_path_buf(),
         field: field.to_string(),
-        message: LEGACY_LAYOUT_MESSAGE.to_string(),
+        message: WINDOWED_COLUMNS_MESSAGE.to_string(),
     }
 }
 
@@ -179,14 +178,11 @@ fn parse_date32(
 )]
 mod tests {
     use super::*;
-    use crate::test_support::write_parquet;
+    use crate::test_support::{make_stage, write_parquet};
     use arrow::array::{Date32Array, Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::temporal::{Block, Stage};
     use std::sync::Arc;
 
     fn schema() -> Arc<Schema> {
@@ -198,7 +194,7 @@ mod tests {
         ]))
     }
 
-    fn legacy_schema() -> Arc<Schema> {
+    fn date_column_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("hydro_id", DataType::Int32, false),
             Field::new("date", DataType::Date32, false),
@@ -229,16 +225,16 @@ mod tests {
         .expect("valid batch")
     }
 
-    fn make_legacy_batch(hydro_ids: &[i32], dates: &[i32], values: &[f64]) -> RecordBatch {
+    fn make_date_column_batch(hydro_ids: &[i32], dates: &[i32], values: &[f64]) -> RecordBatch {
         RecordBatch::try_new(
-            legacy_schema(),
+            date_column_schema(),
             vec![
                 Arc::new(Int32Array::from(hydro_ids.to_vec())),
                 Arc::new(Date32Array::from(dates.to_vec())),
                 Arc::new(Float64Array::from(values.to_vec())),
             ],
         )
-        .expect("valid legacy batch")
+        .expect("valid date-column batch")
     }
 
     /// One calendar-month window `[start, start + 1 month)`, encoded as Date32.
@@ -285,17 +281,17 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_date_column_rejected_with_message() {
+    fn test_date_column_rejected_with_message() {
         let date = naive_date_to_date32(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
-        let batch = make_legacy_batch(&[1], &[date], &[500.0]);
+        let batch = make_date_column_batch(&[1], &[date], &[500.0]);
         let tmp = write_parquet(&batch);
         let err = parse_inflow_history(tmp.path()).unwrap_err();
 
         match &err {
             LoadError::SchemaError { message, .. } => {
                 assert!(
-                    message.contains("legacy point-dated layout; re-emit windowed"),
-                    "message should mention the legacy layout, got: {message}"
+                    message.contains("must carry windowed \"start_date\"/\"end_date\" columns"),
+                    "message should name the windowed columns, got: {message}"
                 );
             }
             other => panic!("expected SchemaError, got: {other:?}"),
@@ -303,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_windowed_columns_rejected_as_legacy() {
+    fn test_missing_windowed_columns_rejected() {
         let schema_no_dates = Arc::new(Schema::new(vec![
             Field::new("hydro_id", DataType::Int32, false),
             Field::new("value_m3s", DataType::Float64, false),
@@ -322,8 +318,8 @@ mod tests {
         match &err {
             LoadError::SchemaError { message, .. } => {
                 assert!(
-                    message.contains("legacy point-dated layout; re-emit windowed"),
-                    "message should mention the legacy layout, got: {message}"
+                    message.contains("must carry windowed \"start_date\"/\"end_date\" columns"),
+                    "message should name the windowed columns, got: {message}"
                 );
             }
             other => panic!("expected SchemaError, got: {other:?}"),
@@ -481,35 +477,24 @@ mod tests {
                 } else {
                     (year, month + 1)
                 };
-                Stage {
-                    index: i,
-                    id: i as i32,
-                    start_date: NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
-                    end_date: NaiveDate::from_ymd_opt(end_year, end_month, 1).unwrap(),
-                    season_id: Some(i),
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "SINGLE".to_string(),
-                        duration_hours: 720.0,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
-                }
+                let mut stage = make_stage(i as i32);
+                stage.index = i;
+                stage.start_date = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+                stage.end_date = NaiveDate::from_ymd_opt(end_year, end_month, 1).unwrap();
+                stage.season_id = Some(i);
+                stage.blocks = vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 720.0,
+                }];
+                stage
             })
             .collect()
     }
 
     /// Full-coverage monthly windowed history for `hydro_id` spanning
     /// `[from_year, to_year]`: each row is exactly `[month start, next month
-    /// start)`, matching a prior point-dated fixture one-for-one.
+    /// start)`.
     fn full_coverage_monthly_history(
         hydro_id: EntityId,
         from_year: i32,
@@ -534,12 +519,11 @@ mod tests {
     }
 
     /// A full-coverage windowed history — where every window is exactly one
-    /// calendar month `[start, next month start)` with no gaps — must yield
-    /// the identical discovered-window set a prior point-dated fixture
-    /// produced, since `discover_historical_windows` keys occurrence
-    /// resolution off each window's `start_date` alone.
+    /// calendar month `[start, next month start)` with no gaps — discovers
+    /// every year it covers, since `discover_historical_windows` keys
+    /// occurrence resolution off each window's `start_date` alone.
     #[test]
-    fn test_windowed_full_coverage_matches_pointdated_discovery() {
+    fn test_windowed_full_coverage_discovers_every_year() {
         let hydro1 = EntityId::from(1);
         let hydro2 = EntityId::from(2);
         let mut history = full_coverage_monthly_history(hydro1, 1990, 2010);
@@ -559,8 +543,7 @@ mod tests {
         let expected: Vec<i32> = (1990..=2010).collect();
         assert_eq!(
             windows, expected,
-            "full-coverage windowed history must reproduce the prior point-dated \
-             discovery result exactly"
+            "full-coverage windowed history must discover every year it covers"
         );
     }
 }

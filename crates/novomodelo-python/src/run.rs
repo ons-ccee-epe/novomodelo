@@ -65,8 +65,6 @@ use novomodelo_io::ReportEntry;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::SolverStatsRow;
 use novomodelo_io::TrainingOutput;
-use novomodelo_io::config::CorrelationTarget;
-use novomodelo_io::config::MomentMatching;
 use novomodelo_io::get_hostname;
 use novomodelo_io::now_iso8601;
 use novomodelo_io::output::simulation_writer::{
@@ -92,10 +90,8 @@ use novomodelo_io::write_solver_stats;
 use novomodelo_io::write_success_marker;
 use novomodelo_io::write_training_results;
 use novomodelo_sddp::HydroFitTimings;
-use novomodelo_sddp::RowViolationReport;
 use novomodelo_sddp::SddpError;
 use novomodelo_sddp::SimulationWeighting;
-use novomodelo_sddp::SolveTotals;
 use novomodelo_sddp::StatsFoldMode;
 use novomodelo_sddp::TrainingResult;
 use novomodelo_sddp::aggregate_simulation;
@@ -235,8 +231,6 @@ pub(crate) struct RunSummary {
 pub(crate) struct SimSummary {
     pub(crate) n_scenarios: u32,
     pub(crate) completed: u32,
-    /// Solver-stats aggregate over every simulated scenario; zero when skipped.
-    pub(crate) solve_stats: SolverStatsDelta,
 }
 
 /// Validate that `threads`, when given, is >= 1.
@@ -673,8 +667,6 @@ pub(crate) fn run_simulation_phase_py(
             &training_result.basis_cache,
         )
         .map_err(|e| {
-            // Build the message from the original `SimulationError` before
-            // wrapping, so the text stays byte-identical to the old string path.
             let message = format!("{SIMULATION_ERROR_PREFIX}: {e}");
             PhaseError::Sddp {
                 message,
@@ -792,7 +784,6 @@ pub(crate) fn run_simulation_phase_py(
     Ok(SimSummary {
         n_scenarios: sim_out.n_scenarios,
         completed: sim_out.completed,
-        solve_stats: agg,
     })
 }
 
@@ -822,7 +813,6 @@ pub(crate) fn write_skipped_simulation_py(
     Ok(SimSummary {
         n_scenarios,
         completed: 0,
-        solve_stats: SolverStatsDelta::default(),
     })
 }
 
@@ -1193,12 +1183,6 @@ pub(crate) fn run_via_study(
             };
 
             let result = policy.training_result();
-            let training_totals =
-                aggregate_solver_stats_log(&result.solver_stats_log, StatsFoldMode::AllEntries);
-            warn_on_row_violations(&RowViolationReport::new(
-                &training_totals,
-                simulation.as_ref().map(|sim| &sim.solve_stats),
-            ));
             Ok(RunSummary {
                 converged: policy.converged,
                 iterations: result.iterations,
@@ -1215,12 +1199,7 @@ pub(crate) fn run_via_study(
         }
         RunPhasePlan::SimulateFromPolicy => {
             let policy = study.load_policy_native(None)?;
-            let simulation = study.simulate_native(&policy, None)?;
-            warn_on_row_violations(&RowViolationReport::new(
-                &SolveTotals::default(),
-                Some(&simulation.solve_stats),
-            ));
-            let simulation = Some(simulation);
+            let simulation = Some(study.simulate_native(&policy, None)?);
 
             let result = policy.training_result();
             Ok(RunSummary {
@@ -1250,13 +1229,6 @@ pub(crate) fn run_via_study(
             hydro_models,
             provenance,
         }),
-    }
-}
-
-/// Print the end-of-run row-violation warning when any solve was counted.
-fn warn_on_row_violations(report: &RowViolationReport) {
-    if report.should_emit() {
-        eprintln!("novomodelo-python: warning: {report}");
     }
 }
 
@@ -1331,20 +1303,10 @@ pub(crate) fn stochastic_summary_to_dict<'py>(
         "correlation_source",
         stochastic_source_str(&summary.correlation_source),
     )?;
-    dict.set_item(
-        "correlation_target",
-        summary.correlation_target.map(CorrelationTarget::as_str),
-    )?;
     dict.set_item("correlation_dim", summary.correlation_dim.as_deref())?;
     dict.set_item(
         "opening_tree_source",
         stochastic_source_str(&summary.opening_tree_source),
-    )?;
-    dict.set_item(
-        "opening_tree_moment_matching",
-        summary
-            .opening_tree_moment_matching
-            .map(MomentMatching::as_str),
     )?;
     dict.set_item("openings_per_stage", summary.openings_per_stage.clone())?;
     dict.set_item("n_stages", summary.n_stages)?;
@@ -1373,22 +1335,8 @@ pub(crate) fn provenance_to_dict<'py>(
         report.inflow.correlation_source.to_string(),
     )?;
     dict.set_item(
-        "correlation_target",
-        report
-            .inflow
-            .correlation_target
-            .map(CorrelationTarget::as_str),
-    )?;
-    dict.set_item(
         "opening_tree_source",
         report.inflow.opening_tree_source.to_string(),
-    )?;
-    dict.set_item(
-        "opening_tree_moment_matching",
-        report
-            .inflow
-            .opening_tree_moment_matching
-            .map(MomentMatching::as_str),
     )?;
     dict.set_item("n_hydros", report.inflow.n_hydros)?;
     dict.set_item("ar_method", report.inflow.ar_method.as_deref())?;
@@ -1914,7 +1862,6 @@ mod tests {
     fn aggregate_training_solve_stats_folds_and_splits_by_phase() {
         let forward_delta = SolverStatsDelta {
             lp_solves: 10,
-            row_violations: 2,
             first_try_successes: 7,
             lp_successes: 9,
             lp_failures: 1,
@@ -1949,17 +1896,6 @@ mod tests {
         // Phase split with /1000.0 ms→s conversion.
         assert_eq!(totals.forward_solve_seconds, 2.5);
         assert_eq!(totals.backward_solve_seconds, 1.5);
-        assert_eq!(
-            (
-                totals.row_violations.forward,
-                totals.row_violations.backward
-            ),
-            (2, 0)
-        );
-        assert_eq!(
-            (totals.lp_solves.forward, totals.lp_solves.backward),
-            (10, 4)
-        );
     }
 
     #[test]
@@ -2091,10 +2027,9 @@ mod tests {
     /// sequential calls in the same process with different thread counts each
     /// receive the value they were configured with.
     ///
-    /// This is the per-call replacement for the old process-global pool, whose
-    /// configuration only took effect on the first call per process. The closure
-    /// receives `n = threads.map_or(1, |t| t as usize)`, so distinct
-    /// requests yield distinct values regardless of call order.
+    /// A process-global pool would apply only the first call's thread count.
+    /// The closure receives `n = threads.map_or(1, |t| t as usize)`, so
+    /// distinct requests yield distinct values regardless of call order.
     #[test]
     fn scoped_pool_honors_per_call_thread_count() {
         let first = run_in_scoped_pool(Some(2), |n| n);
@@ -2128,8 +2063,8 @@ mod tests {
         }
     }
 
-    /// The fifth acceptance criterion: the override path and the edited-config
-    /// path are equivalent. Running the unedited 1dtoy case with
+    /// The override path and the edited-config path are equivalent. Running the
+    /// unedited 1dtoy case with
     /// `config_overrides={"training.tree_seed": 7}` must produce the same
     /// `final_lower_bound` as physically editing `config.json` to set
     /// `tree_seed = 7` and running it. This proves overrides flow through the

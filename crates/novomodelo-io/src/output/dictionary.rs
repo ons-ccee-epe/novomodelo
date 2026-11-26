@@ -281,6 +281,8 @@ const NAMED_UNITS: &[(&str, &str, &str)] = &[
     ("buses", "spot_price", "$/MWh"),
     ("contracts", "price_per_mwh", "$/MWh"),
     ("hydros", "water_value_per_hm3", "$/hm3"),
+    ("hydros", "tailrace_level_m", "m"),
+    ("hydros", "net_head_m", "m"),
     ("convergence", "lower_bound", "$"),
     ("convergence", "upper_bound", "$"),
     ("convergence", "upper_bound_std", "$"),
@@ -582,6 +584,21 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "hydros",
         "water_withdrawal_violation_neg_m3s",
         "Under-withdrawal constraint violation",
+    ),
+    (
+        "hydros",
+        "tailrace_flow_m3s",
+        "Tailrace flow: the hydro's own release scaled by its outflow factor plus the lateral flow of the plants and incremental inflows that influence it; null unless the hydro uses computed FPHA at the stage.",
+    ),
+    (
+        "hydros",
+        "tailrace_level_m",
+        "Tailrace level at the tailrace flow; null unless the hydro uses computed FPHA at the stage.",
+    ),
+    (
+        "hydros",
+        "net_head_m",
+        "Net head: forebay level at the block-average storage minus the tailrace level and hydraulic losses, floored at 0; null unless the hydro uses computed FPHA at the stage.",
     ),
     ("hydro_bus_generation", "stage_id", "Stage index"),
     (
@@ -1344,7 +1361,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ("fpha_hyperplanes", "gamma_0", "Intercept coefficient"),
     ("fpha_hyperplanes", "gamma_v", "Stored-volume coefficient"),
     ("fpha_hyperplanes", "gamma_q", "Turbined-flow coefficient"),
-    ("fpha_hyperplanes", "gamma_s", "Spillage coefficient"),
+    (
+        "fpha_hyperplanes",
+        "gamma_s",
+        "Tailrace lateral-flow coefficient (spill when no tailrace_flow is declared)",
+    ),
     (
         "fpha_hyperplanes",
         "kappa",
@@ -2085,13 +2106,12 @@ fn write_bounds_parquet(path: &Path, system: &System) -> Result<(), OutputError>
 )]
 mod tests {
     use super::*;
-    use crate::test_support::output::read_first_batch;
+    use crate::test_support::{
+        make_bus_with_deficit, make_unit_group, output::read_first_batch, penalties_all,
+    };
     use arrow::array::Array;
-    use chrono::NaiveDate;
     use novomodelo_core::{
-        Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
-        HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, PumpingStation,
-        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,
+        Bus, EnergyContract, EntityId, Hydro, Line, PumpingStation, Stage, SystemBuilder, Thermal,
         resolved::{
             BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
             HydroBlockBounds, HydroStageBounds, HydroUnitGroupBoundsCountsSpec, LineBlockBounds,
@@ -2102,112 +2122,39 @@ mod tests {
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
 
-    fn hydro_penalties_zero() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
     fn make_hydro(id: i32, name: &str, bus_id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: name.to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: hydro_penalties_zero(),
-        };
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.name = name.to_string();
+        hydro.max_storage_hm3 = 100.0;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 45.0;
+        hydro.penalties = penalties_all(0.0);
         hydro.declare_mirror_unit_group(EntityId(bus_id));
         hydro
     }
 
     fn make_thermal(id: i32, name: &str, bus_id: i32) -> Thermal {
-        Thermal {
-            id: EntityId(id),
-            name: name.to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        }
+        let mut thermal = crate::test_support::make_thermal(id, 0.0, 100.0);
+        thermal.name = name.to_string();
+        thermal.bus_id = EntityId(bus_id);
+        thermal.cost_per_mwh = 50.0;
+        thermal
     }
 
     fn make_bus(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("Bus{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        }
+        let mut bus = make_bus_with_deficit(id, 1000.0);
+        bus.name = format!("Bus{id}");
+        bus.excess_cost = 0.0;
+        bus
     }
 
     fn make_stage(id: i32) -> Stage {
-        Stage {
-            index: id.max(0) as usize,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.index = id.max(0) as usize;
+        stage.season_id = Some(0);
+        stage.blocks[0].name = "SINGLE".to_string();
+        stage.scenario_config.branching_factor = 10;
+        stage
     }
 
     fn hydro_stage_bounds(min_storage_hm3: f64, max_storage_hm3: f64) -> HydroStageBounds {
@@ -2341,30 +2288,15 @@ mod tests {
 
     /// Build a stage with `n` equal-duration blocks, indices `0..n`.
     fn make_stage_with_blocks(id: i32, n: usize) -> Stage {
-        Stage {
-            index: id.max(0) as usize,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: (0..n)
-                .map(|i| Block {
-                    index: i,
-                    name: format!("BLK{i}"),
-                    duration_hours: 1.0,
-                })
-                .collect(),
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
+        let mut stage = crate::test_support::make_stage_with_blocks(id, n);
+        stage.index = id.max(0) as usize;
+        stage.season_id = Some(0);
+        for (i, block) in stage.blocks.iter_mut().enumerate() {
+            block.name = format!("BLK{i}");
+            block.duration_hours = 1.0;
         }
+        stage.scenario_config.branching_factor = 10;
+        stage
     }
 
     /// Build a 2-hydro, 2-thermal, 2-stage system (stage 0 has 3 blocks, stage
@@ -2454,19 +2386,11 @@ mod tests {
     }
 
     fn make_line(id: i32, bus_id: i32) -> Line {
-        Line {
-            id: EntityId(id),
-            name: format!("Line{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId(bus_id),
-            target_bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 500.0,
-            reverse_capacity_mw: 500.0,
-            losses_percent: 0.0,
-            exchange_cost: 0.0,
-        }
+        let mut line = crate::test_support::make_line(id, bus_id, bus_id);
+        line.name = format!("Line{id}");
+        line.direct_capacity_mw = 500.0;
+        line.reverse_capacity_mw = 500.0;
+        line
     }
 
     fn make_pumping_station(
@@ -2475,34 +2399,20 @@ mod tests {
         source_hydro_id: i32,
         destination_hydro_id: i32,
     ) -> PumpingStation {
-        PumpingStation {
-            id: EntityId(id),
-            name: format!("Pumping{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            source_hydro_id: EntityId(source_hydro_id),
-            destination_hydro_id: EntityId(destination_hydro_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 100.0,
-        }
+        let mut station = crate::test_support::make_pumping_station(
+            id,
+            bus_id,
+            source_hydro_id,
+            destination_hydro_id,
+        );
+        station.name = format!("Pumping{id}");
+        station
     }
 
     fn make_contract(id: i32, bus_id: i32) -> EnergyContract {
-        EnergyContract {
-            id: EntityId(id),
-            name: format!("Contract{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            contract_type: ContractType::Import,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            price_per_mwh: 50.0,
-            min_mw: 0.0,
-            max_mw: 200.0,
-        }
+        let mut contract = crate::test_support::make_contract(id, bus_id);
+        contract.name = format!("Contract{id}");
+        contract
     }
 
     /// Build a system with 2 hydros (referenced only as the pumping station's
@@ -2768,25 +2678,13 @@ mod tests {
     /// dropped the plant-numeric prefix would collide.
     fn make_system_2h_same_group_id_and_name() -> System {
         let mut h1 = make_hydro(1, "PlantA", 1);
-        h1.unit_groups = vec![HydroUnitGroup {
-            id: EntityId(0),
-            name: "GroupX".to_string(),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-        }];
+        let mut group_a = make_unit_group(0, 1, 0.0, 45.0, 0.0, 50.0);
+        group_a.name = "GroupX".to_string();
+        h1.unit_groups = vec![group_a];
         let mut h2 = make_hydro(2, "PlantB", 1);
-        h2.unit_groups = vec![HydroUnitGroup {
-            id: EntityId(0),
-            name: "GroupX".to_string(),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-        }];
+        let mut group_b = make_unit_group(0, 1, 0.0, 45.0, 0.0, 50.0);
+        group_b.name = "GroupX".to_string();
+        h2.unit_groups = vec![group_b];
 
         let bus = make_bus(1);
         let stage = make_stage(0);
@@ -2866,26 +2764,11 @@ mod tests {
     #[test]
     fn entities_csv_group_row_carries_the_groups_own_bus() {
         let mut h1 = make_hydro(1, "Plant1", 1);
-        h1.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId(5),
-                name: "GroupHigh".to_string(),
-                bus_id: EntityId(3),
-                min_generation_mw: 0.0,
-                max_generation_mw: 20.0,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 25.0,
-            },
-            HydroUnitGroup {
-                id: EntityId(2),
-                name: "GroupLow".to_string(),
-                bus_id: EntityId(2),
-                min_generation_mw: 0.0,
-                max_generation_mw: 25.0,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 25.0,
-            },
-        ];
+        let mut group_high = make_unit_group(5, 3, 0.0, 20.0, 0.0, 25.0);
+        group_high.name = "GroupHigh".to_string();
+        let mut group_low = make_unit_group(2, 2, 0.0, 25.0, 0.0, 25.0);
+        group_low.name = "GroupLow".to_string();
+        h1.unit_groups = vec![group_high, group_low];
 
         let bus1 = make_bus(1);
         let bus2 = make_bus(2);
@@ -3026,8 +2909,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 255,
-            "variables.csv must have exactly 255 data rows (one per column across all schemas)"
+            row_count, 258,
+            "variables.csv must have exactly 258 data rows (one per column across all schemas)"
         );
     }
 
@@ -3651,26 +3534,11 @@ mod tests {
         let bus2 = make_bus(2);
         let bus3 = make_bus(3);
         let mut h1 = make_hydro(7, "Plant7", 2);
-        h1.unit_groups = vec![
-            HydroUnitGroup {
-                id: EntityId(5),
-                name: "GroupHigh".to_string(),
-                bus_id: EntityId(3),
-                min_generation_mw: 1.0,
-                max_generation_mw: 20.0,
-                min_turbined_m3s: 2.0,
-                max_turbined_m3s: 25.0,
-            },
-            HydroUnitGroup {
-                id: EntityId(2),
-                name: "GroupLow".to_string(),
-                bus_id: EntityId(2),
-                min_generation_mw: 3.0,
-                max_generation_mw: 15.0,
-                min_turbined_m3s: 4.0,
-                max_turbined_m3s: 18.0,
-            },
-        ];
+        let mut group_high = make_unit_group(5, 3, 1.0, 20.0, 2.0, 25.0);
+        group_high.name = "GroupHigh".to_string();
+        let mut group_low = make_unit_group(2, 2, 3.0, 15.0, 4.0, 18.0);
+        group_low.name = "GroupLow".to_string();
+        h1.unit_groups = vec![group_high, group_low];
         let stage0 = make_stage(0);
 
         let mut bounds = ResolvedBounds::new(
@@ -3953,7 +3821,7 @@ mod tests {
     // ── dictionary unit/description tests ────────────────────────────────────
 
     #[test]
-    fn new_energy_columns_have_units() {
+    fn energy_columns_have_units() {
         assert_eq!(
             unit_for("hydros", "equivalent_productivity_mw_per_m3s"),
             "MW/(m3/s)"
@@ -3993,6 +3861,8 @@ mod tests {
         ("buses", "spot_price", "$/MWh"),
         ("contracts", "price_per_mwh", "$/MWh"),
         ("hydros", "water_value_per_hm3", "$/hm3"),
+        ("hydros", "tailrace_level_m", "m"),
+        ("hydros", "net_head_m", "m"),
         ("convergence", "lower_bound", "$"),
         ("convergence", "upper_bound", "$"),
         ("convergence", "upper_bound_std", "$"),
@@ -4385,6 +4255,7 @@ mod tests {
             "(m3/s)/hm3",
             "%",
             "ms",
+            "m",
             "varies",
         ];
         let problems: Vec<String> = registry_columns()
@@ -4573,7 +4444,17 @@ mod tests {
     }
 
     #[test]
-    fn new_energy_columns_have_descriptions() {
+    fn tailrace_columns_state_their_null_condition() {
+        for column in ["tailrace_flow_m3s", "tailrace_level_m", "net_head_m"] {
+            assert!(
+                description_for("hydros", column).contains("computed FPHA"),
+                "{column} must state when it is null"
+            );
+        }
+    }
+
+    #[test]
+    fn energy_columns_have_descriptions() {
         assert!(
             !description_for("hydros", "equivalent_productivity_mw_per_m3s").is_empty(),
             "equivalent_productivity_mw_per_m3s must have a description"

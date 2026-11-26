@@ -198,10 +198,10 @@ pub(super) fn resolve_variable_ref(
 
 /// One `(column, multiplier)` pair per cell of the plant addressed by
 /// `hydro_id` in the `Turbine` family, or exactly one pair when `bus_id` names
-/// one of the plant's cells — the correct plant-level resolution now that the
-/// family is sized by cell, not by plant: a `VariableRef` with `bus_id: None`
-/// means the whole plant, i.e. every cell's column, matching today's single
-/// pair under the identity partition. `Some(b)` resolves through
+/// one of the plant's cells — the plant-level resolution for a family sized by
+/// cell, not by plant: a `VariableRef` with `bus_id: None` means the whole plant,
+/// i.e. every cell's column (a single pair under the identity partition).
+/// `Some(b)` resolves through
 /// `ctx.hydro_cell_index.cell_of_bus`, never `Hydro::bus_id`: the cell's bus comes
 /// from a unit group's `bus_id`, an independent value the plant's own field
 /// need not match. Returns an empty vec on an `EntityPositions::hydro` miss (mirrors every
@@ -372,8 +372,11 @@ fn push_local_inflow_rate(
 ) {
     let plant = HydroSys::new(plant_idx);
     inflow_out.push((plant_idx, 1.0));
-    if ctx.study_dims.inflow_method.truncates() {
-        out.push((layout.geometry.inflow_slack_col(plant), 1.0));
+    if let Some(slack) = layout
+        .geometry
+        .effective_inflow_slack_col(ctx.study_dims.inflow_method, plant)
+    {
+        out.push((slack, 1.0));
     }
 
     if !layout.geometry.diversion.is_empty() {
@@ -461,9 +464,7 @@ fn push_upstream_release_rate(
 }
 
 /// Push plant `u_idx`'s release columns (every cell's turbine column, then
-/// spillage) onto `out` at `coeff`: a plant's release is `Σ_c q_c + s` over a
-/// disjoint cell partition, so `coeff` is replicated across cells, never divided
-/// (mirrors `push_plant_release` in `lp/builder/entries.rs`).
+/// spillage) onto `out` at `coeff`.
 fn push_release_columns(
     u_idx: usize,
     blk: BlockIdx,
@@ -472,14 +473,12 @@ fn push_release_columns(
     layout: &StageLayout<'_>,
     out: &mut Vec<(usize, f64)>,
 ) {
-    let sys_up = HydroSys::new(u_idx);
-    for cell in ctx.hydro_cell_index.cells_of(sys_up) {
-        out.push((
-            layout.geometry.turbine_col(HydroCell::new(cell), blk),
-            coeff,
-        ));
-    }
-    out.push((layout.geometry.spillage_col(sys_up, blk), coeff));
+    out.extend(
+        layout
+            .geometry
+            .plant_release_cols(ctx.hydro_cell_index, HydroSys::new(u_idx), blk)
+            .map(|col| (col, coeff)),
+    );
 }
 
 /// Resolve `HydroEvaporation` to the evaporation-outflow column for the matching
@@ -531,9 +530,11 @@ fn resolve_hydro_outflow(
     let Some(pos) = ctx.positions.hydro(hydro_id) else {
         return vec![];
     };
-    let mut result = resolve_turbine_cells(hydro_id, None, blk, 1.0, ctx, layout);
-    result.push((layout.geometry.spillage_col(HydroSys::new(pos), blk), 1.0));
-    result
+    layout
+        .geometry
+        .plant_release_cols(ctx.hydro_cell_index, HydroSys::new(pos), blk)
+        .map(|col| (col, 1.0))
+        .collect()
 }
 
 /// Stage volume (hm³): every block's flow columns from `per_block`, each weighted by

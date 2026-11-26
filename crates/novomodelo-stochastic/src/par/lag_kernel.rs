@@ -957,10 +957,9 @@ mod tests {
         assert_ne!(lag_state[1], shared_scalar_result);
     }
 
-    /// Independent reimplementation of the pre-widening scalar-weight
-    /// accumulate-then-finalize arithmetic (one shared weight divides every
-    /// entity), used to pin the per-entity kernel's output bit-for-bit under
-    /// uniform per-stage coverage.
+    /// Independent reimplementation of scalar-weight accumulate-then-finalize
+    /// arithmetic (one shared weight divides every entity), used to pin the
+    /// per-entity kernel's output bit-for-bit under uniform per-stage coverage.
     fn oracle_scalar_weight_finalize(
         accumulator: &mut [f64],
         weight: &mut f64,

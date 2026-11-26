@@ -25,19 +25,15 @@ use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ConstraintExpression,
-    ContractBlockBounds, DeficitSegment, DiversionChannel, EntityId, GenericConstraint,
-    HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
-    InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
-    PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedGenericConstraintBounds, ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
-    VariableRef,
+    Bus, ConstraintExpression, DeficitSegment, DiversionChannel, EntityId, GenericConstraint,
+    HydroStorage, InitialConditions, LinearTerm, ResolvedGenericConstraintBounds, System,
+    SystemBuilder, VariableRef,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
-    ModelingConfig, PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
-    SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowResidualConfig, ModelingConfig, PolicyConfig, RowSelectionConfig,
+    SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
     FphaPlane, PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
@@ -116,93 +112,6 @@ fn stages(block_mode: BlockMode) -> Vec<Stage> {
             )
         })
         .collect()
-}
-
-fn zero_hydro_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 0.0,
-    }
-}
-
-fn resolved_bounds(n_stages: usize, n_hydros: usize) -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 10_000.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 500.0,
-                max_generation_mw: 1_000.0,
-                ..HydroBlockBounds::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 500.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn resolved_penalties(n_stages: usize, n_hydros: usize, n_buses: usize) -> ResolvedPenalties {
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: zero_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
 }
 
 /// The one `GenericConstraint` on `VariableRef::HydroInflow { hydro_id:
@@ -314,37 +223,38 @@ fn build_system_with_upstream_max_generation(
 
     let (generic_constraint, resolved_generic_bounds) = downstream_inflow_constraint();
 
-    let mut bounds = resolved_bounds(n_stages, 2);
-    for stage in 0..n_stages {
-        bounds
-            .hydro_block_base_mut(UPSTREAM_POS, stage)
-            .max_generation_mw = upstream_max_generation_mw;
-    }
-
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![downstream, upstream])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .bounds(bounds)
-        .penalties(resolved_penalties(n_stages, 2, 1))
-        .generic_constraints(vec![generic_constraint])
-        .resolved_generic_bounds(resolved_generic_bounds)
-        .initial_conditions(InitialConditions {
-            storage: vec![
-                HydroStorage {
-                    hydro_id: EntityId(DOWNSTREAM_ID),
-                    value_hm3: 0.0,
-                },
-                HydroStorage {
-                    hydro_id: EntityId(UPSTREAM_ID),
-                    value_hm3: 0.0,
-                },
-            ],
-            ..InitialConditions::default()
-        })
-        .build()
-        .expect("hydro_inflow_travel_time: valid two-hydro cascade");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![downstream.clone(), upstream.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .generic_constraints(vec![generic_constraint.clone()])
+                .resolved_generic_bounds(resolved_generic_bounds.clone())
+                .initial_conditions(InitialConditions {
+                    storage: vec![
+                        HydroStorage {
+                            hydro_id: EntityId(DOWNSTREAM_ID),
+                            value_hm3: 0.0,
+                        },
+                        HydroStorage {
+                            hydro_id: EntityId(UPSTREAM_ID),
+                            value_hm3: 0.0,
+                        },
+                    ],
+                    ..InitialConditions::default()
+                })
+        },
+        0,
+        |_, bounds, _| {
+            for stage in 0..n_stages {
+                bounds
+                    .hydro_block_base_mut(UPSTREAM_POS, stage)
+                    .max_generation_mw = upstream_max_generation_mw;
+            }
+        },
+    );
 
     assert_eq!(
         system.hydros()[UPSTREAM_POS].id,
@@ -392,23 +302,29 @@ fn build_two_cell_system(block_mode: BlockMode) -> System {
             max_generation_mw: 1_000.0,
             generation_model: HydroGenerationModel::ConstantProductivity,
             unit_groups: vec![
-                HydroUnitGroup {
-                    id: EntityId(0),
-                    name: "U1-A".to_string(),
-                    bus_id: EntityId(BUS_ID),
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 500.0,
-                    min_turbined_m3s: 0.0,
-                    max_turbined_m3s: 250.0,
+                {
+                    let mut group = novomodelo_sddp::test_support::make_unit_group(
+                        EntityId(0),
+                        EntityId(BUS_ID),
+                        0.0,
+                        500.0,
+                        0.0,
+                        250.0,
+                    );
+                    group.name = "U1-A".to_string();
+                    group
                 },
-                HydroUnitGroup {
-                    id: EntityId(1),
-                    name: "U1-B".to_string(),
-                    bus_id: split_bus_id,
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 500.0,
-                    min_turbined_m3s: 0.0,
-                    max_turbined_m3s: 250.0,
+                {
+                    let mut group = novomodelo_sddp::test_support::make_unit_group(
+                        EntityId(1),
+                        split_bus_id,
+                        0.0,
+                        500.0,
+                        0.0,
+                        250.0,
+                    );
+                    group.name = "U1-B".to_string();
+                    group
                 },
             ],
             ..HydroSpec::default()
@@ -432,30 +348,32 @@ fn build_two_cell_system(block_mode: BlockMode) -> System {
 
     let (generic_constraint, resolved_generic_bounds) = downstream_inflow_constraint();
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus, split_bus])
-        .hydros(vec![downstream, upstream])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .bounds(resolved_bounds(n_stages, 2))
-        .penalties(resolved_penalties(n_stages, 2, 2))
-        .generic_constraints(vec![generic_constraint])
-        .resolved_generic_bounds(resolved_generic_bounds)
-        .initial_conditions(InitialConditions {
-            storage: vec![
-                HydroStorage {
-                    hydro_id: EntityId(DOWNSTREAM_ID),
-                    value_hm3: 0.0,
-                },
-                HydroStorage {
-                    hydro_id: EntityId(UPSTREAM_ID),
-                    value_hm3: 0.0,
-                },
-            ],
-            ..InitialConditions::default()
-        })
-        .build()
-        .expect("hydro_inflow_travel_time: valid two-cell upstream cascade");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone(), split_bus.clone()])
+                .hydros(vec![downstream.clone(), upstream.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .generic_constraints(vec![generic_constraint.clone()])
+                .resolved_generic_bounds(resolved_generic_bounds.clone())
+                .initial_conditions(InitialConditions {
+                    storage: vec![
+                        HydroStorage {
+                            hydro_id: EntityId(DOWNSTREAM_ID),
+                            value_hm3: 0.0,
+                        },
+                        HydroStorage {
+                            hydro_id: EntityId(UPSTREAM_ID),
+                            value_hm3: 0.0,
+                        },
+                    ],
+                    ..InitialConditions::default()
+                })
+        },
+        0,
+        |_, _, _| {},
+    );
 
     assert_eq!(
         system.hydros()[UPSTREAM_POS].id,
@@ -542,7 +460,6 @@ fn build_prefilling_system(
         ));
     }
     hydros.push(diversion_source);
-    let n_hydros = hydros.len();
 
     let stages = stages(block_mode);
     let n_stages = stages.len();
@@ -562,8 +479,14 @@ fn build_prefilling_system(
         }
     }
 
+    let diversion_pos = if chain {
+        DIVERSION_SOURCE_POS_CHAIN
+    } else {
+        DIVERSION_SOURCE_POS_NO_CHAIN
+    };
+
     let (generic_constraint, resolved_generic_bounds) = downstream_inflow_constraint();
-    let storage = hydros
+    let storage: Vec<HydroStorage> = hydros
         .iter()
         .map(|h| HydroStorage {
             hydro_id: h.id,
@@ -571,21 +494,29 @@ fn build_prefilling_system(
         })
         .collect();
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .bounds(resolved_bounds(n_stages, n_hydros))
-        .penalties(resolved_penalties(n_stages, n_hydros, 1))
-        .generic_constraints(vec![generic_constraint])
-        .resolved_generic_bounds(resolved_generic_bounds)
-        .initial_conditions(InitialConditions {
-            storage,
-            ..InitialConditions::default()
-        })
-        .build()
-        .expect("hydro_inflow_travel_time: valid pre-filling cascade");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .generic_constraints(vec![generic_constraint.clone()])
+                .resolved_generic_bounds(resolved_generic_bounds.clone())
+                .initial_conditions(InitialConditions {
+                    storage: storage.clone(),
+                    ..InitialConditions::default()
+                })
+        },
+        0,
+        |_, bounds, _| {
+            for stage in 0..n_stages {
+                bounds
+                    .hydro_block_base_mut(diversion_pos, stage)
+                    .max_diversion_m3s = Some(0.0);
+            }
+        },
+    );
 
     assert_eq!(
         system.hydros()[UPSTREAM_POS].id,
@@ -611,11 +542,6 @@ fn build_prefilling_system(
              {PREFILLING_UPSTREAM_B_POS}"
         );
     }
-    let diversion_pos = if chain {
-        DIVERSION_SOURCE_POS_CHAIN
-    } else {
-        DIVERSION_SOURCE_POS_NO_CHAIN
-    };
     assert_eq!(
         system.hydros()[diversion_pos].id,
         EntityId(DIVERSION_SOURCE_ID),
@@ -649,7 +575,6 @@ fn build_exited_plant_system() -> System {
         },
     );
     let hydros = vec![upstream, downstream, exited];
-    let n_hydros = hydros.len();
 
     let stages = stages(BlockMode::Parallel);
     let n_stages = stages.len();
@@ -667,7 +592,7 @@ fn build_exited_plant_system() -> System {
         .collect();
 
     let (generic_constraint, resolved_generic_bounds) = downstream_inflow_constraint();
-    let storage = hydros
+    let storage: Vec<HydroStorage> = hydros
         .iter()
         .map(|h| HydroStorage {
             hydro_id: h.id,
@@ -675,21 +600,23 @@ fn build_exited_plant_system() -> System {
         })
         .collect();
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .bounds(resolved_bounds(n_stages, n_hydros))
-        .penalties(resolved_penalties(n_stages, n_hydros, 1))
-        .generic_constraints(vec![generic_constraint])
-        .resolved_generic_bounds(resolved_generic_bounds)
-        .initial_conditions(InitialConditions {
-            storage,
-            ..InitialConditions::default()
-        })
-        .build()
-        .expect("hydro_inflow_travel_time: valid exited-plant cascade");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .generic_constraints(vec![generic_constraint.clone()])
+                .resolved_generic_bounds(resolved_generic_bounds.clone())
+                .initial_conditions(InitialConditions {
+                    storage: storage.clone(),
+                    ..InitialConditions::default()
+                })
+        },
+        0,
+        |_, _, _| {},
+    );
 
     assert_eq!(
         system.hydros()[UPSTREAM_POS].id,
@@ -755,6 +682,7 @@ fn config_with(method: InflowNonNegativityMethod) -> Config {
         schema: None,
         modeling: ModelingConfig {
             inflow_non_negativity: InflowNonNegativityConfig { method },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: Some(1.0),
         },
         training: TrainingConfig {
@@ -766,7 +694,7 @@ fn config_with(method: InflowNonNegativityMethod) -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),

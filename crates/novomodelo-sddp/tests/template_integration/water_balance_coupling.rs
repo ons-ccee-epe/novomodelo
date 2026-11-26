@@ -23,6 +23,7 @@ struct SinkPower {
     unequal_chronological_stages: usize,
     prefilling_routes: usize,
     generic_entries: usize,
+    fpha_entries: usize,
 }
 
 fn check_sink_coupling(key: &str, system: &System, setup: &StudySetup, power: &mut SinkPower) {
@@ -58,12 +59,15 @@ fn check_sink_coupling(key: &str, system: &System, setup: &StudySetup, power: &m
         for h in 0..n_hydros {
             for (r, v) in coupling.hydro_entries(HydroSys::new(h)) {
                 assert!(
-                    r >= generic_row_start || water_hydro_of(r).is_some(),
+                    r >= generic_row_start || water_hydro_of(r).is_some() || geom.fpha.contains(&r),
                     "{key}: stage {s} hydro {h}: sink entry at row {r} is on \
-                     neither a water row nor a generic row"
+                     neither a water, an FPHA nor a generic row"
                 );
                 if r >= generic_row_start && v != 0.0 {
                     power.generic_entries += 1;
+                }
+                if geom.fpha.contains(&r) && v != 0.0 {
+                    power.fpha_entries += 1;
                 }
             }
         }
@@ -198,9 +202,10 @@ fn every_study_reads_z_inflow_on_its_water_rows() {
     assert!(
         power.unequal_chronological_stages >= 1
             && power.prefilling_routes >= 1
-            && power.generic_entries >= 1,
+            && power.generic_entries >= 1
+            && power.fpha_entries >= 1,
         "the sweep must visit a chronological stage with unequal block hours, a PreFilling \
-         route and a generic HydroInflow entry, got {power:?}"
+         route, a generic HydroInflow entry and an FPHA row entry, got {power:?}"
     );
 }
 

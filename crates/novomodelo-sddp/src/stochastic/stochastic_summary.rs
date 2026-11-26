@@ -9,7 +9,6 @@
 use novomodelo_core::EntityId;
 use novomodelo_core::InflowModel;
 use novomodelo_core::{System, scenario::SamplingScheme};
-use novomodelo_io::config::{CorrelationTarget, MomentMatching};
 use novomodelo_io::output::{FittingReductionEntry, FittingReport, HydroFittingEntry};
 use novomodelo_io::scenarios::{
     InflowAnnualComponentRow, InflowArCoefficientRow, InflowSeasonalStatsRow,
@@ -114,14 +113,10 @@ pub struct StochasticSummary {
     pub ar_summary: Option<ArOrderSummary>,
     /// Source of correlation data.
     pub correlation_source: StochasticSource,
-    /// Series the correlation was estimated from; `None` unless it was estimated.
-    pub correlation_target: Option<CorrelationTarget>,
     /// Dimension of the correlation matrix (e.g., `"5x5"`).
     pub correlation_dim: Option<String>,
     /// Source of the opening tree.
     pub opening_tree_source: StochasticSource,
-    /// Moment matching applied to a generated opening tree; `None` when the tree was not generated.
-    pub opening_tree_moment_matching: Option<MomentMatching>,
     /// Number of openings at each stage.
     pub openings_per_stage: Vec<usize>,
     /// Number of stages in the stochastic context.
@@ -197,13 +192,11 @@ fn build_ar_order_summary(
     })
 }
 
-fn correlation_source_and_target(
-    origin: CorrelationOrigin,
-) -> (StochasticSource, Option<CorrelationTarget>) {
+fn correlation_source(origin: CorrelationOrigin) -> StochasticSource {
     match origin {
-        CorrelationOrigin::UserFile => (StochasticSource::Loaded, None),
-        CorrelationOrigin::Estimated { target } => (StochasticSource::Estimated, Some(target)),
-        CorrelationOrigin::NotApplicable => (StochasticSource::None, None),
+        CorrelationOrigin::UserFile => StochasticSource::Loaded,
+        CorrelationOrigin::Estimated => StochasticSource::Estimated,
+        CorrelationOrigin::NotApplicable => StochasticSource::None,
     }
 }
 
@@ -213,7 +206,7 @@ fn correlation_source_and_target(
 /// estimation report, and correlation origin. All fields derive from
 /// already-validated inputs; construction is infallible.
 ///
-/// The correlation source and target follow `correlation_origin`, the opening-tree
+/// The correlation source follows `correlation_origin`, the opening-tree
 /// source follows component provenance, and the inflow source follows
 /// `estimation_report`.
 #[must_use]
@@ -245,8 +238,7 @@ pub fn build_stochastic_summary(
 
     let ar_summary = build_ar_order_summary(system, estimation_report, n_hydros);
 
-    let (correlation_source, correlation_target) =
-        correlation_source_and_target(correlation_origin);
+    let correlation_source = correlation_source(correlation_origin);
 
     // Full noise dimension (hydros + load buses + NCS), not just n_hydros.
     let n_correlated = stochastic.dim();
@@ -277,10 +269,8 @@ pub fn build_stochastic_summary(
         n_seasons,
         ar_summary,
         correlation_source,
-        correlation_target,
         correlation_dim,
         opening_tree_source,
-        opening_tree_moment_matching: provenance.opening_tree_moment_matching.map(Into::into),
         openings_per_stage,
         n_stages,
         n_load_buses,
@@ -396,119 +386,77 @@ pub fn inflow_models_to_annual_component_rows(
 mod tests {
     use std::collections::BTreeMap;
 
-    use chrono::NaiveDate;
     use novomodelo_core::{
         Bus, DeficitSegment, EntityId, SystemBuilder,
-        entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
+        entities::hydro::{Hydro, HydroPenalties},
         scenario::{AnnualComponent, CorrelationModel, InflowModel, SamplingScheme},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
     use novomodelo_stochastic::{
         ArCoefficientEstimate, ClassSchemes, OpeningTreeInputs, build_stochastic_context,
-        tree::MomentMatching,
     };
-
-    use novomodelo_io::config::CorrelationTarget;
 
     use super::{
         StochasticSource, build_stochastic_summary, estimation_report_to_fitting_report,
         inflow_models_to_ar_rows, inflow_models_to_stats_rows,
     };
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
     use crate::{CorrelationOrigin, EstimationReport};
     use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
     fn make_bus(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("B{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        }
+        builders::make_bus(
+            EntityId(id),
+            BusSpec {
+                name: format!("B{id}"),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
+            },
+        )
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
             },
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        )
     }
 
     fn make_stage(idx: usize, id: i32) -> Stage {
-        Stage {
-            index: idx,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(id.unsigned_abs() as usize),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = builders::make_stage(
+            idx,
+            StageSpec {
+                season_id: Some(id.unsigned_abs() as usize),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "S".to_string(),
+                    duration_hours: 744.0,
+                }],
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: 3,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 3,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     fn make_inflow_model(hydro_id: i32, stage_id: i32) -> InflowModel {
@@ -883,7 +831,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),
@@ -940,45 +887,6 @@ mod tests {
     }
 
     #[test]
-    fn summary_records_the_moment_matching_of_a_generated_tree() {
-        use novomodelo_stochastic::context::OpeningTree;
-
-        let system = make_system_with_hydro();
-        let schemes = || ClassSchemes {
-            inflow: Some(SamplingScheme::InSample),
-            load: Some(SamplingScheme::InSample),
-            ncs: Some(SamplingScheme::InSample),
-        };
-        let summary_of = |inputs: OpeningTreeInputs<'_>| {
-            let stochastic =
-                build_stochastic_context(&system, 42, None, &[], &[], inputs, schemes()).unwrap();
-            build_stochastic_summary(
-                &system,
-                &stochastic,
-                None,
-                CorrelationOrigin::NotApplicable,
-                42,
-            )
-        };
-
-        let generated = summary_of(OpeningTreeInputs {
-            moment_matching: MomentMatching::PerCoordinate,
-            ..Default::default()
-        });
-        let supplied = summary_of(OpeningTreeInputs {
-            user_tree: Some(OpeningTree::from_parts(vec![1.0_f64; 2 * 2], vec![2, 2], 1)),
-            moment_matching: MomentMatching::PerCoordinate,
-            ..Default::default()
-        });
-
-        assert_eq!(
-            generated.opening_tree_moment_matching,
-            Some(novomodelo_io::config::MomentMatching::PerCoordinate)
-        );
-        assert_eq!(supplied.opening_tree_moment_matching, None);
-    }
-
-    #[test]
     fn summary_correlation_source_follows_the_correlation_origin() {
         let stages = vec![make_stage(0, 0), make_stage(1, 1)];
         let inflow_models = vec![make_inflow_model(10, 0), make_inflow_model(10, 1)];
@@ -1023,31 +931,17 @@ mod tests {
         };
 
         let cases = [
-            (CorrelationOrigin::UserFile, ("Loaded", None)),
-            (
-                CorrelationOrigin::Estimated {
-                    target: CorrelationTarget::Residuals,
-                },
-                ("Estimated", Some(CorrelationTarget::Residuals)),
-            ),
-            (
-                CorrelationOrigin::Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
-                ("Estimated", Some(CorrelationTarget::Inflows)),
-            ),
-            (CorrelationOrigin::NotApplicable, ("None", None)),
+            (CorrelationOrigin::UserFile, "Loaded"),
+            (CorrelationOrigin::Estimated, "Estimated"),
+            (CorrelationOrigin::NotApplicable, "None"),
         ];
-        for (origin, (source, target)) in cases {
+        for (origin, source) in cases {
             for estimation_report in [Some(&report), None] {
                 let summary =
                     build_stochastic_summary(&system, &stochastic, estimation_report, origin, 1);
                 assert_eq!(
-                    (
-                        format!("{:?}", summary.correlation_source),
-                        summary.correlation_target
-                    ),
-                    (source.to_string(), target),
+                    format!("{:?}", summary.correlation_source),
+                    source,
                     "origin {origin:?} with estimation report present: {}",
                     estimation_report.is_some()
                 );
@@ -1060,7 +954,7 @@ mod tests {
     /// Verify the per-class scheme fields are populated from provenance and that
     /// `correlation_dim` reflects the full noise dimension (not just `n_hydros`).
     #[test]
-    fn build_stochastic_summary_new_fields_and_correlation_dim() {
+    fn build_stochastic_summary_scheme_fields_and_correlation_dim() {
         let system = make_system_with_hydro();
         let stochastic = build_stochastic_context(
             &system,

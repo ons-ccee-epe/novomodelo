@@ -794,7 +794,7 @@ mod tests {
     fn deserialize_cut_rejects_wrong_version() {
         let n_state = 2;
         let mut buf = vec![0u8; cut_wire_size(n_state)];
-        // Write a structurally valid cut record but stamp it as wire version 1 (old format).
+        // Write a structurally valid cut record but stamp it as wire version 1.
         buf[0] = 1; // wrong wire version
         buf[1..5].copy_from_slice(&10u32.to_ne_bytes());
         buf[5..9].copy_from_slice(&1u32.to_ne_bytes());

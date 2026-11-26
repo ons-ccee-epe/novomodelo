@@ -7,7 +7,8 @@ use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_io::Config;
 use novomodelo_io::PolicyMode;
 use novomodelo_io::config::{
-    BackwardScheduler, CheckpointSchedule, MomentMatching, PhaseSolverProfileConfig,
+    BackwardScheduler, CheckpointSchedule, FirstIterationTrialStorage, InflowResidualDistribution,
+    PhaseSolverProfileConfig,
 };
 use novomodelo_sddp::{
     BoundaryStateRequirements, CutSelectionStrategy, InflowNonNegativityMethod, StoppingMode,
@@ -94,6 +95,8 @@ pub(crate) struct BroadcastConfig {
     /// re-resolves `forward_passes` from the (identically-broadcast-derived)
     /// node graph once it exists.
     pub(crate) training_enumerated: bool,
+    /// `training.selection.first_iteration_trial_storage`, which every rank applies to its own trials.
+    pub(crate) first_iteration_trial_storage: FirstIterationTrialStorage,
     pub(crate) stopping_rules: Vec<BroadcastStoppingRule>,
     pub(crate) stopping_mode: BroadcastStoppingMode,
     pub(crate) n_scenarios: u32,
@@ -105,6 +108,7 @@ pub(crate) struct BroadcastConfig {
     pub(crate) io_channel_capacity: u32,
     pub(crate) policy_path: String,
     pub(crate) inflow_method: InflowNonNegativityMethod,
+    pub(crate) inflow_residual: InflowResidualDistribution,
     pub(crate) cut_selection: Option<CutSelectionStrategy>,
     pub(crate) cut_activity_tolerance: f64,
     /// When `false`, all ranks skip training and proceed to simulation (or exit).
@@ -120,8 +124,6 @@ pub(crate) struct BroadcastConfig {
     /// Scenario source for the training forward pass, broadcast so non-root
     /// ranks build the stochastic context with matching sampling schemes.
     pub(crate) training_source: ScenarioSource,
-    /// `Config::training_moment_matching`, which every rank passes to the opening-tree builder.
-    pub(crate) training_moment_matching: MomentMatching,
     pub(crate) simulation_source: ScenarioSource,
     /// Backward-pass solver profile override (`training.solver.backward`),
     /// resolved identically on every rank by
@@ -193,6 +195,7 @@ impl BroadcastConfig {
             seed: params.seed,
             forward_passes: params.forward_passes,
             training_enumerated: params.training_enumerated,
+            first_iteration_trial_storage: params.first_iteration_trial_storage,
             stopping_rules,
             stopping_mode,
             n_scenarios: params.n_scenarios,
@@ -201,6 +204,7 @@ impl BroadcastConfig {
             io_channel_capacity: u32::try_from(params.io_channel_capacity).unwrap_or(64),
             policy_path: params.policy_path,
             inflow_method: params.inflow_method,
+            inflow_residual: params.inflow_residual,
             cut_selection: params.cut_selection,
             cut_activity_tolerance: params.cut_activity_tolerance,
             training_enabled: config.training.enabled,
@@ -209,7 +213,6 @@ impl BroadcastConfig {
             checkpoint_schedule: params.checkpoint_schedule,
             budget: params.budget,
             training_source,
-            training_moment_matching: config.training_moment_matching(),
             simulation_source,
             training_solver_backward: params.training_solver_backward,
             training_solver_forward: params.training_solver_forward,
@@ -835,28 +838,50 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_config_carries_the_training_moment_matching() {
+    fn broadcast_config_carries_the_inflow_residual() {
         use super::BroadcastConfig;
-        use novomodelo_io::config::MomentMatching;
+        use novomodelo_io::config::InflowResidualDistribution;
 
         let json = r#"{
+            "modeling": { "inflow_residual": { "distribution": "lognormal_3p" } },
             "training": {
-                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }],
-                "scenario_source": {
-                    "openings": { "source": "generated", "moment_matching": "per_coordinate" }
-                }
+                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }]
             }
         }"#;
         let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
         let original = BroadcastConfig::from_config(&config).unwrap();
+        assert_eq!(
+            original.inflow_residual,
+            InflowResidualDistribution::Lognormal3p
+        );
 
         let bytes = postcard::to_allocvec(&original).expect("postcard serialization must succeed");
         let decoded: BroadcastConfig =
             postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
         assert_eq!(
-            decoded.training_moment_matching,
-            MomentMatching::PerCoordinate
+            decoded.inflow_residual,
+            InflowResidualDistribution::Lognormal3p
         );
+    }
+
+    #[test]
+    fn broadcast_config_defaults_the_inflow_residual_to_normal() {
+        use super::BroadcastConfig;
+        use novomodelo_io::config::InflowResidualDistribution;
+
+        let json = r#"{
+            "training": {
+                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }]
+            }
+        }"#;
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
+        let original = BroadcastConfig::from_config(&config).unwrap();
+        assert_eq!(original.inflow_residual, InflowResidualDistribution::Normal);
+
+        let bytes = postcard::to_allocvec(&original).expect("postcard serialization must succeed");
+        let decoded: BroadcastConfig =
+            postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
+        assert_eq!(decoded.inflow_residual, InflowResidualDistribution::Normal);
     }
 
     #[test]
@@ -1111,37 +1136,6 @@ mod tests {
             rank0_sim, non_root_sim,
             "simulation profile must resolve identically on every rank"
         );
-    }
-
-    /// Guardrail: catches a future serializer switching to named fields and
-    /// re-emitting stale field names into the postcard wire bytes.
-    #[test]
-    fn broadcast_config_wire_excludes_deleted_fields() {
-        use super::BroadcastConfig;
-
-        let json = r#"{
-            "training": {
-                "selection": { "method": "sampled", "forward_passes": 4 },
-                "stopping_rules": [
-                    { "type": "iteration_limit", "limit": 10 }
-                ]
-            }
-        }"#;
-        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
-        let bcast = BroadcastConfig::from_config(&config).unwrap();
-        let bytes = postcard::to_allocvec(&bcast).expect("postcard serialization must succeed");
-
-        let as_string = String::from_utf8_lossy(&bytes);
-        for stale in [
-            "warm_start_basis_mode",
-            "canonical_state_strategy",
-            "basis_padding",
-        ] {
-            assert!(
-                !as_string.contains(stale),
-                "BroadcastConfig postcard bytes must not contain '{stale}'"
-            );
-        }
     }
 
     #[test]

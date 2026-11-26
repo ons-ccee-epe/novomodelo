@@ -215,12 +215,6 @@ fn stage_id_to_index(stages: &[Stage]) -> HashMap<i32, usize> {
 /// within a period; shifted with the period's weighted-average raw value at
 /// each `finalize_period` boundary).
 ///
-/// A `f64::NEG_INFINITY` from `solve_par_noise` (sigma=0, non-matching target)
-/// is stored as-is; V3.7 in [`validate_external_library`] rejects it for a
-/// stage's real (pre-padding) scenarios. A phantom padding slot may also hold
-/// the sentinel, harmlessly — [`pad_library_to_uniform`] overwrites it with a
-/// real replica before the library is ever read.
-///
 /// A stage with fewer real scenarios than another stage has its raw values
 /// replicated to the library's uniform width BEFORE inversion (the same
 /// wrap-around convention [`pad_library_to_uniform`] applies to the eta
@@ -245,10 +239,9 @@ fn stage_id_to_index(stages: &[Stage]) -> HashMap<i32, usize> {
 /// # Panics
 ///
 /// Panics in debug builds if dimension mismatches are detected.
-// Rationale: `seed` folds the former lag/accum/weight arguments into one
-// aggregate; the remaining library/rows/entity-list/stage-list/par-model/
-// lag-transition/downstream-order inputs are independent, with no further
-// shared aggregate.
+// Rationale: `seed` already aggregates the lag/accumulator/weight state; the
+// remaining library/rows/entity-list/stage-list/par-model/lag-transition/
+// downstream-order inputs are independent, with no further shared aggregate.
 #[allow(clippy::too_many_arguments)]
 pub fn standardize_external_inflow(
     library: &mut ExternalScenarioLibrary,
@@ -651,7 +644,7 @@ pub fn standardize_external_ncs(
 /// | V3.4 | Error   | Each stage's row count must be divisible by `n_entities` (non-uniform counts allowed). |
 /// | V3.5 | Error   | Every entity ID in `row_entity_ids` must exist in `entity_ids`.          |
 /// | V3.6 | Assert  | All values in raw rows are finite (parser invariant — `debug_assert`).   |
-/// | V3.7 | Error   | No eta value at a stage's real (pre-padding) scenario may be `f64::NEG_INFINITY` or `NaN`. |
+/// | V3.7 | Error   | Every eta value at a stage's real (pre-padding) scenarios is finite.     |
 /// | V3.8 | Warning | `library.n_scenarios() < forward_passes` — log a warning.               |
 ///
 /// The caller pre-extracts `row_entity_ids` (entity IDs present in the raw rows)
@@ -755,26 +748,20 @@ pub fn validate_external_library(
         "V3.6: row_entity_ids contains IDs not in entity_id_set (parser invariant violated)",
     );
 
-    // V3.7 — no eta may be NEG_INFINITY (the sigma=0 non-matching-target sentinel
-    // from standardize_external_inflow) or NaN (numerical failure). Bounded to
-    // `raw_scenarios_per_stage` (each stage's REAL scenario count), never
-    // `library.n_scenarios()` (the padded, uniform width): a phantom slot beyond
-    // the real count is unconditionally overwritten by the later
-    // `pad_library_to_uniform` call with a real replica, so checking the padded
-    // width here would reject a stage that legitimately has fewer real scenarios
-    // than another stage (e.g. a branching root's single external observation).
+    // Bounded to `raw_scenarios_per_stage`, never `library.n_scenarios()`: the
+    // later `pad_library_to_uniform` call overwrites every slot beyond a stage's
+    // real count with a real replica.
     for stage in 0..library.n_stages() {
         let real_scenarios = library.raw_scenarios_per_stage()[stage];
         for scenario in 0..real_scenarios {
             let eta = library.eta_slice(stage, scenario);
             for (entity_idx, &value) in eta.iter().enumerate() {
-                if value == f64::NEG_INFINITY || value.is_nan() {
+                if !value.is_finite() {
                     return Err(StochasticError::InsufficientData {
                         context: format!(
                             "V3.7: external {class} library contains non-finite eta at \
                              stage {stage}, scenario {scenario}, entity {entity_idx} \
-                             (value = {value}) — sigma=0 with non-matching external value \
-                             or numerical failure",
+                             (value = {value})",
                         ),
                     });
                 }
@@ -878,13 +865,15 @@ pub fn pad_library_to_uniform(library: &mut ExternalScenarioLibrary) {
 mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
-        EntityId, Hydro, InflowHistoryRow, RecentObservation,
+        EntityId, InflowHistoryRow, RecentObservation,
         scenario::{
             AnnualComponent, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, InflowModel,
             LoadModel, NcsModel,
         },
         temporal::{Stage, StageLagTransition},
-        test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
+        test_support::{
+            InflowModelSpec, MonthlyLabels, StageSpec, date, monthly_season_map, single_block,
+        },
     };
 
     use super::{
@@ -898,24 +887,30 @@ mod tests {
         precompute::PrecomputedPar,
         precompute_stage_lag_transitions,
     };
-    use crate::test_support::{MonthlyLabels, monthly_season_map};
+    use crate::test_support::unmirrored_hydro;
+
+    /// A primary-lag-only transition: no downstream-ring involvement.
+    fn lag_transition(
+        accumulate_weight: f64,
+        spillover_weight: f64,
+        finalize_period: bool,
+    ) -> StageLagTransition {
+        StageLagTransition {
+            accumulate_weight,
+            spillover_weight,
+            finalize_period,
+            accumulate_downstream: false,
+            downstream_accumulate_weight: 0.0,
+            downstream_spillover_weight: 0.0,
+            downstream_finalize: false,
+            rebuild_from_downstream: false,
+        }
+    }
 
     /// Build `n_stages` uniform-monthly transitions: each stage finalizes its own
     /// period with full weight and no spillover (the simple per-stage path).
     fn uniform_monthly_transitions(n_stages: usize) -> Vec<StageLagTransition> {
-        vec![
-            StageLagTransition {
-                accumulate_weight: 1.0,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            };
-            n_stages
-        ]
+        vec![lag_transition(1.0, 0.0, true); n_stages]
     }
 
     // -----------------------------------------------------------------------
@@ -939,15 +934,14 @@ mod tests {
         std: f64,
         ar: Vec<f64>,
     ) -> InflowModel {
-        InflowModel {
-            hydro_id: EntityId(hydro_id),
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
+            hydro_id,
             stage_id,
             mean_m3s: mean,
             std_m3s: std,
             ar_coefficients: ar,
-            residual_std_ratio: 1.0,
-            annual: None,
-        }
+            ..Default::default()
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1132,36 +1126,9 @@ mod tests {
         let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
 
         let transitions = vec![
-            StageLagTransition {
-                accumulate_weight: 0.4,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 0.4,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 0.2,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(0.4, 0.0, false),
+            lag_transition(0.4, 0.0, false),
+            lag_transition(0.2, 0.0, true),
         ];
 
         let mut lib = ExternalScenarioLibrary::new(3, 1, 1, "inflow", vec![1, 1, 1]);
@@ -1274,26 +1241,8 @@ mod tests {
         let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
 
         let transitions = vec![
-            StageLagTransition {
-                accumulate_weight: 0.7,
-                spillover_weight: 0.3,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 1.0,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(0.7, 0.3, true),
+            lag_transition(1.0, 0.0, true),
         ];
 
         let mut lib = ExternalScenarioLibrary::new(2, 1, 1, "inflow", vec![1, 1]);
@@ -1365,10 +1314,10 @@ mod tests {
     ///
     /// Oracle: ring average = (130+140+150)/3 = 140.0 (mirrors the forward
     /// `noise.rs` ring's weighted-accumulate-then-average). The negative control
-    /// hand-computes what stage 4's eta would be under the old primary-only
-    /// advance (ignoring `rebuild_from_downstream`, so stage 3's own raw value
-    /// 500.0 — not the ring average — would have shifted into the lag) and
-    /// asserts it differs from the kernel-routed result.
+    /// hand-computes what stage 4's eta would be under a primary-only advance
+    /// (ignoring `rebuild_from_downstream`, so stage 3's own raw value 500.0 —
+    /// not the ring average — would shift into the lag) and asserts it differs
+    /// from the kernel-routed result.
     #[test]
     fn quarterly_ring_sampler_external_matches_oracle() {
         let hydro_id = EntityId(1);
@@ -1458,8 +1407,8 @@ mod tests {
             "eta[stage=4] = {eta_4}, expected {expected_eta_4} (ring average lag = {ring_average})"
         );
 
-        // Negative control: the old primary-only advance would have shifted
-        // stage 3's own raw value (500.0), not the ring average, into the lag.
+        // Negative control: a primary-only advance would shift stage 3's own
+        // raw value (500.0), not the ring average, into the lag.
         let naive_lag = raw_values[3];
         let naive_eta_4 = (raw_values[4] - det_base - psi * naive_lag) / sigma;
         assert!(
@@ -1503,7 +1452,7 @@ mod tests {
     /// The standardization bound is defensive, not load-bearing: novomodelo-io's A1
     /// (exact `scenario_id` set) rejects an out-of-range `scenario_id` at load. An
     /// index equal to `n_scenarios` must be dropped here, never written into the
-    /// next stage's realization 0 (the release-build corruption A1 now prevents).
+    /// next stage's realization 0 (a silent corruption in a release build).
     #[test]
     fn external_standardization_bound_is_defensive() {
         let bus_id = EntityId(1);
@@ -2059,56 +2008,13 @@ mod tests {
         let weight_weekly = 7.0 * 24.0 / 720.0;
         let weight_may = 30.0 * 24.0 / 744.0;
         let stage_lag_transitions = vec![
-            StageLagTransition {
-                accumulate_weight: weight_w1,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: true, // last April stage → finalize the April period
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_may,
-                spillover_weight: 0.0,
-                finalize_period: true, // only May stage → finalizes itself
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(weight_w1, 0.0, false),
+            lag_transition(weight_weekly, 0.0, false),
+            lag_transition(weight_weekly, 0.0, false),
+            // last April stage → finalize the April period
+            lag_transition(weight_weekly, 0.0, true),
+            // only May stage → finalizes itself
+            lag_transition(weight_may, 0.0, true),
         ];
 
         let targets = [
@@ -2269,7 +2175,7 @@ mod tests {
     }
 
     #[test]
-    fn test_v34_still_rejects_indivisible_rows() {
+    fn test_v34_rejects_indivisible_rows() {
         let n_entities = 2;
         let n_stages = 2;
         let lib = make_valid_library(n_stages, 2, n_entities, "inflow");
@@ -2400,19 +2306,6 @@ mod tests {
         })
     }
 
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            operational_start_date: date(2020, 1, 1),
-            mirror_unit_group: MirrorUnitGroup::None,
-            ..Default::default()
-        })
-    }
-
     /// With no conditioning, the derived lag seed carries exactly the same
     /// values a pre-windowing literal seed would have held, so threading it
     /// through the per-(stage, hydro) `solve_par_noise` calls reproduces the
@@ -2424,7 +2317,7 @@ mod tests {
         let h1 = EntityId(1);
         let h2 = EntityId(2);
         let hydro_ids = vec![h1, h2];
-        let hydros = vec![make_hydro(1), make_hydro(2)];
+        let hydros = vec![unmirrored_hydro(1), unmirrored_hydro(2)];
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         let stages = vec![dated_stage(0, 0, date(2024, 1, 1), date(2024, 2, 1), 0)];
@@ -2537,7 +2430,7 @@ mod tests {
     fn external_eta_round_trip_exact_under_conditioning() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         let stages = vec![
@@ -2728,7 +2621,7 @@ mod tests {
     fn external_eta_round_trip_exact_mid_coarse_period() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         // Stage 0 starts April 11: the in-progress occurrence [April 1,

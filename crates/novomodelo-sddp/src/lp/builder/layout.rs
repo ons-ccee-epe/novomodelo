@@ -21,6 +21,7 @@ use crate::indexer::{
     anticipated_resolution_for, for_each_live_commitment_slot,
     is_anticipated_decision_active_for_delivery,
 };
+use crate::inflow_method::InflowNonNegativityMethod;
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
@@ -29,7 +30,7 @@ use super::hydro_state::{
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
-    GenericConstraintRowEntry,
+    GenericConstraintRowEntry, ResolvedTailraceLateral,
 };
 use crate::block_clock::BlockClock;
 use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};
@@ -93,6 +94,10 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// single `resolve_lp_build_inputs` resolution
     /// (`LpBuildInputs::diversion_upstream`).
     pub(crate) diversion_upstream: &'a HashMap<EntityId, Vec<usize>>,
+    /// Per-hydro tailrace-flow terms, one record per hydro in system order.
+    /// Borrowed from setup's single `resolve_lp_build_inputs` resolution
+    /// (`LpBuildInputs::tailrace_lateral`).
+    pub(crate) tailrace_lateral: &'a [ResolvedTailraceLateral],
     /// The role-(a) state layout, from setup's single owner
     /// (`resolve_state_layout`), which owns `anticipated_lead_stages` and
     /// `anticipated_resolution`.
@@ -123,8 +128,6 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// reachability mask, and the three resolved arc tables — stage-clock
     /// weights, chronological spread, arrival density), threaded from
     /// setup's single owner (`crate::bucket_topology::build_transit_bucket_topology`).
-    /// This ctx used to carry four of its tables as its own clones; see
-    /// [`crate::bucket_topology::TransitBucketTopology`].
     pub(crate) topology: &'a TransitBucketTopology,
 }
 
@@ -1186,9 +1189,9 @@ fn enumerate_generic_constraint_rows(
 
 /// One hydro's resolved LP production role at one stage — the single
 /// classifier [`StageLayout::stage_production_role`] resolves, so
-/// `fill_load_balance_entries` and `fill_operational_violation_entries` can
-/// no longer disagree about a plant's role the way two independent
-/// `ProductionModelSet::model()` re-queries once did.
+/// `fill_load_balance_entries` and `fill_operational_violation_entries`
+/// cannot disagree about a plant's role, as two independent
+/// `ProductionModelSet::model()` re-queries could.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum StageProductionRole {
     /// Prices through the plant's FPHA generation column(s), at this
@@ -2019,8 +2022,7 @@ impl StageLayout<'_> {
 /// after `turbine` has a base `turbine.start + Σ(prior)·n_blks` and length
 /// `count·n_blks`, both striped by stage 0's block count, so at any stage with a
 /// differing block count the stage-0 base/length addresses the WRONG primal
-/// columns. The per-stage `n_blks` stride was already correct; this closes the
-/// matching base/length gap. Uniform-block studies coincide with stage 0.
+/// columns. Uniform-block studies coincide with stage 0.
 #[derive(Debug, Clone)]
 pub struct StageGeometry {
     /// Turbined-flow column range (one per hydro per block). `turbine.start` is
@@ -2215,6 +2217,23 @@ impl StageGeometry {
         self.block_flat(&self.spillage, h.get(), blk)
     }
 
+    /// Columns of plant `h`'s release in block `blk`: each cell's turbine column
+    /// in `cells_of(h)` order, then the plant's spillage column. The release is
+    /// `Σ_c q_c + s`, so a per-plant coefficient is replicated across the cells,
+    /// never divided.
+    #[inline]
+    pub(crate) fn plant_release_cols<'s>(
+        &'s self,
+        cells: &'s HydroCellIndex,
+        h: HydroSys,
+        blk: BlockIdx,
+    ) -> impl Iterator<Item = usize> + 's {
+        cells
+            .cells_of(h)
+            .map(move |c| self.turbine_col(HydroCell::new(c), blk))
+            .chain(std::iter::once(self.spillage_col(h, blk)))
+    }
+
     /// Diversion-flow column for hydro `h`, block `blk`.
     #[inline]
     #[must_use]
@@ -2395,6 +2414,19 @@ impl StageGeometry {
         entity_flat(&self.inflow_slack, h.get())
     }
 
+    /// The slack column that belongs to plant `h`'s effective (truncated) local
+    /// inflow. Under `Penalty` and `None` the effective inflow is the realized
+    /// inflow alone, so there is none.
+    #[inline]
+    #[must_use]
+    pub(crate) fn effective_inflow_slack_col(
+        &self,
+        method: InflowNonNegativityMethod,
+        h: HydroSys,
+    ) -> Option<usize> {
+        method.truncates().then(|| self.inflow_slack_col(h))
+    }
+
     /// Hydro `h`'s below-withdrawal-target slack column.
     #[inline]
     #[must_use]
@@ -2488,7 +2520,7 @@ mod collapse_stage_level_tests {
     }
 
     #[test]
-    fn block_invariant_coefficient_still_collapses() {
+    fn block_invariant_coefficient_collapses() {
         let param = unbounded(expr(LinearTerm {
             coefficient: ScalarExpr::param(EntityId(43)),
             variable: hydro_storage(),

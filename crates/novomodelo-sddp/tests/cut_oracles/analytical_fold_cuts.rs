@@ -18,19 +18,18 @@ use novomodelo_core::temporal::{
     SeasonMap, Stage, StageRiskConfig, StageStateConfig,
 };
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression, ContractBlockBounds,
-    DeficitSegment, EntityId, GenericConstraint, HorizonGraph, Hydro, HydroBlockBounds,
-    HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
-    LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
-    PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-    SlackConfig, System, SystemBuilder, ThermalBlockBounds, TrainingEvent, VariableRef,
+    ConstraintExpression, DeficitSegment, EntityId, GenericConstraint, HorizonGraph, Hydro,
+    HydroStorage, InitialConditions, LinearTerm, PenaltyBasis, ResolvedGenericConstraintBounds,
+    SlackConfig, System, SystemBuilder, TailraceFlow, TailraceFlowInfluence, TrainingEvent,
+    VariableRef,
 };
 use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-    RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig,
-    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, InflowResidualDistribution,
+    ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
+    SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
+    TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
     EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
@@ -46,13 +45,17 @@ use novomodelo_sddp::test_support::bound_recording::{
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, inflow_slack_bounds_for_probe,
-    opening_cut_for_probe, oracle_initial_state,
+    ProbeCut, ProbeCuts, ProbeOpening, build_with_resolved_tables, empty_row_batch,
+    inflow_slack_bounds_for_probe, opening_cut_for_probe, oracle_initial_state,
 };
 use novomodelo_sddp::{
     DEFAULT_COST_SCALE_FACTOR, SolverProfiles, StudySetup, build_cut_row_batch_into,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
+use novomodelo_stochastic::{
+    add_noise_term_batch, evaluate_lognormal_noise_term_batch, evaluate_par_conditional_mean_batch,
+    evaluate_par_noise_term_batch,
+};
 
 use crate::common::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
@@ -81,6 +84,9 @@ const THERMAL_ID: EntityId = EntityId(20);
 const SOLE_HYDRO_ID: EntityId = EntityId(1);
 const UPSTREAM_ID: EntityId = EntityId(1);
 const TARGET_ID: EntityId = EntityId(2);
+const INFLUENCING_ID: EntityId = EntityId(2);
+/// The system index of [`INFLUENCING_ID`] in [`lateral_fpha_case`].
+const INFLUENCING: usize = 1;
 
 const THERMAL_COST_PER_MWH: f64 = 100.0;
 const THERMAL_MAX_MW: f64 = 1_000.0;
@@ -151,6 +157,13 @@ const GENERATION_FLOOR: GenerationFloor = GenerationFloor {
 };
 /// How many `ClosedForm` bounds the head term must exceed, so a closed form without it fails.
 const HEAD_TERM_MARGIN: f64 = 100.0;
+/// [`FPHA_PLANE`] with a tailrace slope, so a lateral inflow lowers the plane.
+const LATERAL_FPHA_PLANE: FphaPlane = FphaPlane {
+    gamma_s: -0.1,
+    ..FPHA_PLANE
+};
+/// `f_k`: the weight of the influencing hydro's incremental inflow in the tailrace flow.
+const LATERAL_FACTOR: f64 = 0.8;
 
 /// The thermal cost [`chronological_noise_study`] writes inline.
 const NEGATIVE_DRAW_THERMAL_COST_PER_MWH: f64 = 100.0;
@@ -219,12 +232,15 @@ struct GenerationFloor {
     penalty_per_hour: f64,
 }
 
-/// The sole hydro produces through `plane` at every stage, its slack σ priced at `violation_cost`.
+/// The case's first hydro produces through `plane` at every stage, its slack σ priced at
+/// `violation_cost`; `lateral_inflow` adds another hydro's incremental inflow, at a factor, to its
+/// tailrace flow.
 #[derive(Clone, Copy)]
 struct FphaCase {
     plane: FphaPlane,
     violation_cost: f64,
     generation_floor: Option<GenerationFloor>,
+    lateral_inflow: Option<(EntityId, f64)>,
 }
 
 /// One parallel block per monthly stage; the hydros are declared in ascending id order, so
@@ -295,7 +311,23 @@ fn case_penalties(case: &StudyCase) -> HydroPenalties {
     }
 }
 
-fn fixture_hydro(hydro: &HydroCase, penalties: HydroPenalties) -> Hydro {
+/// The tailrace flow of the hydro at `position` in `case`: the FPHA hydro's carries the case's
+/// lateral inflow.
+fn case_tailrace_flow(case: &StudyCase, position: usize) -> TailraceFlow {
+    match case.fpha.and_then(|fpha| fpha.lateral_inflow) {
+        Some((hydro_id, factor)) if position == 0 => TailraceFlow {
+            incremental_inflow_influences: vec![TailraceFlowInfluence { hydro_id, factor }],
+            ..TailraceFlow::default()
+        },
+        _ => TailraceFlow::default(),
+    }
+}
+
+fn fixture_hydro(
+    hydro: &HydroCase,
+    penalties: HydroPenalties,
+    tailrace_flow: TailraceFlow,
+) -> Hydro {
     make_hydro(
         hydro.id,
         HydroSpec {
@@ -310,6 +342,7 @@ fn fixture_hydro(hydro: &HydroCase, penalties: HydroPenalties) -> Hydro {
             max_generation_mw: MAX_GENERATION_MW,
             generation_model: HydroGenerationModel::ConstantProductivity,
             penalties,
+            tailrace_flow,
             ..Default::default()
         },
     )
@@ -349,71 +382,6 @@ fn stage_id(index: usize) -> i32 {
     i32::try_from(index).expect("a fixture stage index fits i32")
 }
 
-fn fixture_bounds(case: &StudyCase) -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: case.hydros.len(),
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: case.n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: MAX_STORAGE_HM3,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: MAX_TURBINED_M3S,
-                max_generation_mw: MAX_GENERATION_MW,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: THERMAL_MAX_MW,
-                cost_per_mwh: THERMAL_COST_PER_MWH,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn fixture_penalty_table(case: &StudyCase) -> ResolvedPenalties {
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: case.hydros.len(),
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: case.n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: case_penalties(case),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 fn build_system(case: &StudyCase) -> System {
     let bus = make_bus(
         BUS_ID,
@@ -440,7 +408,7 @@ fn build_system(case: &StudyCase) -> System {
             ..Default::default()
         },
     );
-    let inflow_models = case
+    let inflow_models: Vec<InflowModel> = case
         .hydros
         .iter()
         .flat_map(|hydro| {
@@ -455,7 +423,7 @@ fn build_system(case: &StudyCase) -> System {
             })
         })
         .collect();
-    let load_models = (0..case.n_stages)
+    let load_models: Vec<LoadModel> = (0..case.n_stages)
         .map(|i| LoadModel {
             bus_id: BUS_ID,
             stage_id: stage_id(i),
@@ -477,36 +445,44 @@ fn build_system(case: &StudyCase) -> System {
         recent_observations: vec![],
         past_defluences: vec![],
     };
-    let builder = SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .hydros(
-            case.hydros
-                .iter()
-                .map(|hydro| fixture_hydro(hydro, case_penalties(case)))
-                .collect(),
-        )
-        .stages(fixture_stages(case))
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(fixture_bounds(case))
-        .penalties(fixture_penalty_table(case))
-        .initial_conditions(initial_conditions)
-        .policy_graph(HorizonGraph {
-            season_map: Some(monthly_season_map()),
-            ..HorizonGraph::default()
-        });
-    let (constraints, bounds) = fixture_generic_constraints(case);
-    let builder = if constraints.is_empty() {
-        builder
-    } else {
-        builder
-            .generic_constraints(constraints)
-            .resolved_generic_bounds(bounds)
-    };
-    builder
-        .build()
-        .unwrap_or_else(|e| panic!("{}: the system must build: {e:?}", case.name))
+    let (constraints, generic_bounds) = fixture_generic_constraints(case);
+    build_with_resolved_tables(
+        || {
+            let builder = SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .hydros(
+                    case.hydros
+                        .iter()
+                        .enumerate()
+                        .map(|(position, hydro)| {
+                            fixture_hydro(
+                                hydro,
+                                case_penalties(case),
+                                case_tailrace_flow(case, position),
+                            )
+                        })
+                        .collect(),
+                )
+                .stages(fixture_stages(case))
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
+                .initial_conditions(initial_conditions.clone())
+                .policy_graph(HorizonGraph {
+                    season_map: Some(monthly_season_map()),
+                    ..HorizonGraph::default()
+                });
+            if constraints.is_empty() {
+                builder
+            } else {
+                builder
+                    .generic_constraints(constraints.clone())
+                    .resolved_generic_bounds(generic_bounds.clone())
+            }
+        },
+        0,
+        |_, _, _| {},
+    )
 }
 
 /// `(constraint id, stage id, block id, lower, upper)`, one resolved generic bound row.
@@ -611,6 +587,7 @@ fn fixture_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -622,7 +599,7 @@ fn fixture_config() -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),
@@ -634,20 +611,16 @@ fn fixture_config() -> Config {
 
 fn fixture_hydro_models(case: &StudyCase, system: &System) -> PrepareHydroModelsResult {
     let mut models = PrepareHydroModelsResult::default_from_system(system);
-    assert!(
-        case.fpha.is_none() || case.hydros.len() == 1,
-        "{}: an FPHA case has one hydro",
-        case.name
-    );
     models.production = ProductionModelSet::new(
         case.hydros
             .iter()
-            .map(|hydro| {
+            .enumerate()
+            .map(|(position, hydro)| {
                 let model = match case.fpha {
-                    Some(fpha) => ResolvedProductionModel::Fpha {
+                    Some(fpha) if position == 0 => ResolvedProductionModel::Fpha {
                         planes: vec![fpha.plane],
                     },
-                    None => ResolvedProductionModel::ConstantProductivity {
+                    _ => ResolvedProductionModel::ConstantProductivity {
                         productivity: hydro.productivity,
                     },
                 };
@@ -675,8 +648,9 @@ fn fixture_hydro_models(case: &StudyCase, system: &System) -> PrepareHydroModels
     models
 }
 
-/// The untrained compact setup of `case` and κ of its stage `stage`, in hm³ per m³/s.
-fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
+/// The untrained compact setup of `case` under `config` and κ of its stage `stage`, in hm³ per
+/// m³/s.
+fn compact_study_with(case: &StudyCase, stage: usize, config: &Config) -> (StudySetup, f64) {
     let system = build_system(case);
     let stage_hours: f64 = system.stages()[stage]
         .blocks
@@ -684,8 +658,13 @@ fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
         .map(|block| block.duration_hours)
         .sum();
     let models = fixture_hydro_models(case, &system);
-    let setup = build_setup_in_code_with_models(system, &fixture_config(), models);
+    let setup = build_setup_in_code_with_models(system, config, models);
     (setup, stage_hours * M3S_TO_HM3)
+}
+
+/// [`compact_study_with`] under [`fixture_config`].
+fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
+    compact_study_with(case, stage, &fixture_config())
 }
 
 /// Appends to `pool` one cut of intercept [`INJECTED_INTERCEPT`] whose coefficient at each
@@ -916,14 +895,24 @@ fn assert_terminal_stage_lag_price(psi_coefficient: f64, block_hours: f64) {
     let fixture = case.name;
     let (setup, kappa) = compact_study(&case, STAGE);
     let x_hat = oracle_initial_state(&setup);
-    let training_ctx = setup.training_ctx();
     let noise = opening_noise(&setup, STAGE);
     let cut = compact_cut(&setup, STAGE, &x_hat, &noise, &[], fixture);
+    assert_terminal_coefficients(fixture, &setup, STAGE, kappa, &cut);
+}
 
-    let extracted = &training_ctx.cut_state_layouts[STAGE - 1];
+/// Checks the storage coefficient of a [`terminal_par1_case`] cut at `stage` against `λ` and its
+/// lag-0 coefficient against `ψ·κ·λ`; returns the lag-0 closed form's bound.
+fn assert_terminal_coefficients(
+    fixture: &str,
+    setup: &StudySetup,
+    stage: usize,
+    kappa: f64,
+    cut: &ProbeCut,
+) -> f64 {
+    let extracted = &setup.training_ctx().cut_state_layouts[stage - 1];
     let storage = storage_slot(extracted, 0);
     let lag = lag_slot(extracted, 1, 0, 0);
-    let psi = psi_at(&setup, STAGE, 0)[0];
+    let psi = psi_at(setup, stage, 0)[0];
     assert_has_power(fixture, "storage coefficient", cut.coefficients[storage]);
     assert_non_degenerate(fixture, "lag-1 coefficient ψ", psi);
     assert_non_degenerate(fixture, "inflow coupling κ", kappa);
@@ -939,21 +928,22 @@ fn assert_terminal_stage_lag_price(psi_coefficient: f64, block_hours: f64) {
         want: lambda,
         n: 5,
         abs_sum: lambda.abs(),
-        added: tol.reduced_cost(incoming_storage_col_scale(&setup, STAGE, 0)),
+        added: tol.reduced_cost(incoming_storage_col_scale(setup, stage, 0)),
     }
     .assert_solved(cut.coefficients[storage]);
     // n = 13: λ (4), κ (2), ψ·κ·λ (2); d·row_scale, G·π, ψ·g and G = −κ (2) solve it;
     // added: |ψ|·κ times the water balance's row-dual tolerance.
-    ClosedForm {
+    let lag_price = ClosedForm {
         fixture,
         quantity: "lag-0 coefficient",
         slot: Some(lag),
         want: psi * kappa * lambda,
         n: 13,
         abs_sum: (psi * kappa * lambda).abs(),
-        added: psi.abs() * kappa * tol.row_dual(coupled_row_scale(&setup, STAGE, 0)),
-    }
-    .assert_solved(cut.coefficients[lag]);
+        added: psi.abs() * kappa * tol.row_dual(coupled_row_scale(setup, stage, 0)),
+    };
+    lag_price.assert_solved(cut.coefficients[lag]);
+    lag_price.bound()
 }
 
 /// derived: the hydro empties into a marginal thermal with no future, so the storage coefficient
@@ -970,6 +960,171 @@ fn a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value() {
 fn a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value_on_another_psi_and_stage_length()
  {
     assert_terminal_stage_lag_price(TERMINAL_TWIN_PSI, FORTNIGHT_HOURS);
+}
+
+/// Hydro draws η away from ±1, where `∂w/∂p` vanishes to second order.
+const LOGNORMAL_DRAWS: [f64; 3] = [-1.8, -0.6, 1.5];
+const LOGNORMAL_MEAN_STEP: f64 = 1e-4;
+const LOGNORMAL_TERM_MARGIN: f64 = 10.0;
+
+struct LognormalDraw {
+    eta: f64,
+    z_hat: f64,
+    objective: f64,
+    objective_abs_sum: f64,
+    lognormal_shift: f64,
+}
+
+/// derived: under `"lognormal_3p"` the LP receives `ẑ = p + w(p, σ, η)` and the chain rule
+/// freezes `w` at the trial state, so the storage coefficient is `λ` and the lag-0 coefficient
+/// `ψ·κ·λ`, with no `ψ·κ·λ·∂w/∂p` term; the thermal stays marginal and the storage empties at
+/// every draw, so the objective moves by `λ·κ` per m³/s of realized inflow.
+fn assert_lognormal_terminal_stage_lag_price(psi_coefficient: f64, block_hours: f64) {
+    const STAGE: usize = 1;
+    let case = StudyCase {
+        name: "terminal PAR(1) under a lognormal residual",
+        ..terminal_par1_case(psi_coefficient, block_hours)
+    };
+    let fixture = case.name;
+    let mut config = fixture_config();
+    config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
+    let (setup, kappa) = compact_study_with(&case, STAGE, &config);
+    let x_hat = oracle_initial_state(&setup);
+    let training_ctx = setup.training_ctx();
+    let par = training_ctx.stochastic.par();
+    let mut mean = [0.0];
+    evaluate_par_conditional_mean_batch(
+        par,
+        STAGE,
+        &x_hat[state_lag_dims(training_ctx.state)],
+        &mut mean,
+    );
+    let [p] = mean;
+    let sigma = par.sigma(STAGE, 0);
+    let ratio = sigma / p;
+    assert!(
+        p > 0.0 && (ratio * ratio).is_finite(),
+        "{fixture}: the conditional mean {p:e} at σ {sigma:e} takes the normal term, so no draw \
+         reaches the lognormal one"
+    );
+    let lognormal_term = |mean: f64, eta: f64| {
+        let mut term = [0.0];
+        evaluate_lognormal_noise_term_batch(par, STAGE, &[mean], &[eta], &mut term);
+        term[0]
+    };
+    let lambda = water_value(PRODUCTIVITY);
+    let frozen_slope = psi_at(&setup, STAGE, 0)[0] * kappa * lambda;
+    let template = &setup.inputs.stage_data.stage_templates.templates[STAGE];
+    let noise_slot = hydro_noise_slot(&setup);
+    let mut noise = opening_noise(&setup, STAGE);
+
+    let draws: Vec<LognormalDraw> = LOGNORMAL_DRAWS
+        .iter()
+        .map(|&eta| {
+            let label = format!("{fixture}: η = {eta}");
+            noise[noise_slot] = eta;
+            let cut = compact_cut(&setup, STAGE, &x_hat, &noise, &[], &label);
+            let w = lognormal_term(p, eta);
+            let mut z_hat = [0.0];
+            add_noise_term_batch(&mean, &[w], &mut z_hat);
+            let [z_hat] = z_hat;
+            assert!(
+                cut.realized_inflow[0].to_bits() == z_hat.to_bits(),
+                "{label}: realized inflow: derived {z_hat:e}, solved {:e}, not the same bits",
+                cut.realized_inflow[0]
+            );
+
+            let p_up = p * (1.0 + LOGNORMAL_MEAN_STEP);
+            let p_down = p * (1.0 - LOGNORMAL_MEAN_STEP);
+            let dw_dp = (lognormal_term(p_up, eta) - lognormal_term(p_down, eta)) / (p_up - p_down);
+            let lag_bound = assert_terminal_coefficients(&label, &setup, STAGE, kappa, &cut);
+            let slope_term = (frozen_slope * dw_dp).abs();
+            assert!(
+                slope_term > LOGNORMAL_TERM_MARGIN * lag_bound,
+                "{label}: |ψ·κ·λ·∂w/∂p| {slope_term:e} is within {LOGNORMAL_TERM_MARGIN} lag-0 \
+                 bounds {lag_bound:e}, so a chain rule that differentiates w could pass"
+            );
+
+            let mut normal_term = [0.0];
+            evaluate_par_noise_term_batch(par, STAGE, &[eta], &mut normal_term);
+            LognormalDraw {
+                eta,
+                z_hat,
+                objective: cut.objective,
+                objective_abs_sum: template
+                    .objective
+                    .iter()
+                    .zip(&cut.primal)
+                    .map(|(cost, value)| (cost * value).abs())
+                    .sum(),
+                lognormal_shift: (lambda * kappa * (w - normal_term[0])).abs(),
+            }
+        })
+        .collect();
+
+    let pairs: Vec<(&LognormalDraw, &LognormalDraw)> = draws
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| draws[i + 1..].iter().map(move |b| (a, b)))
+        .collect();
+    let labels: Vec<String> = pairs
+        .iter()
+        .map(|(a, b)| format!("{fixture}: η = {} against η = {}", a.eta, b.eta))
+        .collect();
+    let differences: Vec<ClosedForm> = pairs
+        .iter()
+        .zip(&labels)
+        .map(|((a, b), label)| {
+            let want = lambda * kappa * (a.z_hat - b.z_hat);
+            // n = 10: λ (4), κ (2), ẑ_a − ẑ_b and its two products derive it, Q_a − Q_b solves
+            // it; added: 2γ over the stage's columns times the two solves' Σ|c·x|.
+            ClosedForm {
+                fixture: label,
+                quantity: "objective difference",
+                slot: None,
+                want,
+                n: 10,
+                abs_sum: want.abs(),
+                added: 2.0
+                    * rounding_factor(template.num_cols)
+                    * (a.objective_abs_sum + b.objective_abs_sum),
+            }
+        })
+        .collect();
+    let largest_bound = differences
+        .iter()
+        .map(ClosedForm::bound)
+        .fold(0.0, f64::max);
+    let largest_shift = draws
+        .iter()
+        .map(|draw| draw.lognormal_shift)
+        .fold(0.0, f64::max);
+    assert!(
+        largest_shift > LOGNORMAL_TERM_MARGIN * largest_bound,
+        "{fixture}: the largest |λ·κ·(w − σ·η)| {largest_shift:e} is within \
+         {LOGNORMAL_TERM_MARGIN} objective-difference bounds {largest_bound:e}, so an LP that \
+         receives σ·η could pass"
+    );
+    for ((a, b), difference) in pairs.iter().zip(&differences) {
+        difference.assert_solved(a.objective - b.objective);
+    }
+}
+
+/// derived: under `"lognormal_3p"` the realized inflow is `ẑ = p + w(p, σ, η)`, and the chain rule
+/// freezes `w` at the trial state, so the lag coefficient stays `ψ·κ·λ` at every draw of
+/// [`LOGNORMAL_DRAWS`] and two draws' objectives differ by `λ·κ·(ẑ_a − ẑ_b)`. A chain rule that
+/// adds `ψ·κ·λ·∂w/∂p`, or an LP that receives `σ·η` in place of `w`, misses it.
+#[test]
+fn a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope() {
+    assert_lognormal_terminal_stage_lag_price(TERMINAL_PSI, MONTH_HOURS);
+}
+
+/// derived: the same frozen slope `ψ·κ·λ` and objective step `λ·κ` at ψ = 0.6 and a 336-hour
+/// stage, so `κ = 336·M`; a slope or step at another ψ or κ misses it.
+#[test]
+fn a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope_on_another_psi_and_stage_length()
+ {
+    assert_lognormal_terminal_stage_lag_price(TERMINAL_TWIN_PSI, FORTNIGHT_HOURS);
 }
 
 fn injected_cut_case() -> StudyCase {
@@ -2271,9 +2426,7 @@ fn train_weeks_then_month_deck(
     backward_scheduler: BackwardScheduler,
 ) -> (StudySetup, TerminalBoundaryPushes) {
     let (system, mut config, hydro_models) = weeks_then_month_study();
-    config.training.selection = Some(TrainingSelection::Sampled {
-        forward_passes: WEEKS_THEN_MONTH_FORWARD_PASSES,
-    });
+    config.training.selection = Some(TrainingSelection::sampled(WEEKS_THEN_MONTH_FORWARD_PASSES));
     let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
 
     let lag = lag_dim(&setup, 0, 0);
@@ -2553,6 +2706,7 @@ fn fpha_case(
             plane: FPHA_PLANE,
             violation_cost,
             generation_floor,
+            lateral_inflow: None,
         }),
         ..terminal_par1_case(TERMINAL_PSI, MONTH_HOURS)
     }
@@ -2726,4 +2880,182 @@ fn a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum() {
     .assert_solved(plane.abs());
 
     assert_fpha_storage_coefficient(&case, &setup, &cut, FLOOR_FPHA_VIOLATION_COST);
+}
+
+/// The lateral part of the influencing hydro's lag-0 coefficient: one more m³/s of lag raises
+/// `z_k` by `ψ_k`, which lowers the plane by `σ_c·(−γ_s)·f_k·ψ_k` MW, each MW displacing `price`
+/// over `hours`.
+fn lateral_lag_value(
+    price: f64,
+    plane: &FphaPlane,
+    share: f64,
+    factor: f64,
+    psi: f64,
+    hours: f64,
+) -> f64 {
+    -(price * hours * share * plane.gamma_s * factor * psi) / DEFAULT_COST_SCALE_FACTOR
+}
+
+/// Two independent terminal PAR(1) hydros: the first on [`LATERAL_FPHA_PLANE`], σ priced at
+/// `violation_cost`, whose tailrace flow takes the second's incremental inflow at `factor`; the
+/// second at constant productivity.
+fn lateral_fpha_case(name: &'static str, violation_cost: f64, factor: f64) -> StudyCase {
+    StudyCase {
+        name,
+        hydros: vec![
+            HydroCase::sole(vec![TERMINAL_PSI]),
+            HydroCase {
+                id: INFLUENCING_ID,
+                name: "K",
+                ..HydroCase::sole(vec![TERMINAL_TWIN_PSI])
+            },
+        ],
+        fpha: Some(FphaCase {
+            plane: LATERAL_FPHA_PLANE,
+            violation_cost,
+            generation_floor: None,
+            lateral_inflow: Some((INFLUENCING_ID, factor)),
+        }),
+        ..terminal_par1_case(TERMINAL_PSI, MONTH_HOURS)
+    }
+}
+
+/// Asserts the influencing hydro's lag-0 coefficient of `declared` exceeds that of `zeroed`, the
+/// same solve at a zero factor, by `lateral_lag_value(price, ..)`; both solves share a basis, so
+/// the water-balance term cancels in the difference.
+fn assert_lateral_lag_coefficient(
+    declared: (&StudyCase, &StudySetup, &ProbeCut),
+    zeroed: (&StudyCase, &StudySetup, &ProbeCut),
+    price: f64,
+) {
+    let (case, setup, cut) = declared;
+    let fixture = case.name;
+    let extracted = &setup.training_ctx().cut_state_layouts[FPHA_STAGE - 1];
+    let lag = lag_slot(extracted, case.hydros.len(), INFLUENCING, 0);
+    let psi = psi_at(setup, FPHA_STAGE, INFLUENCING)[0];
+    assert_non_degenerate(fixture, "influencing lag-1 coefficient ψ_k", psi);
+    assert_non_degenerate(fixture, "lateral factor f_k", LATERAL_FACTOR);
+    let hours = case.block_hours;
+    let want = lateral_lag_value(
+        price,
+        &LATERAL_FPHA_PLANE,
+        FPHA_CELL_SHARE,
+        LATERAL_FACTOR,
+        psi,
+        hours,
+    );
+    let water_term = psi * hours * price * PRODUCTIVITY / DEFAULT_COST_SCALE_FACTOR;
+    let tol = UnscaledTolerance::from_active_profile();
+    // n = 22: price·h, ·σ_c, ·γ_s, ·f_k, ·ψ and ÷ K derive it (6); the declared solve's
+    // d·row_scale and G·π on both coupled rows, their sum, ψ·g, G = −κ (2) and
+    // G = σ_c·(−γ_s)·f_k (2) give 10, the zeroed solve's single coupled row gives 5, and their
+    // difference 1; the water term `ψ·κ·λ_k` enters both solves before it cancels, so it counts
+    // twice in abs_sum; added: |ψ| times both solves' coupled rows' |G|·row-dual tolerance.
+    let closed_form = ClosedForm {
+        fixture,
+        quantity: "influencing lag-0 coefficient, declared minus zero factor",
+        slot: Some(lag),
+        want,
+        n: 22,
+        abs_sum: want.abs() + 2.0 * water_term.abs(),
+        added: psi.abs()
+            * (coupled_dual_tolerance(setup, FPHA_STAGE, INFLUENCING, tol)
+                + coupled_dual_tolerance(zeroed.1, FPHA_STAGE, INFLUENCING, tol)),
+    };
+    assert!(
+        want > HEAD_TERM_MARGIN * closed_form.bound(),
+        "{fixture}: the lateral term {want:e} is within {HEAD_TERM_MARGIN} bounds {:e} of zero, \
+         so a cut without it could pass",
+        closed_form.bound()
+    );
+    let zeroed_lag = lag_slot(
+        &zeroed.1.training_ctx().cut_state_layouts[FPHA_STAGE - 1],
+        zeroed.0.hydros.len(),
+        INFLUENCING,
+        0,
+    );
+    assert_eq!(lag, zeroed_lag, "{fixture}: both solves share the lag slot");
+    closed_form.assert_solved(cut.coefficients[lag] - zeroed.2.coefficients[lag]);
+}
+
+/// derived: σ is priced far above the thermal, so in both solves the thermal covers the load the
+/// plane leaves and the plane dual is `−c·h/K`. `z_k = … + ψ_k·lag` enters the plane row at
+/// `σ_c·(−γ_s)·f_k`, so the lag coefficient gains `−c·h·σ_c·γ_s·f_k·ψ_k/K`, positive for
+/// `γ_s < 0`: a higher tailrace costs thermal energy, against the negative water term `ψ_k·κ·λ_k`
+/// that both solves share.
+#[test]
+fn a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_idle() {
+    let declared = lateral_fpha_case(
+        "lateral inflow on an FPHA plane, slack idle",
+        IDLE_FPHA_VIOLATION_COST,
+        LATERAL_FACTOR,
+    );
+    let zeroed = lateral_fpha_case(
+        "lateral inflow on an FPHA plane at a zero factor, slack idle",
+        IDLE_FPHA_VIOLATION_COST,
+        0.0,
+    );
+    let (declared_setup, declared_cut, declared_sigma) = solve_fpha_case(&declared);
+    let (zeroed_setup, zeroed_cut, zeroed_sigma) = solve_fpha_case(&zeroed);
+    for (case, sigma_mw) in [(&declared, declared_sigma), (&zeroed, zeroed_sigma)] {
+        assert!(
+            sigma_mw <= POWER_FLOOR,
+            "{}: the FPHA slack {sigma_mw:e} MW must stay within {POWER_FLOOR:e} of zero at the \
+             price {IDLE_FPHA_VIOLATION_COST}",
+            case.name
+        );
+    }
+    assert_lateral_lag_coefficient(
+        (&declared, &declared_setup, &declared_cut),
+        (&zeroed, &zeroed_setup, &zeroed_cut),
+        THERMAL_COST_PER_MWH,
+    );
+}
+
+/// derived: σ is priced below the thermal, so in both solves σ covers the load the plane leaves
+/// and the plane dual is `−p·h/K`: the lag coefficient gains `−p·h·σ_c·γ_s·f_k·ψ_k/K`, positive
+/// for `γ_s < 0`. A plane dual read at the thermal cost misses it by the same term at `c − p`.
+#[test]
+fn a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_active() {
+    let declared = lateral_fpha_case(
+        "lateral inflow on an FPHA plane, slack active",
+        ACTIVE_FPHA_VIOLATION_COST,
+        LATERAL_FACTOR,
+    );
+    let zeroed = lateral_fpha_case(
+        "lateral inflow on an FPHA plane at a zero factor, slack active",
+        ACTIVE_FPHA_VIOLATION_COST,
+        0.0,
+    );
+    let (declared_setup, declared_cut, declared_sigma) = solve_fpha_case(&declared);
+    let (zeroed_setup, zeroed_cut, zeroed_sigma) = solve_fpha_case(&zeroed);
+    assert_has_power(declared.name, "FPHA slack", declared_sigma);
+    assert_has_power(zeroed.name, "FPHA slack", zeroed_sigma);
+
+    let psi = psi_at(&declared_setup, FPHA_STAGE, INFLUENCING)[0];
+    let lateral = |price| {
+        lateral_lag_value(
+            price,
+            &LATERAL_FPHA_PLANE,
+            FPHA_CELL_SHARE,
+            LATERAL_FACTOR,
+            psi,
+            declared.block_hours,
+        )
+    };
+    let (idle, active) = (
+        lateral(THERMAL_COST_PER_MWH),
+        lateral(ACTIVE_FPHA_VIOLATION_COST),
+    );
+    assert!(
+        (active - idle).abs() > SEPARATION_FLOOR * active.abs().max(idle.abs()),
+        "{}: the idle and active lateral values {idle:e} and {active:e} must differ by more than \
+         {SEPARATION_FLOOR:e} relative",
+        declared.name
+    );
+    assert_lateral_lag_coefficient(
+        (&declared, &declared_setup, &declared_cut),
+        (&zeroed, &zeroed_setup, &zeroed_cut),
+        ACTIVE_FPHA_VIOLATION_COST,
+    );
 }

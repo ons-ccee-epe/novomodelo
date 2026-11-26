@@ -33,13 +33,13 @@ flatc-conformance = []
 test-support = ["novomodelo-core/test-support", "dep:tempfile"]
 
 [dependencies]
-novomodelo-core = { version = "0.21.0", path = "../novomodelo-core", features = ["serde"] }
-novomodelo-stochastic = { version = "0.21.0", path = "../novomodelo-stochastic" }
+novomodelo-core = { version = "0.22.0", path = "../novomodelo-core", features = ["serde"] }
+novomodelo-stochastic = { version = "0.22.0", path = "../novomodelo-stochastic" }
 arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1"
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 schemars = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
@@ -50,8 +50,7 @@ flatbuffers = "25"
 gethostname = "1.1.0"
 
 [dev-dependencies]
-novomodelo-core = { version = "0.21.0", path = "../novomodelo-core", features = ["test-support"] }
-novomodelo-stochastic = { version = "0.21.0", path = "../novomodelo-stochastic", features = ["test-support"] }
+novomodelo-core = { version = "0.22.0", path = "../novomodelo-core", features = ["test-support"] }
 novomodelo-io = { path = ".", features = ["test-support"] }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 proptest = "1"

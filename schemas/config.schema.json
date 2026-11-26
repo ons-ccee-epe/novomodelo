@@ -113,21 +113,6 @@
       },
       "type": "object"
     },
-    "CorrelationTarget": {
-      "description": "Series the estimated spatial inflow correlation is computed from.",
-      "oneOf": [
-        {
-          "const": "residuals",
-          "description": "Residuals of the fitted PAR lags.",
-          "type": "string"
-        },
-        {
-          "const": "inflows",
-          "description": "Standardized historical inflows.",
-          "type": "string"
-        }
-      ]
-    },
     "DualEdgeWeight": {
       "description": "Dual simplex edge-weight (pricing) strategy.",
       "oneOf": [
@@ -152,11 +137,6 @@
       "additionalProperties": false,
       "description": "Time series estimation settings (`config.json → estimation`).\n\nControls automatic parameter estimation when historical inflow data is\nprovided without explicit model statistics or coefficients.",
       "properties": {
-        "correlation_target": {
-          "$ref": "#/$defs/CorrelationTarget",
-          "default": "inflows",
-          "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"inflows\"` (default) or `\"residuals\"`.\n\nEvaluation option, expected to be removed once evaluated."
-        },
         "history_years": {
           "anyOf": [
             {
@@ -202,7 +182,7 @@
     },
     "ExportsConfig": {
       "additionalProperties": false,
-      "description": "Export flags controlling which outputs are written to disk\n(`config.json → exports`).\n\nOnly the active fields below are accepted. Legacy keys (`training`, `cuts`,\n`vertices`, `simulation`, `forward_detail`, `backward_detail`,\n`compression`) must be removed from existing `config.json` files before\nloading — they are now rejected as unknown fields.",
+      "description": "Export flags controlling which outputs are written to disk\n(`config.json → exports`).",
       "properties": {
         "fpha_deviation_points": {
           "default": false,
@@ -221,6 +201,21 @@
         }
       },
       "type": "object"
+    },
+    "FirstIterationTrialStorage": {
+      "description": "Trial storage of the first training iteration's backward pass\n(`config.json → training.selection.first_iteration_trial_storage`).",
+      "oneOf": [
+        {
+          "const": "forward",
+          "description": "The storage each forward pass reached.",
+          "type": "string"
+        },
+        {
+          "const": "storage_grid",
+          "description": "An even grid of storage levels between each reservoir's minimum and\nmaximum storage.",
+          "type": "string"
+        }
+      ]
     },
     "HistoricalYearRange": {
       "additionalProperties": false,
@@ -280,6 +275,33 @@
         }
       ]
     },
+    "InflowResidualConfig": {
+      "additionalProperties": false,
+      "description": "Inflow residual settings (`config.json → modeling.inflow_residual`).",
+      "properties": {
+        "distribution": {
+          "$ref": "#/$defs/InflowResidualDistribution",
+          "default": "normal",
+          "description": "Residual distribution: `\"normal\"` or `\"lognormal_3p\"`.\n\nDefault: `\"normal\"`. Combines with every `modeling.inflow_non_negativity.method`."
+        }
+      },
+      "type": "object"
+    },
+    "InflowResidualDistribution": {
+      "description": "Distribution of the PAR(p) inflow residual.\n\nAccepted values in `config.json → modeling.inflow_residual.distribution`:\n\n- `\"normal\"` — Gaussian residual (default).\n- `\"lognormal_3p\"` — experimental: a three-parameter lognormal residual with the PAR(p)\n  conditional mean and standard deviation of the hydro's incremental inflow, bounded\n  below at zero inflow. Where the conditional mean is not positive the hydro takes the\n  normal residual, and `modeling.inflow_non_negativity.method` applies as under\n  `\"normal\"`.\n\n`\"lognormal_3p\"` is refused with the `external` and `historical` inflow schemes,\n`enumerated` selection, `historical_residuals` stages and nodes that declare\n`scenario_id`. As under the truncation methods, the lower bound can exceed the upper\nbound.",
+      "oneOf": [
+        {
+          "const": "normal",
+          "description": "Gaussian residual.",
+          "type": "string"
+        },
+        {
+          "const": "lognormal_3p",
+          "description": "Experimental: three-parameter lognormal residual bounded below at zero inflow; the\nnormal residual where the conditional mean is not positive.",
+          "type": "string"
+        }
+      ]
+    },
     "LipschitzConfig": {
       "additionalProperties": false,
       "description": "Lipschitz constant settings for inner approximation.",
@@ -332,37 +354,24 @@
             "method": "truncation_with_penalty"
           },
           "description": "Strategy for handling non-negative inflow constraints."
+        },
+        "inflow_residual": {
+          "$ref": "#/$defs/InflowResidualConfig",
+          "default": {
+            "distribution": "normal"
+          },
+          "description": "Distribution of the inflow residual."
         }
       },
       "type": "object"
-    },
-    "MomentMatching": {
-      "description": "How generated openings are corrected after the correlation is applied.",
-      "oneOf": [
-        {
-          "const": "none",
-          "description": "Keep the openings as drawn.",
-          "type": "string"
-        },
-        {
-          "const": "per_coordinate",
-          "description": "Shift and scale each hydro's openings to mean 0 and the variance of its correlated noise.",
-          "type": "string"
-        }
-      ]
     },
     "Openings": {
       "description": "Where a stage's openings originate (`config.json` scenario-source `source`).\n\nThe tag key is `source` and the field is `openings`, deliberately distinct\nfrom the per-class `scheme` key: `openings.source` selects where a stage's\nopenings come from, while `scheme` selects how a class's noise is modelled.\nA single word would otherwise carry both axes. An absent `openings`\ndeclaration is equivalent to `generated`.",
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Openings come from noise generation (the default when `openings` is absent).",
+          "description": "Openings come from noise generation (the default when `openings` is absent).\n\nEach generated stage's inflow openings are shifted and scaled so that\nevery hydro's opening mean is 0 and its variance is that of its\ncorrelated noise: 1, or more where factoring the correlation clips a\nnegative eigenvalue. Stages using `historical_residuals`, stages with\none opening and hydros whose openings are all equal are left as drawn;\nload and non-controllable-source noise is never matched.",
           "properties": {
-            "moment_matching": {
-              "$ref": "#/$defs/MomentMatching",
-              "default": "per_coordinate",
-              "description": "`per_coordinate` (default) shifts and scales each generated stage's\ninflow openings so that every hydro's opening mean is 0 and its\nvariance is that of its correlated noise: 1, or more where factoring\nthe correlation clips a negative eigenvalue; `none` keeps the\nopenings as drawn. Stages using `historical_residuals`, stages with\none opening and hydros whose openings are all equal are left as\ndrawn; load and non-controllable-source noise is never matched.\n\nEvaluation option, expected to be removed once evaluated."
-            },
             "source": {
               "const": "generated",
               "type": "string"
@@ -1184,6 +1193,11 @@
               "additionalProperties": false,
               "description": "Sampled forward passes: `forward_passes` trajectories per iteration.",
               "properties": {
+                "first_iteration_trial_storage": {
+                  "$ref": "#/$defs/FirstIterationTrialStorage",
+                  "default": "forward",
+                  "description": "Storage at which the first training iteration's backward pass builds\nits cuts. `forward`, the default, uses the storage each forward pass\nreached. `storage_grid` holds trial `k` of `N` (`N` =\n`forward_passes`) at `k/N` of the way from each reservoir's minimum\nto its maximum storage at every stage, so the lowest trial sits `1/N`\nabove the minimum and the highest at the maximum. Inflow history and\nthe first iteration's upper bound stay those of the forward pass, and\nreservoirs that are filling or out of service keep the forward pass's\nstorage."
+                },
                 "forward_passes": {
                   "description": "Number of forward-pass trajectories per iteration.",
                   "format": "uint32",
@@ -1368,7 +1382,6 @@
     "estimation": {
       "$ref": "#/$defs/EstimationConfig",
       "default": {
-        "correlation_target": "inflows",
         "history_years": null,
         "max_coefficient_magnitude": null,
         "max_order": 6,
@@ -1392,9 +1405,12 @@
         "cost_scale_factor": null,
         "inflow_non_negativity": {
           "method": "truncation_with_penalty"
+        },
+        "inflow_residual": {
+          "distribution": "normal"
         }
       },
-      "description": "Modeling options (inflow non-negativity treatment)."
+      "description": "Modeling options: inflow non-negativity, the inflow residual distribution and\nobjective scaling."
     },
     "policy": {
       "$ref": "#/$defs/PolicyConfig",

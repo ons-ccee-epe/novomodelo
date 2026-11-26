@@ -1,18 +1,19 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{NaiveDate, TimeDelta};
-use novomodelo_core::test_support::{
-    BusSpec, HydroSpec, StageSpec, date, make_bus, make_hydro, make_stage,
-};
 use novomodelo_core::{
-    Block, BlockMode, DeficitSegment, Hydro, PostStudyStage, PostStudyStages, Stage, System,
-    SystemBuilder, WaterBucketStages,
+    Block, BlockMode, DeficitSegment, EntityId, HydroPenalties, PostStudyStage, PostStudyStages,
+    Stage, System, SystemBuilder, WaterBucketStages,
 };
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 
 use super::{TransitBucketTopology, build_transit_bucket_topology};
 use crate::lead_time::SpreadResolution;
+use crate::test_support::builders::{
+    BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
+};
+use crate::test_support::ymd;
 use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
 #[derive(Debug, Clone)]
@@ -103,7 +104,7 @@ fn after(start: NaiveDate, hours: f64) -> NaiveDate {
 }
 
 fn study_stages(shapes: &[StageShape]) -> Vec<Stage> {
-    let mut start = date(2024, 1, 1);
+    let mut start = ymd(2024, 1, 1);
     shapes
         .iter()
         .enumerate()
@@ -117,16 +118,16 @@ fn study_stages(shapes: &[StageShape]) -> Vec<Stage> {
                     duration_hours: block_hours,
                 })
                 .collect();
-            let stage = Stage {
-                block_mode: shape.block_mode,
-                ..make_stage(StageSpec {
-                    id: i32::try_from(id).expect("at most four study stages"),
+            let stage = make_stage(
+                id,
+                StageSpec {
                     start_date: start,
                     end_date,
                     blocks,
+                    block_mode: shape.block_mode,
                     ..StageSpec::default()
-                })
-            };
+                },
+            );
             start = end_date;
             stage
         })
@@ -159,38 +160,47 @@ fn system(case: &Case, declared: bool) -> System {
     };
 
     let hydro = |id: i32, downstream_id: Option<i32>| {
-        make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            bus_id: 1,
-            downstream_id,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            max_storage_hm3: 100.0,
-            ..HydroSpec::default()
-        })
+        make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream_id.map(EntityId),
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                max_storage_hm3: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        )
     };
     let mut hydros = vec![hydro(1, None)];
     hydros.extend(
         case.travel_times
             .iter()
             .zip(2..)
-            .map(|(&travel_time_hours, id)| Hydro {
-                travel_time_hours: Some(travel_time_hours),
-                ..hydro(id, Some(1))
+            .map(|(&travel_time_hours, id)| {
+                let mut tributary = hydro(id, Some(1));
+                tributary.travel_time_hours = Some(travel_time_hours);
+                tributary
             }),
     );
 
     SystemBuilder::new()
-        .buses(vec![make_bus(BusSpec {
-            id: 1,
-            name: "B1".to_string(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            ..BusSpec::default()
-        })])
+        .buses(vec![make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        )])
         .hydros(hydros)
         .stages(stages)
         .post_study_stages(Some(PostStudyStages {
@@ -228,7 +238,10 @@ fn assert_neutral(case: &Case) -> TransitBucketTopology {
         WaterDeliveryBasis::of(&declared),
         WaterDeliveryBasis::Declared(_)
     ));
-    assert_eq!(WaterDeliveryBasis::of(&padded), WaterDeliveryBasis::Legacy);
+    assert_eq!(
+        WaterDeliveryBasis::of(&padded),
+        WaterDeliveryBasis::PaddedThermal
+    );
 
     let a = topology(&declared, case.boundary_present);
     let b = topology(&padded, case.boundary_present);

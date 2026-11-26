@@ -25,10 +25,13 @@ use arrow::array::{Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use chrono::NaiveDate;
+#[cfg(test)]
+use novomodelo_core::initial_conditions::InitialConditions;
 use novomodelo_core::{
-    CorrelationGroup, CorrelationModel, EntityId, HorizonGraph, SeasonMap,
+    CorrelationGroup, CorrelationModel, EntityId, HorizonGraph, SeasonMap, TailraceFlow,
     entities::{
-        Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup, Thermal,
+        Bus, ContractType, DeficitSegment, EnergyContract, Hydro, HydroGenerationModel,
+        HydroPenalties, HydroUnitGroup, Line, NonControllableSource, PumpingStation, Thermal,
     },
     penalty::GlobalPenaltyDefaults,
     temporal::{
@@ -36,8 +39,6 @@ use novomodelo_core::{
         StageRiskConfig, StageStateConfig,
     },
 };
-#[cfg(test)]
-use novomodelo_core::{entities::Line, initial_conditions::InitialConditions};
 
 use crate::{
     CheckpointManifest, FORMAT_VERSION, GraphManifest, InflowArCoefficientRow, InflowHistoryRow,
@@ -571,6 +572,8 @@ pub fn make_hydro(id: i32, downstream_id: Option<i32>) -> Hydro {
         max_storage_hm3: 1000.0,
         min_outflow_m3s: 0.0,
         max_outflow_m3s: None,
+        min_spillage_m3s: None,
+        max_spillage_m3s: None,
         generation_model: HydroGenerationModel::ConstantProductivity,
         min_turbined_m3s: 0.0,
         max_turbined_m3s: 1000.0,
@@ -585,6 +588,7 @@ pub fn make_hydro(id: i32, downstream_id: Option<i32>) -> Hydro {
         diversion: None,
         filling: None,
         penalties: penalties_all(1.0),
+        tailrace_flow: TailraceFlow::default(),
     }
 }
 
@@ -623,6 +627,80 @@ pub fn make_thermal(id: i32, min_mw: f64, max_mw: f64) -> Thermal {
         min_generation_mw: min_mw,
         max_generation_mw: max_mw,
         anticipated_config: None,
+    }
+}
+
+/// Build a minimal valid `Line` between the given buses.
+#[must_use]
+pub fn make_line(id: i32, source_bus_id: i32, target_bus_id: i32) -> Line {
+    Line {
+        id: EntityId::from(id),
+        name: format!("Line {id}"),
+        operational_start_date: date(2024, 1, 1),
+        source_bus_id: EntityId::from(source_bus_id),
+        target_bus_id: EntityId::from(target_bus_id),
+        entry_stage_id: None,
+        exit_stage_id: None,
+        direct_capacity_mw: 100.0,
+        reverse_capacity_mw: 100.0,
+        losses_percent: 0.0,
+        exchange_cost: 0.0,
+    }
+}
+
+/// Build a minimal valid `NonControllableSource` on the given bus.
+#[must_use]
+pub fn make_ncs(id: i32, bus_id: i32) -> NonControllableSource {
+    NonControllableSource {
+        id: EntityId::from(id),
+        name: format!("NCS {id}"),
+        operational_start_date: date(2024, 1, 1),
+        bus_id: EntityId::from(bus_id),
+        entry_stage_id: None,
+        exit_stage_id: None,
+        max_generation_mw: 100.0,
+        allow_curtailment: true,
+        curtailment_cost: 5.0,
+    }
+}
+
+/// Build a minimal valid import `EnergyContract` on the given bus.
+#[must_use]
+pub fn make_contract(id: i32, bus_id: i32) -> EnergyContract {
+    EnergyContract {
+        id: EntityId::from(id),
+        name: format!("Contract {id}"),
+        operational_start_date: date(2024, 1, 1),
+        bus_id: EntityId::from(bus_id),
+        contract_type: ContractType::Import,
+        entry_stage_id: None,
+        exit_stage_id: None,
+        price_per_mwh: 50.0,
+        min_mw: 0.0,
+        max_mw: 200.0,
+    }
+}
+
+/// Build a minimal valid `PumpingStation` between the given hydros.
+#[must_use]
+pub fn make_pumping_station(
+    id: i32,
+    bus_id: i32,
+    source_hydro_id: i32,
+    destination_hydro_id: i32,
+) -> PumpingStation {
+    PumpingStation {
+        id: EntityId::from(id),
+        name: format!("Pumping {id}"),
+        operational_start_date: date(2024, 1, 1),
+        bus_id: EntityId::from(bus_id),
+        source_hydro_id: EntityId::from(source_hydro_id),
+        destination_hydro_id: EntityId::from(destination_hydro_id),
+        entry_stage_id: None,
+        exit_stage_id: None,
+        consumption_mw_per_m3s: 0.5,
+        min_flow_m3s: 0.0,
+        max_flow_m3s: 100.0,
     }
 }
 
@@ -760,13 +838,10 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
 /// they have no bus fixture of their own to supply.
 #[cfg(test)]
 fn base_bus() -> Vec<Bus> {
-    vec![Bus {
-        id: EntityId::from(1),
-        name: "BUS_1".to_string(),
-        operational_start_date: date(2024, 1, 1),
-        deficit_segments: vec![],
-        excess_cost: 100.0,
-    }]
+    let mut bus = make_bus_with_deficit(1, 0.0);
+    bus.name = "BUS_1".to_string();
+    bus.deficit_segments = Vec::new();
+    vec![bus]
 }
 
 /// Sort every hydro's `unit_groups`, at the boundary each `make_data*` builder
@@ -982,23 +1057,15 @@ pub fn make_correlation(group: CorrelationGroup) -> CorrelationModel {
 // `parse_config` the crate ships, so a failure here is a fixture defect, not a
 // runtime condition.
 pub(crate) fn config_from_json(json: &str) -> Config {
-    let tmp = tempfile::NamedTempFile::new().expect("scratch temp file creation cannot fail");
-    std::fs::write(tmp.path(), json).expect("write to a fresh scratch temp file cannot fail");
+    let tmp = NamedTempFile::new().expect("scratch temp file creation cannot fail");
+    fs::write(tmp.path(), json).expect("write to a fresh scratch temp file cannot fail");
     parse_config(tmp.path()).expect("fixture JSON literal is valid Config input")
 }
 
 /// Minimal `Config` required to fill `ParsedData`.
 #[must_use]
 pub fn minimal_config() -> Config {
-    let json = r#"{
-        "training": {
-            "selection": {"method": "sampled", "forward_passes": 10},
-            "stopping_rules": [
-                { "type": "iteration_limit", "limit": 100 }
-            ]
-        }
-    }"#;
-    config_from_json(json)
+    config_from_json(VALID_CONFIG_JSON)
 }
 
 /// Build a `Config` with `training.scenario_source.inflow.scheme = "external"`.
@@ -1140,26 +1207,6 @@ pub fn config_with_simulation_external_load() -> Config {
 
 // ── Season / estimation data builders ────────────────────────────────────────
 
-/// Build a monthly `SeasonMap` with 12 seasons (January=0 .. December=11).
-#[must_use]
-pub fn make_monthly_season_map() -> SeasonMap {
-    use novomodelo_core::temporal::{SeasonCycleType, SeasonDefinition};
-    let seasons = (0..12u32)
-        .map(|m| SeasonDefinition {
-            id: m as usize,
-            label: format!("Month{m}"),
-            month_start: m + 1,
-            day_start: None,
-            month_end: None,
-            day_end: None,
-        })
-        .collect();
-    SeasonMap {
-        cycle_type: SeasonCycleType::Monthly,
-        seasons,
-    }
-}
-
 /// Build `n_obs` `InflowHistoryRow` records for `hydro_id`, one per calendar
 /// month starting from January 2000.
 #[must_use]
@@ -1202,7 +1249,11 @@ pub fn make_stages_with_seasons(n_months: usize, with_season_map: bool) -> Stage
     StagesData {
         openings_declared: std::collections::HashSet::new(),
         stages,
-        policy_graph: make_horizon_graph(with_season_map.then(make_monthly_season_map)),
+        policy_graph: make_horizon_graph(with_season_map.then(|| {
+            novomodelo_core::test_support::monthly_season_map(
+                novomodelo_core::test_support::MonthlyLabels::ZeroBased,
+            )
+        })),
     }
 }
 
@@ -1362,14 +1413,16 @@ pub mod output {
     pub fn make_config() -> Config {
         use crate::config::{
             CheckpointingConfig, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-            ModelingConfig, ParallelismConfig, PolicyConfig, PolicyMode, RowSelectionConfig,
-            SimulationConfig, SimulationRowSet, StoppingMode, StoppingRuleConfig, TrainingConfig,
-            TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+            InflowResidualConfig, ModelingConfig, ParallelismConfig, PolicyConfig, PolicyMode,
+            RowSelectionConfig, SimulationConfig, SimulationRowSet, StoppingMode,
+            StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+            UpperBoundEvaluationConfig,
         };
         Config {
             schema: None,
             modeling: ModelingConfig {
                 inflow_non_negativity: InflowNonNegativityConfig::default(),
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -1381,7 +1434,7 @@ pub mod output {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 4 }),
+                selection: Some(TrainingSelection::sampled(4)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig {
@@ -1471,7 +1524,7 @@ mod tests {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 10 }),
+                selection: Some(TrainingSelection::sampled(10)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),

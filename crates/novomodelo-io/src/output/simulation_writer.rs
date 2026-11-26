@@ -137,7 +137,8 @@ pub struct CostWriteRecord {
     pub pumping_cost: f64,
 }
 
-/// Hydro plant result for one (stage, block, hydro) tuple.
+/// Hydro plant result for one (stage, block, hydro) tuple. The tailrace and
+/// net-head fields are `None` unless the hydro uses computed FPHA at the stage.
 #[derive(Debug)]
 pub struct HydroWriteRecord {
     /// Stage index (0-based).
@@ -222,6 +223,12 @@ pub struct HydroWriteRecord {
     pub stored_energy_initial_mw: f64,
     /// Stored energy at block end, averaged over the stage's total hours, in MW.
     pub stored_energy_final_mw: f64,
+    /// Tailrace flow in m³/s.
+    pub tailrace_flow_m3s: Option<f64>,
+    /// Tailrace level in m.
+    pub tailrace_level_m: Option<f64>,
+    /// Net head in m.
+    pub net_head_m: Option<f64>,
 }
 
 /// Thermal unit result for one (stage, block, thermal) tuple.
@@ -1482,6 +1489,9 @@ struct HydroBuilders {
     integrated_accumulated_productivity_mw_per_m3s: Float64Builder,
     stored_energy_initial_mw: Float64Builder,
     stored_energy_final_mw: Float64Builder,
+    tailrace_flow_m3s: Float64Builder,
+    tailrace_level_m: Float64Builder,
+    net_head_m: Float64Builder,
 }
 
 impl HydroBuilders {
@@ -1529,6 +1539,9 @@ impl HydroBuilders {
             integrated_accumulated_productivity_mw_per_m3s: Float64Builder::with_capacity(n),
             stored_energy_initial_mw: Float64Builder::with_capacity(n),
             stored_energy_final_mw: Float64Builder::with_capacity(n),
+            tailrace_flow_m3s: Float64Builder::with_capacity(n),
+            tailrace_level_m: Float64Builder::with_capacity(n),
+            net_head_m: Float64Builder::with_capacity(n),
         }
     }
 }
@@ -1606,6 +1619,9 @@ fn fill_hydro_builders<'a>(
             .append_value(r.stored_energy_initial_mw);
         b.stored_energy_final_mw
             .append_value(r.stored_energy_final_mw);
+        b.tailrace_flow_m3s.append_option(r.tailrace_flow_m3s);
+        b.tailrace_level_m.append_option(r.tailrace_level_m);
+        b.net_head_m.append_option(r.net_head_m);
     }
 }
 
@@ -1665,6 +1681,9 @@ fn build_hydros_batch<'a>(
             Arc::new(b.integrated_accumulated_productivity_mw_per_m3s.finish()),
             Arc::new(b.stored_energy_initial_mw.finish()),
             Arc::new(b.stored_energy_final_mw.finish()),
+            Arc::new(b.tailrace_flow_m3s.finish()),
+            Arc::new(b.tailrace_level_m.finish()),
+            Arc::new(b.net_head_m.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("hydros", e.to_string()))
@@ -2317,141 +2336,54 @@ fn build_anticipated_lanes_batch<'a>(
 )]
 mod tests {
     use super::*;
-    use crate::test_support::output::read_first_batch;
-    use chrono::NaiveDate;
-    use novomodelo_core::{
-        Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
-        HydroPenalties, Line, NoiseMethod, PumpingStation, ScenarioSourceConfig, Stage,
-        StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,
+    use crate::test_support::{
+        make_bus_with_deficit, make_line, make_pumping_station, make_thermal,
+        output::read_first_batch, penalties_all,
     };
+    use novomodelo_core::{EntityId, Hydro, Stage, SystemBuilder};
 
     // -----------------------------------------------------------------------
     // Test fixture helpers
     // -----------------------------------------------------------------------
 
-    fn make_hydro_penalties_zero() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
     fn make_hydro(id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 1000.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 1000.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 900.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: make_hydro_penalties_zero(),
-        };
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.name = format!("H{id}");
+        hydro.max_generation_mw = 900.0;
+        hydro.penalties = penalties_all(0.0);
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
     }
 
     fn make_stage(id: i32, duration_hours: f64) -> Stage {
-        Stage {
-            index: u32::try_from(id.max(0)).unwrap_or(0) as usize,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.index = u32::try_from(id.max(0)).unwrap_or(0) as usize;
+        stage.season_id = Some(0);
+        stage.blocks[0].name = "SINGLE".to_string();
+        stage.blocks[0].duration_hours = duration_hours;
+        stage.scenario_config.branching_factor = 10;
+        stage
     }
 
     /// A minimal two-stage, one-block-per-stage system with 2 hydros,
     /// 1 thermal, 1 bus, and 1 line (2.5% losses).
     fn make_test_system() -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "B1".to_string();
+        bus.excess_cost = 0.0;
 
-        let line = Line {
-            id: EntityId(1),
-            name: "L1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId(1),
-            target_bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 500.0,
-            reverse_capacity_mw: 500.0,
-            losses_percent: 2.5,
-            exchange_cost: 0.0,
-        };
+        let mut line = make_line(1, 1, 1);
+        line.name = "L1".to_string();
+        line.direct_capacity_mw = 500.0;
+        line.reverse_capacity_mw = 500.0;
+        line.losses_percent = 2.5;
 
         let hydro1 = make_hydro(1);
         let hydro2 = make_hydro(2);
 
-        let thermal = Thermal {
-            id: EntityId(1),
-            name: "T1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        };
+        let mut thermal = make_thermal(1, 0.0, 100.0);
+        thermal.name = "T1".to_string();
+        thermal.cost_per_mwh = 50.0;
 
         // Stage 0: duration 720h; Stage 1: duration 744h.
         let stage0 = make_stage(0, 720.0);
@@ -2471,44 +2403,19 @@ mod tests {
     /// `n_pumping_stations() > 0` and the writer's directory gate fires. The
     /// station references bus 1 and hydros 1/2, all present in the base system.
     fn make_test_system_with_pumping() -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "B1".to_string();
+        bus.excess_cost = 0.0;
 
-        let line = Line {
-            id: EntityId(1),
-            name: "L1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId(1),
-            target_bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 500.0,
-            reverse_capacity_mw: 500.0,
-            losses_percent: 2.5,
-            exchange_cost: 0.0,
-        };
+        let mut line = make_line(1, 1, 1);
+        line.name = "L1".to_string();
+        line.direct_capacity_mw = 500.0;
+        line.reverse_capacity_mw = 500.0;
+        line.losses_percent = 2.5;
 
-        let pumping_station = PumpingStation {
-            id: EntityId(1),
-            name: "P1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            source_hydro_id: EntityId(1),
-            destination_hydro_id: EntityId(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 150.0,
-        };
+        let mut pumping_station = make_pumping_station(1, 1, 1, 2);
+        pumping_station.name = "P1".to_string();
+        pumping_station.max_flow_m3s = 150.0;
 
         SystemBuilder::new()
             .buses(vec![bus])
@@ -2614,6 +2521,9 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 6.0,
             stored_energy_initial_mw: 1.7145,
             stored_energy_final_mw: 1.7222,
+            tailrace_flow_m3s: None,
+            tailrace_level_m: None,
+            net_head_m: None,
         }
     }
 
@@ -3406,6 +3316,8 @@ mod tests {
 
     #[test]
     fn write_scenario_parquet_roundtrip_hydros_derived_mwh() {
+        use arrow::array::Array;
+
         let tmp = tempfile::tempdir().expect("tempdir must succeed");
         std::fs::create_dir_all(tmp.path().join("simulation")).unwrap();
 
@@ -3415,7 +3327,11 @@ mod tests {
             SimulationParquetWriter::new(tmp.path(), &system).expect("new must succeed");
 
         // 2 stages x 2 hydros = 4 rows in hydros parquet.
-        let payload = make_scenario_payload(0, 2);
+        let mut payload = make_scenario_payload(0, 2);
+        let fpha_row = &mut payload.stages[0].hydros[0];
+        fpha_row.tailrace_flow_m3s = Some(219.0);
+        fpha_row.tailrace_level_m = Some(10.219);
+        fpha_row.net_head_m = Some(138.781);
         writer
             .write_scenario(payload)
             .expect("write_scenario must succeed");
@@ -3517,6 +3433,37 @@ mod tests {
             1.7222,
             "stored_energy_final_mw must round-trip"
         );
+
+        for (col, expected_index, expected_value) in [
+            ("tailrace_flow_m3s", 42, 219.0),
+            ("tailrace_level_m", 43, 10.219),
+            ("net_head_m", 44, 138.781),
+        ] {
+            let field = schema
+                .field_with_name(col)
+                .unwrap_or_else(|_| panic!("{col} column must exist in schema"));
+            assert_eq!(
+                field.data_type(),
+                &arrow::datatypes::DataType::Float64,
+                "{col} must be Float64"
+            );
+            assert!(field.is_nullable(), "{col} must be nullable");
+            assert_eq!(
+                schema.index_of(col).expect("column must exist"),
+                expected_index,
+                "{col} must sit at its declared tail position"
+            );
+            let arr = batch
+                .column(expected_index)
+                .as_any()
+                .downcast_ref::<arrow::array::Float64Array>()
+                .unwrap_or_else(|| panic!("column {col} must be Float64Array"));
+            assert_eq!(arr.value(0), expected_value, "{col} must round-trip");
+            assert!(
+                arr.is_null(1),
+                "{col} must be null where the record is None"
+            );
+        }
     }
 
     #[test]
@@ -3589,11 +3536,11 @@ mod tests {
     }
 
     #[test]
-    fn hydros_schema_drops_old_productivity_field() {
+    fn hydros_schema_has_no_productivity_field() {
         let schema = hydros_schema();
         assert!(
             schema.field_with_name("productivity_mw_per_m3s").is_err(),
-            "productivity_mw_per_m3s must not exist in the updated schema"
+            "productivity_mw_per_m3s must not exist in the hydros schema"
         );
     }
 
@@ -3616,7 +3563,7 @@ mod tests {
     }
 
     #[test]
-    fn hydros_batch_round_trips_new_columns() {
+    fn hydros_batch_round_trips_energy_columns() {
         let tmp = tempfile::tempdir().expect("tempdir must succeed");
         std::fs::create_dir_all(tmp.path().join("simulation")).unwrap();
 
@@ -3700,16 +3647,9 @@ mod tests {
     /// [`make_test_system`] plus a declared travel-time arc (hydro 2 → hydro 1,
     /// 720 h), so the writer's `in_transit` directory gate fires.
     fn make_test_system_with_travel_time() -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "B1".to_string();
+        bus.excess_cost = 0.0;
         let downstream = make_hydro(1);
         let mut upstream = make_hydro(2);
         upstream.downstream_id = Some(EntityId(1));

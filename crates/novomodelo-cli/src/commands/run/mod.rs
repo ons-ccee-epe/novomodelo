@@ -9,8 +9,6 @@ use novomodelo_io::OutputContext;
 use novomodelo_io::PolicyMode;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::now_iso8601;
-use novomodelo_sddp::RowViolationReport;
-use novomodelo_sddp::SolveTotals;
 use novomodelo_sddp::SolverStatsDelta;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::build_deviation_summary;
@@ -206,40 +204,31 @@ fn execute_inner<C: Communicator>(
 
     let hostname = ctx.topology.leader_hostname().to_string();
 
-    let (outcome, row_violations) =
-        match RunPhasePlan::resolve(training_enabled, setup.simulation_config.n_scenarios > 0) {
-            RunPhasePlan::TrainedThenSimulated => train_then_simulate(
-                ctx,
-                signals,
-                &system,
-                &mut setup,
-                root_config,
-                policy_mode,
-                setup_timings,
-                &hostname,
-            )?,
-            RunPhasePlan::SimulateFromPolicy => {
-                let training_result = load_policy_for_simulation(ctx, &system, &mut setup)?;
-                let simulation =
-                    run_simulation_phase(ctx, &system, &mut setup, &training_result, &hostname)?;
-                (
-                    RunOutcome::Completed,
-                    RowViolationReport::new(&SolveTotals::default(), Some(&simulation)),
-                )
+    match RunPhasePlan::resolve(training_enabled, setup.simulation_config.n_scenarios > 0) {
+        RunPhasePlan::TrainedThenSimulated => train_then_simulate(
+            ctx,
+            signals,
+            &system,
+            &mut setup,
+            root_config,
+            policy_mode,
+            setup_timings,
+            &hostname,
+        ),
+        RunPhasePlan::SimulateFromPolicy => {
+            let training_result = load_policy_for_simulation(ctx, &system, &mut setup)?;
+            run_simulation_phase(ctx, &system, &mut setup, &training_result, &hostname)?;
+            Ok(RunOutcome::Completed)
+        }
+        RunPhasePlan::Nothing => {
+            if ctx.is_root && !ctx.quiet {
+                let _ = ctx
+                    .stdout
+                    .write_line("Training disabled, simulation disabled — nothing to do.");
             }
-            RunPhasePlan::Nothing => {
-                if ctx.is_root && !ctx.quiet {
-                    let _ = ctx
-                        .stdout
-                        .write_line("Training disabled, simulation disabled — nothing to do.");
-                }
-                (RunOutcome::Completed, RowViolationReport::default())
-            }
-        };
-    if ctx.is_root && row_violations.should_emit() {
-        let _ = ctx.stderr.write_line(&format!("warning: {row_violations}"));
+            Ok(RunOutcome::Completed)
+        }
     }
-    Ok(outcome)
 }
 
 fn train_then_simulate<C: Communicator>(
@@ -251,7 +240,7 @@ fn train_then_simulate<C: Communicator>(
     policy_mode: PolicyMode,
     setup_timings: Option<SetupTimings>,
     hostname: &str,
-) -> Result<(RunOutcome, RowViolationReport), CliError> {
+) -> Result<RunOutcome, CliError> {
     apply_training_policy(ctx, system, setup, root_config.as_ref(), policy_mode)?;
     setup.enable_periodic_checkpoints(system, &ctx.output_dir);
     let training_started_at = now_iso8601();
@@ -340,15 +329,10 @@ fn train_then_simulate<C: Communicator>(
         signals.close()?;
     }
 
-    let simulation = match PostTrainingSimulation::resolve(n_scenarios > 0, decision, agreed.level)
-    {
-        PostTrainingSimulation::Run => Some(run_simulation_phase(
-            ctx,
-            system,
-            setup,
-            &training.result,
-            hostname,
-        )?),
+    match PostTrainingSimulation::resolve(n_scenarios > 0, decision, agreed.level) {
+        PostTrainingSimulation::Run => {
+            run_simulation_phase(ctx, system, setup, &training.result, hostname)?;
+        }
         PostTrainingSimulation::SkipAfterSignalStop if !decided_skip => {
             let local = if ctx.is_root {
                 skip_simulation_phase(ctx, hostname, n_scenarios)
@@ -357,20 +341,15 @@ fn train_then_simulate<C: Communicator>(
             };
             let late = agree_post_write(&ctx.comm, failure_code(&local), agreed.level)?;
             into_agreed_result(local, &late)?;
-            None
         }
-        PostTrainingSimulation::SkipAfterSignalStop | PostTrainingSimulation::NotRequested => None,
-    };
+        PostTrainingSimulation::SkipAfterSignalStop | PostTrainingSimulation::NotRequested => {}
+    }
 
-    let outcome = if signal_stop {
+    Ok(if signal_stop {
         RunOutcome::StoppedOnRequest
     } else {
         RunOutcome::Completed
-    };
-    Ok((
-        outcome,
-        RowViolationReport::new(&training.solve_totals, simulation.as_ref()),
-    ))
+    })
 }
 
 /// Guard `u64 as f64` cast before MPI `allreduce(Sum)`: reject counters ≥ `2^53` that lose precision.

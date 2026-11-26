@@ -483,7 +483,7 @@ def test_train_and_simulate_docstrings_name_written_paths(
 
     Unconditional paths documented in the train/simulate docstrings must both
     exist on disk after a 1dtoy train+simulate AND appear verbatim in the
-    corresponding __doc__. The four historically drifted paths must be absent.
+    corresponding __doc__. The four `false_paths`, which neither writes, must be absent.
     """
     import novomodelo
 

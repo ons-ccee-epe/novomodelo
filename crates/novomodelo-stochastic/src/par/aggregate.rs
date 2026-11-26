@@ -161,12 +161,14 @@ mod tests {
     use novomodelo_core::{
         EntityId,
         temporal::{SeasonCycleType, SeasonDefinition, SeasonMap, Stage},
-        test_support::{StageSpec, date, f64_bits_eq, single_block},
+        test_support::{
+            MonthlyLabels, StageSpec, date, f64_bits_eq, monthly_season_map, single_block,
+            weekly_season_map,
+        },
     };
 
     use super::aggregate_observations_to_season;
     use crate::StochasticError;
-    use crate::test_support::{MonthlyLabels, monthly_season_map, weekly_season_map};
 
     // -----------------------------------------------------------------------
     // Helper constructors

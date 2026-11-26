@@ -1086,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn run_stage_solve_warm_profile_still_offers_the_stored_basis() {
+    fn run_stage_solve_warm_profile_offers_the_stored_basis() {
         let (offered, reconstructions, _) = probe_both_entries(true);
         assert_eq!(offered, vec![true, true]);
         assert_eq!(

@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn entity_slot_constructors_leave_new_dates_at_sentinel() {
+    fn entity_slot_constructors_leave_dates_at_sentinel() {
         for slot in [
             EntitySlot::storage(1, true),
             EntitySlot::inflow_lag(1, 1, true),

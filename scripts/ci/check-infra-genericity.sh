@@ -37,11 +37,7 @@
 #
 # Explicitly excluded files:
 #
-#   None. The output/policy/ files formerly sat here pending a
-#   value-function-artifact format-version bump; that bump landed (the
-#   FlatBuffers table speaks affine-piece vocabulary and the standalone-"cut"
-#   identifiers are gone), so the exemption is retired and the directory module
-#   is scanned like every other infra source file.
+#   None.
 #
 # Exit codes:
 #   0 — No violations found.
@@ -69,8 +65,7 @@ SCAN_DIRS=(
 
 # Files to explicitly exclude from the scan (relative to REPO_ROOT).
 #
-# Empty: the value-function-artifact format break retired the former
-# output/policy/ exemption. Add an entry here only with owner sign-off.
+# Empty. Add an entry here only with owner sign-off.
 EXCLUDED_FILES=()
 
 # Build the grep ERE pattern.

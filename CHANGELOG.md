@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `constraints/penalty_overrides_bus_deficit.parquet` sets a bus's deficit
   segment depths per stage, or per block with `block_id`. Each override lists
   every `segment_index` of the bus's curve; costs stay the curve's. Releases
-  up to 0.21.0 ignore the file.
+  up to 0.22.0 ignore the file.
 
 ### Changed
 
@@ -28,6 +28,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `bus_deficit` term in `constraints/generic_constraints.json`, on a bus with
   fewer deficit segments than another bus, could be met at no cost and the bus
   reported deficit it was never charged for. Results change for such cases.
+
+## [0.22.0] - 2026-11-24
+
+### Added
+
+- `modeling.inflow_residual.distribution` in `config.json`: `"lognormal_3p"`
+  draws inflow residuals from a three-parameter lognormal bounded below at zero
+  inflow; default `"normal"`. Refused with `external` or `historical` inflows,
+  `enumerated` selection, `historical_residuals` stages or `scenario_id` nodes.
+- `system/hydros.json` accepts `tailrace_flow` (`own_outflow_factor`,
+  `outflow_influences`, `incremental_inflow_influences`); bad entries are
+  refused and `validate` warns without FPHA. `simulation/hydros` adds
+  `tailrace_flow_m3s`, `tailrace_level_m` and `net_head_m`.
+- `system/hydros.json` accepts `spillage` with `min_spillage_m3s` and
+  `max_spillage_m3s` (m3/s), bounding the plant's spillage in every block;
+  `constraints/hydro_bounds.parquet` values replace them. Negative values
+  and a minimum above the maximum are refused.
+- `training.selection.first_iteration_trial_storage` in `config.json`:
+  `"storage_grid"` builds the first iteration's cuts at an even grid of
+  storage levels instead of the forward passes' storage. `"forward"`, the
+  default, keeps the earlier behaviour.
+
+### Changed
+
+- Results change for FPHA hydros declaring `tailrace_flow`: `gamma_s` in
+  `system/fpha_hyperplanes.parquet` and the `fpha_hyperplanes` output is the
+  lateral-flow slope per m3/s (spill slope if none).
+- Results change for hydros with `fpha_config.source: "computed"`: planes keep
+  their fitted spill slope (`gamma_s`), so a spilling plant generates less. It
+  may again turbine water at 0 MW in `simulation/hydros`, as before 0.21.0.
+  `novomodelo validate` now warns only on planes below 0 MW without spillage.
+
+### Removed
+
+- **BREAKING:** `post_study_stages.json` with a `stages` key is refused. Migrate
+  each deck with `python3 scripts/migrate/post_study_stages.py <deck-dir>`.
+- **BREAKING:** `estimation.correlation_target` and
+  `training.scenario_source.openings.moment_matching` in `config.json` are
+  refused; delete them. `training/model_provenance.json` no longer records
+  `inflow.correlation_target` and `inflow.opening_tree_moment_matching`.
+- **BREAKING:** `spillage_discretization_points` and `max_planes_per_hydro` in
+  `fpha_config` of `system/hydro_production_models.json` are refused; delete
+  them. Results do not change.
+- `novomodelo run` no longer warns when `lp_row_violations` in
+  `solver/iterations.parquet` is nonzero; the column is still written.
+
+### Fixed
+
+- `scenario_source.inflow.scheme` `"historical"` and `"external"` refused a
+  zero inflow standard deviation at a hydro and season (`V2.3`, `V3.7`). That
+  season now takes the model's deterministic inflow, not the recorded one.
+  `"external"` also refused a constant inflow column under an AR(p > 0) model.
+- `novomodelo validate` warned that the LP prices negative values in
+  `scenarios/inflow_history.parquet` and `initial_conditions.json`
+  `recent_observations`. It said so whatever
+  `modeling.inflow_non_negativity.method` was set to.
 
 ## [0.21.0] - 2026-11-16
 
@@ -80,8 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial inflow is path-independent; a month-to-quarter stage warns once.
 - PAR(p) folding: the inflow model leaves the stage LP. Each stage's inflow is
   computed from its lags before the solve, so the LP drops the lag columns and
-  inflow rows and is smaller. Results change. A 0.20.0 policy still loads; its
-  stored bases are skipped with a `stored bases not used` warning.
+  inflow rows and is smaller. Results change. A 0.20.0 policy is refused at
+  load; retrain it.
 
 #### Hydro plants
 
@@ -2010,7 +2066,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...v0.19.1

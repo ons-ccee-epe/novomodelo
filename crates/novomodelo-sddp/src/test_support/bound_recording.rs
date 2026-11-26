@@ -852,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn a_final_append_before_a_later_pin_still_needs_a_push() {
+    fn a_final_append_before_a_later_pin_needs_a_push() {
         let log = CutRowPushLog::new();
         let mut rec = recorder_with(&log, AppendedCutRowBound::Final);
         rec.load_model(&theta_template());

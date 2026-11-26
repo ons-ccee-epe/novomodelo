@@ -1,4 +1,5 @@
 use crate::SddpError;
+use novomodelo_io::config::InflowResidualDistribution;
 
 /// Test-only backward-pass shim that owns per-call scratch, so the tests in
 /// this module can exercise the backward pass without threading a full
@@ -738,106 +739,66 @@ fn make_stochastic_context_with_ar(
     branching_factor: usize,
     ar_coefficients: &[f64],
 ) -> novomodelo_stochastic::StochasticContext {
-    use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use novomodelo_core::entities::hydro::HydroPenalties;
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, SystemBuilder,
+        DeficitSegment, EntityId, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
         },
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
     use novomodelo_stochastic::context::{
         ClassSchemes, OpeningTreeInputs, build_stochastic_context,
     };
     use std::collections::BTreeMap;
 
-    let bus = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(1),
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    let bus = builders::make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
+    );
+    let hydro = builders::make_hydro(
+        EntityId(1),
+        HydroSpec {
+            name: "H1".to_string(),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: 100.0,
+            max_generation_mw: 100.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    );
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let make_stage = |idx: usize| Stage {
-        index: idx,
-        id: idx as i32,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-
-    let stages: Vec<Stage> = (0..n_stages).map(make_stage).collect();
+    let stages: Vec<Stage> = (0..n_stages)
+        .map(|idx| {
+            builders::make_stage(
+                idx,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..StageSpec::default()
+                },
+            )
+        })
+        .collect();
 
     #[allow(clippy::cast_possible_truncation)]
     let inflow = |stage_idx: usize| InflowModel {
@@ -1018,6 +979,7 @@ fn single_stage_system_produces_no_cuts() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1101,6 +1063,7 @@ fn two_stage_system_two_trial_states_generates_two_cuts_at_stage_0() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1140,7 +1103,7 @@ fn two_stage_system_two_trial_states_generates_two_cuts_at_stage_0() {
 
 #[test]
 fn cut_inserted_with_correct_stage_iteration_and_forward_pass_index() {
-    // Acceptance criterion: iteration=2, forward_passes=3, global
+    // iteration=2, forward_passes=3, global
     // trial point m=1 → fcf.add_cut(NodeId(0),stage=0, iteration=2, fpi=1, ...).
     // slot = warm_start + 2*3 + 1 = 7.
     let n_stages = 2_usize;
@@ -1191,6 +1154,7 @@ fn cut_inserted_with_correct_stage_iteration_and_forward_pass_index() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1275,6 +1239,7 @@ fn no_cuts_generated_at_last_stage() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1360,6 +1325,7 @@ fn elapsed_ms_is_non_negative() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1440,6 +1406,7 @@ fn infeasible_solver_returns_sddp_infeasible_error() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1555,6 +1522,7 @@ fn cut_coefficients_and_intercept_match_dual_extraction_formula() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1651,6 +1619,7 @@ fn cut_gradient_sign_physically_correct() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1758,6 +1727,7 @@ fn cut_is_tight_at_trial_state() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1855,6 +1825,7 @@ fn single_rank_backward_pass_with_local_backend_produces_correct_fcf() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1896,7 +1867,7 @@ fn single_rank_backward_pass_with_local_backend_produces_correct_fcf() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn forward_pass_index_matches_global_scenario_index() {
-    // Acceptance criterion: when a cut is generated for global trial point
+    // When a cut is generated for global trial point
     // m=5, then `fcf.add_cut(NodeId(0),stage, iteration, 5, ...)` is called with
     // forward_pass_index = m = 5.
     //
@@ -1963,6 +1934,7 @@ fn forward_pass_index_matches_global_scenario_index() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2057,6 +2029,7 @@ fn warm_start_uses_prepopulated_forward_basis() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2144,6 +2117,7 @@ fn multi_opening_subsequent_openings_use_internal_hotstart() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2237,6 +2211,7 @@ fn backward_solver_error_propagates() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2350,6 +2325,7 @@ fn test_backward_pass_parallel_cut_determinism() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2412,6 +2388,7 @@ fn test_backward_pass_parallel_cut_determinism() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2499,111 +2476,72 @@ fn make_stochastic_context_with_load(
     mean_mw: f64,
     std_mw: f64,
 ) -> novomodelo_stochastic::StochasticContext {
-    use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use novomodelo_core::entities::hydro::HydroPenalties;
     use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel};
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
-    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_core::temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage};
+    use novomodelo_core::{DeficitSegment, EntityId, SystemBuilder};
     use novomodelo_stochastic::context::{
         ClassSchemes, OpeningTreeInputs, build_stochastic_context,
     };
 
-    let bus0 = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let bus1 = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(10),
-        name: "H10".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    let bus0 = builders::make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
+    );
+    let bus1 = builders::make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "B1".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
+        },
+    );
+    let hydro = builders::make_hydro(
+        EntityId(10),
+        HydroSpec {
+            name: "H10".to_string(),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: 100.0,
+            max_generation_mw: 100.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    );
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let make_stage = |idx: usize| Stage {
-        index: idx,
-        id: idx as i32,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-
-    let stages: Vec<Stage> = (0..n_stages).map(make_stage).collect();
+    let stages: Vec<Stage> = (0..n_stages)
+        .map(|idx| {
+            builders::make_stage(
+                idx,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..StageSpec::default()
+                },
+            )
+        })
+        .collect();
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let inflow_models: Vec<InflowModel> = (0..n_stages)
@@ -2753,6 +2691,7 @@ fn backward_pass_load_patches_applied() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2802,7 +2741,7 @@ fn backward_pass_load_patches_applied() {
 /// stays empty.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn backward_pass_no_load_buses_unchanged() {
+fn backward_pass_no_load_buses_patches_only_inflow_rows() {
     let n_stages = 2_usize;
     let n_openings = 2_usize;
     let stochastic = make_stochastic_context(n_stages, n_openings);
@@ -2882,6 +2821,7 @@ fn backward_pass_no_load_buses_unchanged() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3007,6 +2947,7 @@ fn backward_pass_cut_coefficients_unaffected() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3072,7 +3013,7 @@ fn backward_pass_cut_coefficients_unaffected() {
 /// called per-stage inside the loop) and exercises the full code path.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn per_stage_cut_sync_invariant_after_bug1_fix() {
+fn per_stage_cut_sync_runs_inside_the_backward_loop() {
     use novomodelo_comm::LocalBackend;
 
     let n_stages = 4_usize;
@@ -3121,6 +3062,7 @@ fn per_stage_cut_sync_invariant_after_bug1_fix() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3258,6 +3200,7 @@ fn backward_iteration_3_over_three_old_cuts<C: Communicator>(
                 cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
                 study_dims: &test_support::study_dims(),
                 inflow_method: &InflowNonNegativityMethod::None,
+                inflow_residual: InflowResidualDistribution::Normal,
                 stochastic: &stochastic,
                 initial_state: &[],
                 inflow_scheme: SamplingScheme::InSample,
@@ -3544,6 +3487,7 @@ fn active_count_after_one_binding_solve(cut_row_dual: f64, tolerance: f64) -> u6
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3693,6 +3637,7 @@ fn run_backward_pass_with_n_workers(n_workers: usize) -> FutureCostFunction {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3735,7 +3680,7 @@ fn run_backward_pass_with_n_workers(n_workers: usize) -> FutureCostFunction {
 
 #[test]
 fn work_stealing_produces_identical_results_across_worker_counts() {
-    // Acceptance criterion: the FCF state after running the backward pass
+    // The FCF state after running the backward pass
     // with 1 workspace must be bit-identical to the state after running
     // with 3 workspaces, given the same inputs. This verifies that the
     // sort-by-trial_state_idx post-processing in the work-stealing
@@ -3868,7 +3813,7 @@ fn decompose_four_workers_different_solve_times() {
     assert_eq!(scheduling_ms, 50, "scheduling overhead = wall - max_worker");
 }
 
-/// Acceptance criterion: `setup_time_ms` is the sum of all workers' non-solve
+/// `setup_time_ms` is the sum of all workers' non-solve
 /// work.
 ///
 /// Workers have setup costs (load+add+bounds+basis): 20, 25, 15, 22 ms.
@@ -4013,6 +3958,7 @@ fn allgatherv_single_rank_two_workers_stage_stats_has_per_worker_entries() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4196,6 +4142,7 @@ fn allgatherv_dual_rank_stub_stage_stats_contains_both_ranks() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4297,6 +4244,7 @@ fn run_one_trial_state_with_stores(
         cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &[],
         inflow_scheme: SamplingScheme::InSample,
@@ -4431,6 +4379,7 @@ fn pin_folded_pins_transit_bucket_incoming_columns_per_stage_visit() {
         cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, 1),
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &[],
         inflow_scheme: SamplingScheme::InSample,
@@ -4534,6 +4483,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
         cut_state_layouts: &cut_state_layouts,
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &[],
         inflow_scheme: SamplingScheme::External,
@@ -4886,6 +4836,7 @@ fn handshake_passes_with_local_backend() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -5035,6 +4986,7 @@ fn handshake_rejects_nonuniform_workers() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -5227,6 +5179,7 @@ fn dcs_active_workspace() -> Vec<SolverWorkspace<ActiveSolver>> {
         cut_state_layouts: &cut_state_layouts,
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -5313,6 +5266,7 @@ fn run_dcs_backward_trial_state_at(
         cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &[],
         inflow_scheme: SamplingScheme::InSample,
@@ -5469,8 +5423,8 @@ fn backward_dcs_cut_equals_all_cuts_cut() {
     );
 }
 
-/// `dcs = None` ⇒ the frozen all-cuts path is taken and the cut is identical
-/// to the pre-DCS baseline (same fixture run with `None`).
+/// `dcs = None` ⇒ the frozen all-cuts path is taken, and two runs of the same
+/// fixture produce identical cuts.
 #[test]
 fn backward_dcs_off_is_identical_to_baseline() {
     let (cut_a, coefficients_a, _) = run_dcs_backward_trial_state(None, 5);
@@ -5714,7 +5668,7 @@ fn backward_dcs_exactness_sweep() {
 /// frozen template as its core, the LP would carry the spurious floor-10
 /// constraint and the produced cut would be `theta = 10, gradient = 5` —
 /// observably different from the correct all-cuts cut. Loading the cut-free
-/// base (the fix) ignores this frozen row, so the DCS cut matches all-cuts.
+/// base ignores this frozen row, so the DCS cut matches all-cuts.
 fn dcs_frozen_template_with_one_cut() -> StageTemplate {
     StageTemplate {
         num_cols: 3,
@@ -5735,8 +5689,8 @@ fn dcs_frozen_template_with_one_cut() -> StageTemplate {
     }
 }
 
-/// Regression for the frozen-template-as-core bug: when freeze is active
-/// (`frozen_template.num_rows > template_num_rows`), the DCS path must load
+/// When freeze is active (`frozen_template.num_rows > template_num_rows`), the
+/// DCS path must load
 /// the cut-free base `ctx.templates[s]` — NOT `succ.frozen_template`, which
 /// already carries the active cut rows. Loading the frozen template would
 /// leave its frozen cut rows resident in the LP even though the lazy loop's
@@ -5746,12 +5700,10 @@ fn dcs_frozen_template_with_one_cut() -> StageTemplate {
 /// Here `succ.frozen_template` carries one frozen cut row
 /// (`dcs_frozen_template_with_one_cut`, `num_rows = 2`) that is a spurious
 /// floor-10 / gradient-5 constraint NOT present in the DCS pool, while
-/// `ctx.templates[s]` is the cut-free base (`num_rows = 1`). With the fix
-/// the DCS cut equals the all-cuts cut (gradient 2) within 1e-9. Against the
-/// old `core = succ.frozen_template`, the spurious frozen cut dominates the
-/// solve and DCS returns gradient 5 — observably wrong — failing this
-/// assertion. (Verified: this test fails on the buggy code, passes on the
-/// fix.)
+/// `ctx.templates[s]` is the cut-free base (`num_rows = 1`). The DCS cut must
+/// equal the all-cuts cut (gradient 2) within 1e-9; with
+/// `core = succ.frozen_template` the spurious frozen cut dominates the solve
+/// and DCS returns gradient 5, failing this assertion.
 #[test]
 // Rationale: one end-to-end DCS-vs-frozen scenario whose setup (templates, fcf,
 // SuccessorSpec, contexts) and sequential assertions form a single coherent
@@ -5805,6 +5757,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
         cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &[],
         inflow_scheme: SamplingScheme::InSample,
@@ -5929,9 +5882,9 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     // The all-cuts reference cut (cut-free base + full pool, no DCS).
     let (allcuts, allcuts_coefficients, _) = run_dcs_backward_trial_state(None, iteration);
 
-    // With the fix (core = cut-free ctx.templates[s]), the binding cut is
-    // added exactly once and the DCS cut matches the all-cuts cut. With the
-    // bug (core = frozen_template), the frozen cut is double-added and the
+    // With core = cut-free ctx.templates[s], the binding cut is added exactly
+    // once and the DCS cut matches the all-cuts cut. With
+    // core = frozen_template, the frozen cut is double-added and the
     // solve/extraction is malformed, so this fails.
     assert!(
         (dcs_cut.intercept - allcuts.intercept).abs() < 1e-9,
@@ -6209,6 +6162,7 @@ impl CompactBackwardCase {
             cut_state_layouts: &self.layouts,
             study_dims: &self.study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &self.stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,

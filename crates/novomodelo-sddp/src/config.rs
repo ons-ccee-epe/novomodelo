@@ -43,6 +43,7 @@ use crate::cut_selection::CutSelectionStrategy;
 use crate::policy::orchestration::PeriodicCheckpoint;
 use crate::risk_measure::RiskMeasure;
 use crate::stopping_rule::{StoppingMode, StoppingRule, StoppingRuleSet};
+use crate::training::StorageGrid;
 
 /// Pure-data iteration parameters stored on [`crate::setup::StudySetup`].
 ///
@@ -66,6 +67,8 @@ pub struct LoopParams {
     pub(crate) resume_lower_bound_history: Vec<f64>,
     /// Stopping rules controlling convergence.
     pub(crate) stopping_rules: StoppingRuleSet,
+    /// The storage grid the first iteration's backward pass visits.
+    pub(crate) storage_grid: Option<StorageGrid>,
 }
 
 /// Controls the iteration loop and convergence.
@@ -105,6 +108,10 @@ pub struct LoopConfig {
 
     /// Stopping rules evaluated after each iteration's lower-bound update.
     pub stopping_rules: StoppingRuleSet,
+
+    /// The storage grid the first iteration's backward pass visits; `None` keeps
+    /// the forward's storage.
+    pub storage_grid: Option<StorageGrid>,
 }
 
 impl Default for LoopConfig {
@@ -120,6 +127,7 @@ impl Default for LoopConfig {
                 rules: vec![StoppingRule::IterationLimit { limit: 1 }],
                 mode: StoppingMode::Any,
             },
+            storage_grid: None,
         }
     }
 }

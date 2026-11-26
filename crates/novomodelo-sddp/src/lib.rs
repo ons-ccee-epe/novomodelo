@@ -96,13 +96,12 @@ pub use novomodelo_io::scenarios::estimation::{
 };
 pub use policy::policy_export::{ReservedInflowLagLayout, reserve_boundary_inflow_lag_slots};
 pub use policy::policy_load::{
-    BoundaryInjection, BoundaryLoadRequest, BoundaryReconciliation, FullFcf,
-    LEGACY_COST_SCALE_FACTOR, PolicyLoadKind, PolicyLoadProof, PolicyStageManifest,
-    StoredBasisLoad, StoredBasisMisfit, UnusedStoredBases, ValidatedBoundaryCuts,
-    boundary_policy_required_lag_depth, build_basis_cache_from_checkpoint,
+    BoundaryInjection, BoundaryLoadRequest, BoundaryReconciliation, FullFcf, PolicyLoadKind,
+    PolicyLoadProof, PolicyStageManifest, StoredBasisLoad, StoredBasisMisfit, UnusedStoredBases,
+    ValidatedBoundaryCuts, boundary_policy_required_lag_depth, build_basis_cache_from_checkpoint,
     compare_manifest_slot_identity, inject_boundary_cuts, load_boundary_cuts,
-    pool_cost_scale_factor, reconcile_boundary_policy, rescale_checkpoint_cuts_for_load,
-    resolve_boundary_state_requirements, validate_policy_load,
+    pool_cost_scale_factor, reconcile_boundary_policy, resolve_boundary_state_requirements,
+    validate_policy_load,
 };
 pub use policy::provenance::{
     HydroProductionProvenance, InflowProvenance, ModelProvenanceReport, ProvenanceSource,
@@ -137,10 +136,9 @@ pub use simulation::{
 pub use solve::solver_phase::{BACKWARD_PROFILE, FORWARD_PROFILE, SIMULATION_PROFILE};
 pub use solve::solver_phase::{Phase, SolverProfiles};
 pub use solver_stats::{
-    PhaseCounts, RowViolationReport, SOLVER_STATS_DELTA_SCALAR_FIELDS, SolveTotals,
-    SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode, aggregate_solver_stats_log,
-    delta_to_stats_row, pack_delta_scalars, pack_scenario_stats, solver_stats_log_to_rows,
-    unpack_delta_scalars, unpack_scenario_stats,
+    SOLVER_STATS_DELTA_SCALAR_FIELDS, SolveTotals, SolverStatsDelta, SolverStatsLogEntry,
+    StatsFoldMode, aggregate_solver_stats_log, delta_to_stats_row, pack_delta_scalars,
+    pack_scenario_stats, solver_stats_log_to_rows, unpack_delta_scalars, unpack_scenario_stats,
 };
 pub use stochastic::inflow_method::InflowNonNegativityMethod;
 pub use stochastic::stochastic_summary::{

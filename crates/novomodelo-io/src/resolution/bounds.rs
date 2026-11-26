@@ -98,7 +98,7 @@ pub struct BoundsOverrides<'a> {
 /// use novomodelo_core::EntityId;
 /// use novomodelo_core::entities::{
 ///     EnergyContract, ContractType, Hydro, HydroGenerationModel, HydroPenalties,
-///     Line, PumpingStation, Thermal,
+///     Line, PumpingStation, TailraceFlow, Thermal,
 /// };
 /// use novomodelo_io::constraints::HydroBoundsRow;
 /// use novomodelo_io::resolution::{resolve_bounds, BoundsEntitySlices, BoundsOverrides};
@@ -135,6 +135,8 @@ pub struct BoundsOverrides<'a> {
 ///     max_storage_hm3: 200.0,
 ///     min_outflow_m3s: 0.0,
 ///     max_outflow_m3s: None,
+///     min_spillage_m3s: None,
+///     max_spillage_m3s: None,
 ///     generation_model: HydroGenerationModel::ConstantProductivity,
 ///     specific_productivity_mw_per_m3s_per_m: None,
 ///     min_turbined_m3s: 0.0,
@@ -150,6 +152,7 @@ pub struct BoundsOverrides<'a> {
 ///     diversion: None,
 ///     filling: None,
 ///     penalties,
+///     tailrace_flow: TailraceFlow::default(),
 /// };
 ///
 /// let override_row = HydroBoundsRow {
@@ -778,8 +781,8 @@ fn hydro_base_block_bounds(hydro: &Hydro) -> HydroBlockBounds {
             .diversion
             .as_ref()
             .map_or(Some(0.0), |d| d.max_flow_m3s),
-        min_spillage_m3s: None,
-        max_spillage_m3s: None,
+        min_spillage_m3s: hydro.min_spillage_m3s,
+        max_spillage_m3s: hydro.max_spillage_m3s,
     }
 }
 
@@ -829,14 +832,13 @@ fn zero_hydro_block_bounds() -> HydroBlockBounds {
     clippy::doc_markdown
 )]
 mod tests {
-    use chrono::NaiveDate;
     use std::collections::HashMap;
 
     use novomodelo_core::{
         EntityId,
         entities::{
-            ContractType, DiversionChannel, EnergyContract, FillingConfig, Hydro,
-            HydroGenerationModel, HydroPenalties, Line, PumpingStation, Thermal,
+            DiversionChannel, EnergyContract, FillingConfig, Hydro, HydroPenalties, Line,
+            PumpingStation, Thermal,
         },
         resolved::ResolvedBounds,
     };
@@ -844,6 +846,7 @@ mod tests {
     use crate::constraints::{
         ContractBoundsRow, HydroBoundsRow, LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
     };
+    use crate::test_support::make_pumping_station;
 
     /// Build a 0-based consecutive stage_index map: {0→0, 1→1, …, (n-1)→(n-1)}.
     fn si(n: usize) -> HashMap<i32, usize> {
@@ -922,96 +925,45 @@ mod tests {
         diversion: Option<DiversionChannel>,
         filling: Option<FillingConfig>,
     ) -> Hydro {
-        Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3,
-            max_storage_hm3,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion,
-            filling,
-            penalties: make_penalties(),
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.min_storage_hm3 = min_storage_hm3;
+        hydro.max_storage_hm3 = max_storage_hm3;
+        hydro.max_outflow_m3s = max_outflow_m3s;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 100.0;
+        hydro.diversion = diversion;
+        hydro.filling = filling;
+        hydro.penalties = make_penalties();
+        hydro
     }
 
     fn make_thermal(id: i32, min_generation_mw: f64, max_generation_mw: f64) -> Thermal {
-        Thermal {
-            id: EntityId::from(id),
-            name: format!("Thermal {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw,
-            max_generation_mw,
-            anticipated_config: None,
-        }
+        let mut thermal =
+            crate::test_support::make_thermal(id, min_generation_mw, max_generation_mw);
+        thermal.cost_per_mwh = 50.0;
+        thermal
     }
 
     fn make_line(id: i32, direct_mw: f64, reverse_mw: f64) -> Line {
-        Line {
-            id: EntityId::from(id),
-            name: format!("Line {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId::from(1),
-            target_bus_id: EntityId::from(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: direct_mw,
-            reverse_capacity_mw: reverse_mw,
-            losses_percent: 0.0,
-            exchange_cost: 0.0,
-        }
+        let mut line = crate::test_support::make_line(id, 1, 2);
+        line.direct_capacity_mw = direct_mw;
+        line.reverse_capacity_mw = reverse_mw;
+        line
     }
 
     fn make_pumping(id: i32, min_flow_m3s: f64, max_flow_m3s: f64) -> PumpingStation {
-        PumpingStation {
-            id: EntityId::from(id),
-            name: format!("Pumping {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            source_hydro_id: EntityId::from(1),
-            destination_hydro_id: EntityId::from(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s,
-            max_flow_m3s,
-        }
+        let mut pumping = make_pumping_station(id, 1, 1, 2);
+        pumping.min_flow_m3s = min_flow_m3s;
+        pumping.max_flow_m3s = max_flow_m3s;
+        pumping
     }
 
     fn make_contract(id: i32, min_mw: f64, max_mw: f64, price_per_mwh: f64) -> EnergyContract {
-        EnergyContract {
-            id: EntityId::from(id),
-            name: format!("Contract {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            contract_type: ContractType::Import,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            price_per_mwh,
-            min_mw,
-            max_mw,
-        }
+        let mut contract = crate::test_support::make_contract(id, 1);
+        contract.price_per_mwh = price_per_mwh;
+        contract.min_mw = min_mw;
+        contract.max_mw = max_mw;
+        contract
     }
 
     fn all_none_hydro_row(hydro_id: i32, stage_id: i32) -> HydroBoundsRow {
@@ -1481,12 +1433,12 @@ mod tests {
         // No thermal dimension to query — verifying no panic above is sufficient.
     }
 
-    // ── Test: acceptance criterion — AC1: hydro min_storage_hm3 override ───────
+    // ── Test: hydro min_storage_hm3 override ───────────────────────────────────
 
-    /// AC1: 1 hydro, min_storage_hm3=10.0, max_storage_hm3=200.0, 3 stages,
+    /// 1 hydro, min_storage_hm3=10.0, max_storage_hm3=200.0, 3 stages,
     /// override at stage_id=1 with min_storage_hm3=Some(20.0), all other fields None.
     #[test]
-    fn test_ac1_hydro_storage_override() {
+    fn test_hydro_storage_override() {
         let hydros = vec![make_hydro(0, 10.0, 200.0, None, None, None)];
         let override_row = HydroBoundsRow {
             min_storage_hm3: Some(20.0),
@@ -1517,12 +1469,12 @@ mod tests {
         }
     }
 
-    // ── Test: acceptance criterion — AC2: thermal max_generation_mw override ───
+    // ── Test: thermal max_generation_mw override ───────────────────────────────
 
-    /// AC2: 2 thermals (max=400.0 and 600.0), 2 stages,
+    /// 2 thermals (max=400.0 and 600.0), 2 stages,
     /// override thermal_id=1 at stage_id=0, max_generation_mw=Some(500.0).
     #[test]
-    fn test_ac2_thermal_max_generation_override() {
+    fn test_thermal_max_generation_override() {
         let thermals = vec![make_thermal(0, 0.0, 400.0), make_thermal(1, 0.0, 600.0)];
         let override_row = ThermalBoundsRow {
             thermal_id: EntityId::from(1),
@@ -1553,11 +1505,11 @@ mod tests {
         assert!((result.thermal_block_base(0, 0).max_generation_mw - 400.0).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — AC3: hydro with diversion no filling ──────
+    // ── Test: hydro with diversion no filling ──────────────────────────────────
 
-    /// AC3: hydro with diversion channel (max_flow_m3s=50.0) and no filling config.
+    /// Hydro with diversion channel (max_flow_m3s=50.0) and no filling config.
     #[test]
-    fn test_ac3_hydro_diversion_no_filling() {
+    fn test_hydro_diversion_no_filling() {
         let diversion = DiversionChannel {
             downstream_id: EntityId::from(2),
             max_flow_m3s: Some(50.0),
@@ -1586,11 +1538,11 @@ mod tests {
         assert!((b.water_withdrawal_m3s - 0.0).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — AC4: empty overrides, base values ─────────
+    // ── Test: empty overrides, base values ─────────────────────────────────────
 
-    /// AC4: all five override slices empty, every cell equals entity base value.
+    /// All five override slices empty, every cell equals entity base value.
     #[test]
-    fn test_ac4_empty_overrides_base_values() {
+    fn test_empty_overrides_base_values() {
         let hydros = vec![make_hydro(0, 5.0, 50.0, None, None, None)];
         let thermals = vec![make_thermal(0, 10.0, 200.0)];
         let lines = vec![make_line(0, 500.0, 300.0)];
@@ -1632,11 +1584,11 @@ mod tests {
         }
     }
 
-    // ── Test: acceptance criterion — AC5: contract price_per_mwh override ──────
+    // ── Test: contract price_per_mwh override ──────────────────────────────────
 
-    /// AC5: contract override with price_per_mwh=Some(90.0) at stage 1.
+    /// Contract override with price_per_mwh=Some(90.0) at stage 1.
     #[test]
-    fn test_ac5_contract_price_override() {
+    fn test_contract_price_override() {
         let contracts = vec![make_contract(0, 0.0, 200.0, 80.0)];
         let override_row = ContractBoundsRow {
             contract_id: EntityId::from(0),
@@ -1699,7 +1651,7 @@ mod tests {
         assert!((result.hydro_bounds(0, 1).water_withdrawal_m3s - 0.0).abs() < f64::EPSILON);
     }
 
-    // ── Tests: thermal cost override acceptance criteria ─────────────────────
+    // ── Tests: thermal cost override ─────────────────────────────────────────
 
     /// cost_per_mwh override with null block_id — applied.
     /// thermal T1, stages 0 and 1, cost overrides 50.0 and 100.0.
@@ -1823,18 +1775,10 @@ mod tests {
     /// Thermal with cost_per_mwh == 0.0, no override — resolves to 0.0.
     #[test]
     fn test_thermal_zero_base_cost_no_override() {
-        let thermals = vec![Thermal {
-            id: EntityId::from(0),
-            name: "ZeroCost".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        }];
+        let mut thermal = crate::test_support::make_thermal(0, 0.0, 100.0);
+        thermal.name = "ZeroCost".to_string();
+        thermal.cost_per_mwh = 0.0;
+        let thermals = vec![thermal];
 
         let result = resolve_bounds(
             &[],
@@ -2238,12 +2182,112 @@ mod tests {
         assert!((b.min_turbined_m3s - 5.0).abs() < f64::EPSILON);
     }
 
+    // ── Tests: entity spillage as the base layer ──────────────────────────────
+
+    fn make_spillage_hydro(min: Option<f64>, max: Option<f64>) -> Hydro {
+        let mut hydro = make_hydro(0, 10.0, 200.0, None, None, None);
+        hydro.min_spillage_m3s = min;
+        hydro.max_spillage_m3s = max;
+        hydro
+    }
+
+    fn resolve_spillage_bounds(hydro: Hydro, rows: &[HydroBoundsRow]) -> ResolvedBounds {
+        resolve_bounds(
+            &[hydro],
+            &[],
+            &[],
+            &[],
+            &[],
+            2,
+            0,
+            rows,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[2, 2],
+        )
+    }
+
+    #[test]
+    fn entity_spillage_seeds_every_block_cell() {
+        let result = resolve_spillage_bounds(make_spillage_hydro(Some(2.0), Some(40.0)), &[]);
+
+        for s in 0..2 {
+            for b in 0..2 {
+                let bounds = result.hydro_bounds_at_block(0, s, b);
+                assert_eq!(bounds.min_spillage_m3s, Some(2.0));
+                assert_eq!(bounds.max_spillage_m3s, Some(40.0));
+            }
+        }
+    }
+
+    #[test]
+    fn stage_row_replaces_entity_spillage_per_field() {
+        let stage_row = HydroBoundsRow {
+            max_spillage_m3s: Some(60.0),
+            ..all_none_hydro_row(0, 1)
+        };
+
+        let result =
+            resolve_spillage_bounds(make_spillage_hydro(Some(2.0), Some(40.0)), &[stage_row]);
+
+        for b in 0..2 {
+            let stage_0 = result.hydro_bounds_at_block(0, 0, b);
+            assert_eq!(stage_0.min_spillage_m3s, Some(2.0));
+            assert_eq!(stage_0.max_spillage_m3s, Some(40.0));
+            let stage_1 = result.hydro_bounds_at_block(0, 1, b);
+            assert_eq!(stage_1.min_spillage_m3s, Some(2.0));
+            assert_eq!(stage_1.max_spillage_m3s, Some(60.0));
+        }
+    }
+
+    #[test]
+    fn block_row_replaces_stage_resolved_spillage() {
+        let stage_row = HydroBoundsRow {
+            max_spillage_m3s: Some(60.0),
+            ..all_none_hydro_row(0, 1)
+        };
+        let block_row = HydroBoundsRow {
+            max_spillage_m3s: Some(10.0),
+            block_id: Some(1),
+            ..all_none_hydro_row(0, 1)
+        };
+
+        let result = resolve_spillage_bounds(
+            make_spillage_hydro(Some(2.0), Some(40.0)),
+            &[stage_row, block_row],
+        );
+
+        assert_eq!(
+            result.hydro_bounds_at_block(0, 1, 1).max_spillage_m3s,
+            Some(10.0)
+        );
+        assert_eq!(
+            result.hydro_bounds_at_block(0, 1, 0).max_spillage_m3s,
+            Some(60.0)
+        );
+    }
+
+    #[test]
+    fn absent_entity_spillage_keeps_cells_unbounded() {
+        let result = resolve_spillage_bounds(make_spillage_hydro(None, None), &[]);
+
+        for s in 0..2 {
+            for b in 0..2 {
+                let bounds = result.hydro_bounds_at_block(0, s, b);
+                assert_eq!(bounds.min_spillage_m3s, None);
+                assert_eq!(bounds.max_spillage_m3s, None);
+            }
+        }
+    }
+
     // ── Tests: thermal per-block overlay activation ───────────────────────────
 
     /// A thermal row with `block_id = Some(1)` and `max_generation_mw = Some(100.0)`
-    /// is no longer skipped: the value reaches the per-block overlay.
+    /// reaches the per-block overlay.
     #[test]
-    fn test_thermal_block_id_is_no_longer_skipped() {
+    fn test_thermal_block_id_row_reaches_the_per_block_overlay() {
         let thermals = vec![make_thermal(0, 0.0, 400.0)];
         let override_row = ThermalBoundsRow {
             thermal_id: EntityId::from(0),

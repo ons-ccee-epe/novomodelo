@@ -260,7 +260,7 @@ mod tests {
   ]
 }"#;
 
-    // ── AC: valid file with 2 entries, 3 block factors each ───────────────────
+    // ── valid file with 2 entries, 3 block factors each ───────────────────────
 
     #[test]
     fn test_valid_2_entries_sorted_and_block_factors_correct() {
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(entries[1].block_factors.len(), 3);
     }
 
-    // ── AC: sort order for entries out of order ───────────────────────────────
+    // ── sort order for entries out of order ───────────────────────────────────
 
     #[test]
     fn test_entries_sorted_by_bus_stage() {
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(entries[2].stage_id, 0);
     }
 
-    // ── AC: block_factors sorted by block_id ─────────────────────────────────
+    // ── block_factors sorted by block_id ─────────────────────────────────────
 
     #[test]
     fn test_block_factors_sorted_by_block_id() {
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(bfs[2].block_id, 2);
     }
 
-    // ── AC: factor = 0.0 -> SchemaError ──────────────────────────────────────
+    // ── factor = 0.0 -> SchemaError ──────────────────────────────────────────
 
     #[test]
     fn test_zero_factor_rejected() {
@@ -372,7 +372,7 @@ mod tests {
         }
     }
 
-    // ── AC: factor negative -> SchemaError ───────────────────────────────────
+    // ── factor negative -> SchemaError ───────────────────────────────────────
 
     #[test]
     fn test_negative_factor_rejected() {
@@ -399,7 +399,7 @@ mod tests {
         }
     }
 
-    // ── AC: duplicate (bus_id, stage_id) -> SchemaError ──────────────────────
+    // ── duplicate (bus_id, stage_id) -> SchemaError ──────────────────────────
 
     #[test]
     fn test_duplicate_bus_stage_rejected() {
@@ -435,7 +435,7 @@ mod tests {
         }
     }
 
-    // ── AC: empty load_factors array -> Ok(vec![]) ────────────────────────────
+    // ── empty load_factors array -> Ok(vec![]) ────────────────────────────────
 
     #[test]
     fn test_empty_load_factors_returns_empty_vec() {
@@ -445,7 +445,7 @@ mod tests {
         assert!(entries.is_empty());
     }
 
-    // ── AC: missing block_factors field -> ParseError ─────────────────────────
+    // ── missing block_factors field -> ParseError ─────────────────────────────
 
     #[test]
     fn test_missing_block_factors_field_is_parse_error() {
@@ -463,7 +463,7 @@ mod tests {
         }
     }
 
-    // ── AC: factor very small positive -> accepted ────────────────────────────
+    // ── factor very small positive -> accepted ────────────────────────────────
 
     #[test]
     fn test_very_small_positive_factor_accepted() {
@@ -483,7 +483,7 @@ mod tests {
         assert!(entries[0].block_factors[0].factor > 0.0);
     }
 
-    // ── AC: declaration-order invariance ─────────────────────────────────────
+    // ── declaration-order invariance ─────────────────────────────────────────
 
     #[test]
     fn test_declaration_order_invariance() {

@@ -6,12 +6,12 @@
 //! sample is a closed-form evenly-spaced grid, so the fit is deterministic and
 //! order-independent.
 //!
-//! # The smart default (`lateral_flow = S`, `reference lateral flow = 0`)
+//! # Meaning of `γ_S`
 //!
-//! The lateral axis collapses to own spill: feeding the lateral flow as the
-//! spillage argument makes the tailrace see `outflow = q + lateral_flow` (it
-//! already evaluates at `q_out = q + s`), exactly the spill-only default. Richer
-//! `lateral_flow` composition and its LP wiring are a later refinement.
+//! `γ_S` is the plane's slope per m³/s of tailrace lateral flow `L`: the own spill
+//! times the own outflow factor plus the other plants' contributions. It is fitted
+//! on `L ∈ [0, S_max]` with `FphaColumnLayout::resolve_spillage_fit_max_m3s`'s
+//! `S_max`; past `S_max` the plane extrapolates linearly.
 
 use super::geometry::FittingBounds;
 use super::hull_fit::RawPlane;
@@ -69,7 +69,7 @@ fn anchored_slope(pf: &ProductionFunction, v: f64, q: f64, s_max: f64) -> f64 {
     cross / square
 }
 
-/// Fit `γ_S` in place for every plane, using the smart default `lateral_flow = S`.
+/// Fit `γ_S` in place for every plane on `lateral_flow ∈ [0, S_max]`.
 ///
 /// `γ_S` is the only coefficient this step sets; the α-scaled gradients and
 /// intercept are untouched. A plane's `γ_S` is the mean [`anchored_slope`] over
@@ -85,15 +85,16 @@ fn anchored_slope(pf: &ProductionFunction, v: f64, q: f64, s_max: f64) -> f64 {
 /// reads the slope where the plane does not govern, over-steepening `γ_S` on
 /// high-head planes.
 ///
+/// # Contract — the mean is kept below 0 at the window corner
+///
+/// A plane keeps its mean even where it then reads below 0 at `(v_min, 0, S_max)`:
+/// while the plant spills, the LP turbines water at 0 MW, as the secant convention
+/// does. Bounding `γ_S` to keep that corner at or above 0 is the
+/// wrong-but-compiling alternative: it flattens the spill slope of most planes, so
+/// a spilling plant generates more than its production function gives.
+///
 /// The slopes are evaluated on the uncapped [`ProductionFunction::evaluate`],
 /// once per grid point, and averaged in fixed `(v, q)` grid order.
-///
-/// # Contract — the plane is at or above 0 at `(bounds.v_min, 0, S_max)`
-///
-/// `γ_S ← max(γ_S, min(0, −(γ₀ + γ_V·v_min) / S_max))`, skipped for `S_max ≤ 0`, holds
-/// the plane at or above 0 at the corner. Applied after the snap it leaves a −1e-16
-/// residual in the spillage column; a `v` other than `bounds.v_min` breaks the bound.
-/// Pinned by `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`.
 pub(crate) fn fit_gamma_s_for_planes(
     planes: &mut [RawPlane],
     pf: &ProductionFunction,
@@ -134,18 +135,9 @@ pub(crate) fn fit_gamma_s_for_planes(
         } else {
             sum / f64::from(count)
         };
-        let limited = if s_max > 0.0 {
-            mean.max((-(plane.gamma_0 + plane.gamma_v * bounds.v_min) / s_max).min(0.0))
-        } else {
-            mean
-        };
-        // Snap BOTH signs to 0 (see GAMMA_S_SNAP_EPS): `limited.min(0.0)` would let a
+        // Snap BOTH signs to 0 (see GAMMA_S_SNAP_EPS): `mean.min(0.0)` would let a
         // tiny NEGATIVE residual survive into the spillage column.
-        plane.gamma_s = if limited > -GAMMA_S_SNAP_EPS {
-            0.0
-        } else {
-            limited
-        };
+        plane.gamma_s = if mean > -GAMMA_S_SNAP_EPS { 0.0 } else { mean };
     }
 }
 
@@ -166,8 +158,8 @@ mod tests {
 
     use super::super::geometry::{FittingBounds, ForebayTable};
     use super::super::hull_fit::RawPlane;
-    use super::super::production::{ProductionFunction, TailraceSource};
-    use super::{GAMMA_S_SNAP_EPS, N_LATERAL_FLOW_SAMPLES, fit_gamma_s_for_planes};
+    use super::super::production::{K, ProductionFunction, TailraceSource};
+    use super::{GAMMA_S_SNAP_EPS, N_LATERAL_FLOW_SAMPLES, anchored_slope, fit_gamma_s_for_planes};
 
     fn row(volume_hm3: f64, height_m: f64) -> HydroGeometryRow {
         HydroGeometryRow {
@@ -184,8 +176,6 @@ mod tests {
             v_max: 30_000.0,
             n_volume_points: 3,
             n_flow_points: 3,
-            n_spillage_points: 2,
-            max_planes_per_hydro: 10,
             single_volume: false,
         }
     }
@@ -201,6 +191,10 @@ mod tests {
     /// flow lowers net head. The linear tailrace gives a hand-computable secant
     /// slope (`dh_tail/dq_out = 0.001`).
     fn spill_sensitive_pf() -> ProductionFunction {
+        linear_tailrace_pf(0.001)
+    }
+
+    fn linear_tailrace_pf(slope_m_per_m3s: f64) -> ProductionFunction {
         let rows = vec![
             row(0.0, 380.0),
             row(10_000.0, 396.0),
@@ -209,7 +203,7 @@ mod tests {
         ];
         let forebay = ForebayTable::new(&rows, "SpillSensitive").expect("valid VHA curve");
         let tailrace = TailraceModel::Polynomial {
-            coefficients: vec![5.0, 0.001],
+            coefficients: vec![5.0, slope_m_per_m3s],
         };
         ProductionFunction::new(
             forebay,
@@ -357,10 +351,8 @@ mod tests {
         );
     }
 
-    /// Default axis is own-spill only: the secant uses `lateral_flow = S` (the spillage
-    /// argument of `evaluate`) with `reference lateral flow = 0` (the lateral_flow = 0 anchor). Feeding the
-    /// lateral flow as the spillage argument is exactly what the tailrace sees as
-    /// `q + lateral_flow`, so a rising tailrace yields a negative slope.
+    /// With no tailrace-flow declaration the lateral flow is the own spill: the tailrace
+    /// is read at `q + lateral_flow`, so a rising tailrace yields a negative slope.
     #[test]
     fn default_axis_is_own_spill_qhat_zero() {
         let pf = spill_sensitive_pf();
@@ -383,18 +375,60 @@ mod tests {
         assert!(planes[0].gamma_s < 0.0);
     }
 
-    /// derived: the plane `{γ₀ 0, γᵥ 0.001, γq 0.12}` reads `γ₀ + γᵥ·v_min = 10` MW at
-    /// the window corner, so the limit binds at `γₛ = −10 / 6 000` and the corner
-    /// `10 + γₛ·6 000` is 0. The twin with `γ₀ = 1 000` has the same argmin set and
-    /// its own limit `−1 010 / 6 000` is below its mean, so it keeps the hand mean of
-    /// the zero-anchored slopes; that mean lies below the first plane's bound, so the
-    /// limit was the binding term for the first plane.
+    /// The linear tailrace gives `∂g/∂L = −K·η·q·a₁` at any `own_outflow_factor`: the
+    /// factor scales `q` inside the tailrace argument, so it never enters the slope in
+    /// `L`.
     #[test]
-    fn gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner() {
+    fn secant_slope_is_per_unit_lateral_flow_for_any_own_factor() {
+        let (efficiency, tailrace_slope) = (0.9, 0.001);
+        let (v, q, s_max) = (15_000.0, 1_500.0, 6_000.0);
+        let expected = -K * efficiency * q * tailrace_slope;
+
+        for own_outflow_factor in [1.0, 1.5] {
+            let pf = spill_sensitive_pf().with_own_outflow_factor(own_outflow_factor);
+            assert!(
+                pf.net_head(v, q, s_max) > 0.0,
+                "f={own_outflow_factor}: the grid point must keep the net head positive"
+            );
+            let slope = anchored_slope(&pf, v, q, s_max);
+            assert!(
+                ((slope - expected) / expected).abs() < 1e-9,
+                "f={own_outflow_factor}: slope={slope} must equal the closed form {expected}"
+            );
+        }
+    }
+
+    /// The mean over every grid point of the hand-computed zero-anchored slope
+    /// `Σ sᵢ·(g(sᵢ) − g(0)) / Σ sᵢ²`: a lone plane is the envelope everywhere.
+    fn hand_mean_slope(pf: &ProductionFunction, bounds: &FittingBounds, s_max: f64) -> f64 {
+        let xs = lateral_flow_samples(s_max);
+        let slopes: Vec<f64> = grid_points(pf, bounds)
+            .into_iter()
+            .map(|(v, q)| {
+                let ys: Vec<f64> = xs.iter().map(|&x| pf.evaluate(v, q, x)).collect();
+                let cross: f64 = xs.iter().zip(&ys).map(|(&x, &y)| x * (y - ys[0])).sum();
+                let square: f64 = xs.iter().map(|&x| x * x).sum();
+                cross / square
+            })
+            .collect();
+        slopes.iter().sum::<f64>() / slopes.len() as f64
+    }
+
+    /// derived: the plane `{γ₀ 0, γᵥ 0.001, γq 0.12}` reads `γ₀ + γᵥ·v_min = 10` MW at
+    /// the window's `v_min`, and the hand mean of its slopes is below `−10 / 6 000`,
+    /// so the plane keeps a mean that puts it below 0 at `(v_min, 0, S_max)`.
+    #[test]
+    fn gamma_s_keeps_its_mean_below_zero_at_the_window_corner() {
         let pf = spill_sensitive_pf();
         let bounds = window_bounds();
         let s_max = 6_000.0;
         let (gamma_0, gamma_v, v_min) = (0.0, 0.001, 10_000.0);
+        let mean = hand_mean_slope(&pf, &bounds, s_max);
+        let corner = gamma_0 + gamma_v * v_min + mean * s_max;
+        assert!(
+            corner < -envelope_tolerance(10.0),
+            "fixture must put the mean's corner below 0, got {corner}"
+        );
 
         let mut planes = vec![RawPlane {
             gamma_0,
@@ -404,66 +438,36 @@ mod tests {
         }];
         fit_gamma_s_for_planes(&mut planes, &pf, &bounds, s_max);
 
-        let bound = -(gamma_0 + gamma_v * v_min) / s_max;
-        let gamma_s = planes[0].gamma_s;
         assert!(
-            (gamma_s - bound).abs() <= 4.0 * f64::EPSILON * bound.abs(),
-            "gamma_s={gamma_s} must sit at the corner limit {bound}"
-        );
-        let corner = gamma_0 + gamma_v * v_min + gamma_s * s_max;
-        assert!(
-            corner.abs() <= envelope_tolerance(10.0),
-            "corner={corner} must be 0"
-        );
-
-        let mut twin = vec![RawPlane {
-            gamma_0: 1_000.0,
-            ..planes[0]
-        }];
-        fit_gamma_s_for_planes(&mut twin, &pf, &bounds, s_max);
-
-        let xs = lateral_flow_samples(s_max);
-        let slopes: Vec<f64> = grid_points(&pf, &bounds)
-            .into_iter()
-            .map(|(v, q)| {
-                let ys: Vec<f64> = xs.iter().map(|&x| pf.evaluate(v, q, x)).collect();
-                let cross: f64 = xs.iter().zip(&ys).map(|(&x, &y)| x * (y - ys[0])).sum();
-                let square: f64 = xs.iter().map(|&x| x * x).sum();
-                cross / square
-            })
-            .collect();
-        let mean = slopes.iter().sum::<f64>() / slopes.len() as f64;
-        assert!(
-            (twin[0].gamma_s - mean).abs() < 1e-12,
-            "twin gamma_s={} must keep the mean {mean}",
-            twin[0].gamma_s
-        );
-        assert!(
-            twin[0].gamma_s < bound,
-            "twin gamma_s={} must lie below {bound}, or the limit never bound",
-            twin[0].gamma_s
+            (planes[0].gamma_s - mean).abs() < 1e-12,
+            "gamma_s={} must keep the mean {mean}",
+            planes[0].gamma_s
         );
     }
 
-    /// derived: the plane `{γ₀ 1e-12, γᵥ 0, γq 0.12}` has limit `−1e-12 / 6 000 ≈
-    /// −1.7e-16`, above `−GAMMA_S_SNAP_EPS`, so the snap maps it to +0.0; a limit
-    /// applied after the snap leaves that residual in the spillage column. The origin
-    /// plane `{0, 0, 0.12}` has limit 0 and ends at +0.0.
+    /// derived: a tailrace falling with outflow (`[5, −0.001]`) raises the head as
+    /// the plant spills, so the mean slope is positive; one rising by 1e-12 m per
+    /// m³/s gives a negative mean inside `(−GAMMA_S_SNAP_EPS, 0)`. The snap maps both
+    /// to +0.0, where `mean.min(0.0)` would leave the negative residual in the
+    /// spillage column.
     #[test]
-    fn gamma_s_limit_runs_before_the_snap() {
-        let pf = spill_sensitive_pf();
+    fn gamma_s_snap_maps_a_positive_mean_and_a_tiny_negative_residual_to_positive_zero() {
         let bounds = window_bounds();
         let s_max = 6_000.0;
-        let residual_bound = -1e-12 / s_max;
-        assert!(
-            residual_bound < 0.0 && residual_bound > -GAMMA_S_SNAP_EPS,
-            "fixture must put the limit inside the snap band, got {residual_bound}"
-        );
+        for (slope_m_per_m3s, in_band) in [
+            (-0.001, (|mean: f64| mean > 0.0) as fn(f64) -> bool),
+            (1e-12, |mean: f64| mean < 0.0 && mean > -GAMMA_S_SNAP_EPS),
+        ] {
+            let pf = linear_tailrace_pf(slope_m_per_m3s);
+            let mean = hand_mean_slope(&pf, &bounds, s_max);
+            assert!(
+                in_band(mean),
+                "tailrace slope {slope_m_per_m3s}: fixture mean {mean} is outside its band"
+            );
 
-        for gamma_0 in [1e-12, 0.0] {
             let mut planes = vec![RawPlane {
-                gamma_0,
-                gamma_v: 0.0,
+                gamma_0: 0.0,
+                gamma_v: 0.001,
                 gamma_q: 0.12,
                 gamma_s: 0.0,
             }];
@@ -471,7 +475,7 @@ mod tests {
             assert_eq!(
                 planes[0].gamma_s.to_bits(),
                 0.0_f64.to_bits(),
-                "gamma_0={gamma_0}: gamma_s={} must be +0.0",
+                "tailrace slope {slope_m_per_m3s}: gamma_s={} must be +0.0",
                 planes[0].gamma_s
             );
         }

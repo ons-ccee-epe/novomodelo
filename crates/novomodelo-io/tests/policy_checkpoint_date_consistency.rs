@@ -130,7 +130,7 @@ fn well_formed_monotone_checkpoint_accepted_manifest_unchanged() {
 }
 
 #[test]
-fn fully_sentinel_legacy_checkpoint_accepted() {
+fn fully_sentinel_checkpoint_without_inflow_lag_slots_accepted() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [
         EntitySlot::storage(1, true),
@@ -140,8 +140,7 @@ fn fully_sentinel_legacy_checkpoint_accepted() {
     ];
     write_fixture(dir.path(), 0, &manifest);
 
-    read_policy_checkpoint(dir.path())
-        .expect("a fully sentinel-dated legacy checkpoint must be accepted");
+    read_policy_checkpoint(dir.path()).expect("a fully sentinel-dated checkpoint must be accepted");
 }
 
 #[test]
@@ -272,7 +271,7 @@ fn inflow_lag_slot_with_live_interval_rejected() {
 }
 
 #[test]
-fn fully_sentinel_dated_checkpoint_still_accepted() {
+fn fully_sentinel_checkpoint_with_an_inflow_lag_slot_accepted() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = [
         EntitySlot::storage(1, true),

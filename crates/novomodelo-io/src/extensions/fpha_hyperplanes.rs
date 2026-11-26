@@ -6,19 +6,19 @@
 //!
 //! ## Parquet schema
 //!
-//! | Column            | Type         | Required | Description                              |
-//! | ----------------- | ------------ | -------- | ---------------------------------------- |
-//! | `hydro_id`        | INT32        | Yes      | Hydro plant identifier                   |
-//! | `stage_id`        | INT32?       | No       | Stage (`null` = valid for all stages)    |
-//! | `plane_id`        | INT32        | Yes      | Plane index within hydro                 |
-//! | `gamma_0`         | DOUBLE       | Yes      | Intercept coefficient (MW)               |
-//! | `gamma_v`         | DOUBLE       | Yes      | Volume coefficient (MW/hm³)              |
-//! | `gamma_q`         | DOUBLE       | Yes      | Turbined flow coefficient (MW per m³/s)  |
-//! | `gamma_s`         | DOUBLE       | Yes      | Spillage coefficient (MW per m³/s)       |
-//! | `kappa`           | DOUBLE?      | No       | Correction factor (default: 1.0)         |
-//! | `valid_v_min_hm3` | DOUBLE?      | No       | Volume range minimum                     |
-//! | `valid_v_max_hm3` | DOUBLE?      | No       | Volume range maximum                     |
-//! | `valid_q_max_m3s` | DOUBLE?      | No       | Maximum turbined flow validity           |
+//! | Column            | Type         | Required | Description                                                                                                                                                                                        |
+//! | ----------------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+//! | `hydro_id`        | INT32        | Yes      | Hydro plant identifier                                                                                                                                                                             |
+//! | `stage_id`        | INT32?       | No       | Stage (`null` = valid for all stages)                                                                                                                                                              |
+//! | `plane_id`        | INT32        | Yes      | Plane index within hydro                                                                                                                                                                           |
+//! | `gamma_0`         | DOUBLE       | Yes      | Intercept coefficient (MW)                                                                                                                                                                         |
+//! | `gamma_v`         | DOUBLE       | Yes      | Volume coefficient (MW/hm³)                                                                                                                                                                        |
+//! | `gamma_q`         | DOUBLE       | Yes      | Turbined flow coefficient (MW per m³/s)                                                                                                                                                            |
+//! | `gamma_s`         | DOUBLE       | Yes      | Tailrace lateral-flow coefficient (MW per m³/s): spill times the own-outflow factor plus the declared influences of other plants; the spill coefficient when the hydro declares no `tailrace_flow` |
+//! | `kappa`           | DOUBLE?      | No       | Correction factor (default: 1.0)                                                                                                                                                                   |
+//! | `valid_v_min_hm3` | DOUBLE?      | No       | Volume range minimum                                                                                                                                                                               |
+//! | `valid_v_max_hm3` | DOUBLE?      | No       | Volume range maximum                                                                                                                                                                               |
+//! | `valid_q_max_m3s` | DOUBLE?      | No       | Maximum turbined flow validity                                                                                                                                                                     |
 //!
 //! ## Output ordering
 //!
@@ -87,7 +87,9 @@ pub struct FphaHyperplaneRow {
     pub gamma_v: f64,
     /// Turbined flow coefficient (MW per m³/s).
     pub gamma_q: f64,
-    /// Spillage coefficient (MW per m³/s, typically ≤ 0).
+    /// Tailrace lateral-flow coefficient (MW per m³/s, typically ≤ 0): spill times the
+    /// own-outflow factor plus the declared influences of other plants; the spill
+    /// coefficient when the hydro declares no `tailrace_flow`.
     pub gamma_s: f64,
     /// Correction factor κ. Defaults to `1.0` when absent or null in the file.
     pub kappa: f64,
@@ -287,7 +289,7 @@ mod tests {
         .expect("valid required batch")
     }
 
-    // ── AC: valid file with all columns present (Itaipu example) ─────────────
+    // ── valid file with all columns present (Itaipu example) ─────────────────
 
     #[test]
     fn test_valid_itaipu_5_planes_all_columns() {
@@ -338,7 +340,7 @@ mod tests {
         assert!((rows[0].gamma_s - (-0.015)).abs() < 1e-12);
     }
 
-    // ── AC: optional columns absent — kappa defaults to 1.0 ──────────────────
+    // ── optional columns absent — kappa defaults to 1.0 ──────────────────────
 
     #[test]
     fn test_optional_columns_absent_kappa_defaults_to_1() {
@@ -367,7 +369,7 @@ mod tests {
         }
     }
 
-    // ── AC: kappa null in column still defaults to 1.0 ───────────────────────
+    // ── kappa null in column still defaults to 1.0 ───────────────────────────
 
     #[test]
     fn test_kappa_column_present_but_null_defaults_to_1() {
@@ -404,7 +406,7 @@ mod tests {
         );
     }
 
-    // ── AC: missing required column -> SchemaError ────────────────────────────
+    // ── missing required column -> SchemaError ────────────────────────────────
 
     #[test]
     fn test_missing_gamma_0_column() {
@@ -472,7 +474,7 @@ mod tests {
         }
     }
 
-    // ── AC: wrong column type -> SchemaError ──────────────────────────────────
+    // ── wrong column type -> SchemaError ──────────────────────────────────────
 
     #[test]
     fn test_wrong_type_gamma_0_as_int32() {
@@ -507,7 +509,7 @@ mod tests {
         }
     }
 
-    // ── AC: sorted output (hydro_id, stage_id, plane_id) ─────────────────────
+    // ── sorted output (hydro_id, stage_id, plane_id) ─────────────────────────
 
     #[test]
     fn test_sorted_output() {
@@ -537,7 +539,7 @@ mod tests {
         assert_eq!(rows[4].plane_id, 1);
     }
 
-    // ── AC: null stage_id sorts before non-null ───────────────────────────────
+    // ── null stage_id sorts before non-null ───────────────────────────────────
 
     #[test]
     fn test_null_stage_id_sorts_before_non_null() {
@@ -572,7 +574,7 @@ mod tests {
         assert_eq!(rows[2].stage_id, Some(1));
     }
 
-    // ── AC: file not found -> IoError ─────────────────────────────────────────
+    // ── file not found -> IoError ─────────────────────────────────────────────
 
     #[test]
     fn test_file_not_found() {
@@ -587,7 +589,7 @@ mod tests {
         }
     }
 
-    // ── AC: empty file -> Ok(Vec::new()) ──────────────────────────────────────
+    // ── empty file -> Ok(Vec::new()) ──────────────────────────────────────────
 
     #[test]
     fn test_empty_parquet_returns_empty_vec() {
@@ -597,7 +599,7 @@ mod tests {
         assert!(rows.is_empty(), "expected empty vec for empty Parquet");
     }
 
-    // ── AC: optional validity range columns preserved ─────────────────────────
+    // ── optional validity range columns preserved ─────────────────────────────
 
     #[test]
     fn test_optional_validity_ranges_preserved() {
@@ -630,7 +632,7 @@ mod tests {
         assert!((row.kappa - 0.97).abs() < 1e-10);
     }
 
-    // ── AC: declaration-order invariance ─────────────────────────────────────
+    // ── declaration-order invariance ─────────────────────────────────────────
 
     #[test]
     fn test_declaration_order_invariance() {
@@ -671,7 +673,7 @@ mod tests {
         );
     }
 
-    // ── AC: field values round-tripped correctly ──────────────────────────────
+    // ── field values round-tripped correctly ──────────────────────────────────
 
     #[test]
     fn test_field_values_preserved() {

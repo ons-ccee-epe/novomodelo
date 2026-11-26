@@ -16,6 +16,7 @@ use novomodelo_stochastic::season_cast::{
 };
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
+use crate::config::InflowNonNegativityMethod;
 
 pub(super) fn validate_inflow_seeding(data: &ParsedData, ctx: &mut ValidationContext) {
     let merged_by_hydro = merged_windows_by_hydro(data);
@@ -32,6 +33,7 @@ pub(super) fn validate_inflow_seeding(data: &ParsedData, ctx: &mut ValidationCon
 /// incremental inflow, a sign-flipped series is not, and only the magnitude
 /// separates them.
 fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationContext) {
+    let treatment = negative_inflow_treatment(data.config.modeling.inflow_non_negativity.method);
     let mut report = |negatives: Vec<(i32, f64)>, file: &str, field: &str| {
         let Some((worst_hydro, worst_value)) =
             negatives.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1))
@@ -45,8 +47,8 @@ fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationConte
             None::<String>,
             format!(
                 "{count} {field} value(s) are negative (most negative {worst_value} m³/s at \
-                 hydro {worst_hydro}); accepted as incremental inflow, which the LP prices \
-                 through the inflow non-negativity slack"
+                 hydro {worst_hydro}); accepted as incremental inflow, and the inflow \
+                 non-negativity method {treatment}"
             ),
         );
     };
@@ -70,6 +72,25 @@ fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationConte
         "initial_conditions.json",
         "recent_observations",
     );
+}
+
+fn negative_inflow_treatment(method: InflowNonNegativityMethod) -> &'static str {
+    match method {
+        InflowNonNegativityMethod::None => {
+            "`none` adds no water to a negative inflow, so a stage may become infeasible"
+        }
+        InflowNonNegativityMethod::Truncation => {
+            "`truncation` lifts a negative inflow to zero at no cost"
+        }
+        InflowNonNegativityMethod::Penalty => {
+            "`penalty` lets the LP add water to a negative inflow at \
+             penalties.json hydro.inflow_nonnegativity_cost"
+        }
+        InflowNonNegativityMethod::TruncationWithPenalty => {
+            "`truncation_with_penalty` lets the LP lift a negative inflow up to zero at \
+             penalties.json hydro.inflow_nonnegativity_cost"
+        }
+    }
 }
 
 /// Rejects a study supplying an inflow annual component
@@ -202,7 +223,7 @@ fn merged_windows_by_hydro(data: &ParsedData) -> HashMap<EntityId, Vec<RealizedW
     merged
 }
 
-/// Test oracle: the retired per-hydro scan for equivalence validation.
+/// Test oracle: the per-hydro filter-then-merge that `merged_windows_by_hydro` must match.
 #[cfg(test)]
 fn merged_windows_for_hydro_reference(
     data: &ParsedData,
@@ -445,11 +466,8 @@ mod tests {
     use crate::scenarios::InflowAnnualComponentRow;
     use crate::test_support::*;
     use crate::validation::ErrorKind;
-    use novomodelo_core::{RecentObservation, SeasonCycleType, SeasonMap};
-
-    fn d(y: i32, m: u32, day: u32) -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap()
-    }
+    use novomodelo_core::test_support::{MonthlyLabels, monthly_season_map, single_block};
+    use novomodelo_core::{RecentObservation, SeasonMap};
 
     fn history_row(
         hydro_id: i32,
@@ -476,7 +494,7 @@ mod tests {
         let mut data = make_data_estimation(
             vec![make_hydro(1, None)],
             stages,
-            vec![history_row(1, d(1999, 12, 20), d(2000, 1, 1))],
+            vec![history_row(1, date(1999, 12, 20), date(2000, 1, 1))],
         );
         data.inflow_annual_components = vec![annual_component_row(1)];
 
@@ -504,7 +522,7 @@ mod tests {
             vec![],
         );
         data.inflow_ar_coefficients = (1..=6).map(|lag| make_ar_row(1, 0, lag)).collect();
-        data.inflow_history = vec![history_row(1, d(1999, 7, 1), d(2000, 1, 1))];
+        data.inflow_history = vec![history_row(1, date(1999, 7, 1), date(2000, 1, 1))];
 
         let mut ctx = ValidationContext::new();
         validate_inflow_seeding(&data, &mut ctx);
@@ -530,9 +548,9 @@ mod tests {
         );
         data.inflow_ar_coefficients = (1..=6).map(|lag| make_ar_row(1, 0, lag)).collect();
         data.inflow_history = vec![
-            history_row(1, d(1999, 7, 1), d(2000, 1, 1)),
-            history_row(7, d(1999, 7, 1), d(1999, 10, 1)),
-            history_row(7, d(1999, 11, 1), d(2000, 1, 1)),
+            history_row(1, date(1999, 7, 1), date(2000, 1, 1)),
+            history_row(7, date(1999, 7, 1), date(1999, 10, 1)),
+            history_row(7, date(1999, 11, 1), date(2000, 1, 1)),
         ];
 
         let mut ctx = ValidationContext::new();
@@ -561,58 +579,28 @@ mod tests {
     /// `L_state = 12`.
     fn weekly_monthly_two_month_stages() -> crate::stages::StagesData {
         use novomodelo_core::HorizonGraph;
-        use novomodelo_core::temporal::{
-            Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
-            SeasonDefinition, SeasonMap, Stage, StageRiskConfig, StageStateConfig,
-        };
+        use novomodelo_core::temporal::PolicyGraphType;
 
-        let season_map = SeasonMap {
-            cycle_type: SeasonCycleType::Monthly,
-            seasons: (0..12u32)
-                .map(|m| SeasonDefinition {
-                    id: m as usize,
-                    label: format!("Month{}", m + 1),
-                    month_start: m + 1,
-                    day_start: None,
-                    month_end: None,
-                    day_end: None,
-                })
-                .collect(),
-        };
+        let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         let make =
             |index: usize, start: chrono::NaiveDate, end: chrono::NaiveDate, season_id: usize| {
-                Stage {
-                    index,
-                    id: i32::try_from(index).unwrap(),
-                    start_date: start,
-                    end_date: end,
-                    season_id: Some(season_id),
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "SINGLE".to_string(),
-                        duration_hours: (end - start).num_days() as f64 * 24.0,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
-                }
+                let mut stage = make_stage(i32::try_from(index).unwrap());
+                stage.index = index;
+                stage.start_date = start;
+                stage.end_date = end;
+                stage.season_id = Some(season_id);
+                stage.blocks = single_block("SINGLE", (end - start).num_days() as f64 * 24.0);
+                stage
             };
 
         let stages = vec![
-            make(0, d(2026, 3, 28), d(2026, 4, 4), 3),
-            make(1, d(2026, 4, 4), d(2026, 4, 11), 3),
-            make(2, d(2026, 4, 11), d(2026, 4, 18), 3),
-            make(3, d(2026, 4, 18), d(2026, 4, 25), 3),
-            make(4, d(2026, 4, 25), d(2026, 5, 2), 3),
-            make(5, d(2026, 5, 2), d(2026, 6, 1), 4),
+            make(0, date(2026, 3, 28), date(2026, 4, 4), 3),
+            make(1, date(2026, 4, 4), date(2026, 4, 11), 3),
+            make(2, date(2026, 4, 11), date(2026, 4, 18), 3),
+            make(3, date(2026, 4, 18), date(2026, 4, 25), 3),
+            make(4, date(2026, 4, 25), date(2026, 5, 2), 3),
+            make(5, date(2026, 5, 2), date(2026, 6, 1), 4),
         ];
 
         crate::stages::StagesData {
@@ -652,7 +640,7 @@ mod tests {
         );
         data.inflow_ar_coefficients = vec![make_ar_row(1, 0, 1)];
         data.inflow_annual_components = vec![annual_component_row(1)];
-        data.inflow_history = vec![history_row(1, d(2025, 5, 1), d(2026, 4, 1))];
+        data.inflow_history = vec![history_row(1, date(2025, 5, 1), date(2026, 4, 1))];
 
         let mut ctx = ValidationContext::new();
         validate_inflow_seeding(&data, &mut ctx);
@@ -685,8 +673,8 @@ mod tests {
         data.inflow_ar_coefficients = vec![make_ar_row(1, 0, 1), make_ar_row(2, 0, 1)];
         data.inflow_annual_components = vec![annual_component_row(1)];
         data.inflow_history = vec![
-            history_row(1, d(2025, 7, 1), d(2026, 4, 1)),
-            history_row(2, d(2025, 7, 1), d(2026, 4, 1)),
+            history_row(1, date(2025, 7, 1), date(2026, 4, 1)),
+            history_row(2, date(2025, 7, 1), date(2026, 4, 1)),
         ];
 
         let mut ctx = ValidationContext::new();
@@ -719,8 +707,8 @@ mod tests {
         );
         data.initial_conditions.recent_observations = vec![RecentObservation {
             hydro_id: EntityId::from(1),
-            start_date: d(2023, 12, 20),
-            end_date: d(2024, 1, 10),
+            start_date: date(2023, 12, 20),
+            end_date: date(2024, 1, 10),
             value_m3s: 200.0,
         }];
 
@@ -749,8 +737,8 @@ mod tests {
         );
         data.initial_conditions.recent_observations = vec![RecentObservation {
             hydro_id: EntityId::from(1),
-            start_date: d(2023, 12, 1),
-            end_date: d(2024, 1, 1),
+            start_date: date(2023, 12, 1),
+            end_date: date(2024, 1, 1),
             value_m3s: 200.0,
         }];
 
@@ -771,10 +759,10 @@ mod tests {
     #[test]
     fn test_partial_inprogress_coverage_emits_single_warning_with_fraction() {
         let mut stages = make_stages(vec![0, 1, 2]);
-        stages.stages[0].start_date = d(2026, 4, 11);
-        stages.stages[0].end_date = d(2026, 5, 2);
+        stages.stages[0].start_date = date(2026, 4, 11);
+        stages.stages[0].end_date = date(2026, 5, 2);
         stages.stages[0].season_id = Some(3);
-        stages.policy_graph.season_map = Some(make_monthly_season_map());
+        stages.policy_graph.season_map = Some(monthly_season_map(MonthlyLabels::ZeroBased));
         let mut data = make_data(
             vec![make_hydro(1, None)],
             vec![],
@@ -783,7 +771,7 @@ mod tests {
             vec![],
             vec![],
         );
-        data.inflow_history = vec![history_row(1, d(2026, 4, 1), d(2026, 4, 11))];
+        data.inflow_history = vec![history_row(1, date(2026, 4, 1), date(2026, 4, 11))];
 
         let mut ctx = ValidationContext::new();
         validate_inflow_seeding(&data, &mut ctx);
@@ -818,7 +806,7 @@ mod tests {
             vec![],
         );
         data.inflow_ar_coefficients = vec![make_ar_row(1, 0, 1), make_ar_row(1, 0, 2)];
-        data.inflow_history = vec![history_row(1, d(1999, 11, 1), d(2000, 1, 1))];
+        data.inflow_history = vec![history_row(1, date(1999, 11, 1), date(2000, 1, 1))];
 
         let mut ctx = ValidationContext::new();
         validate_inflow_seeding(&data, &mut ctx);
@@ -888,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annual_component_non_monthly_still_rejects_from_inflow_seeding() {
+    fn test_annual_component_non_monthly_rejects_from_inflow_seeding() {
         let mut data = par_cycle_data(season_map_with_cycle(SeasonCycleType::Weekly));
         data.inflow_annual_components = vec![annual_component_row(1)];
 
@@ -927,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_monthly_cycle_with_annual_component_no_reject() {
-        let mut data = par_cycle_data(make_monthly_season_map());
+        let mut data = par_cycle_data(monthly_season_map(MonthlyLabels::ZeroBased));
         data.inflow_annual_components = vec![annual_component_row(1)];
 
         let mut ctx = ValidationContext::new();
@@ -956,7 +944,7 @@ mod tests {
 
     // ── Row 7: negative realized inflows ──────────────────────────────────
 
-    fn negative_inflow_data() -> crate::validation::schema::ParsedData {
+    fn negative_inflow_data() -> ParsedData {
         let mut data = make_data(
             vec![make_hydro(1, None)],
             vec![],
@@ -968,21 +956,21 @@ mod tests {
         data.inflow_history = vec![
             crate::InflowHistoryRow {
                 hydro_id: EntityId::from(1),
-                start_date: d(1999, 11, 1),
-                end_date: d(1999, 12, 1),
+                start_date: date(1999, 11, 1),
+                end_date: date(1999, 12, 1),
                 value_m3s: -12.0,
             },
             crate::InflowHistoryRow {
                 hydro_id: EntityId::from(2),
-                start_date: d(1999, 12, 1),
-                end_date: d(2000, 1, 1),
+                start_date: date(1999, 12, 1),
+                end_date: date(2000, 1, 1),
                 value_m3s: -30.0,
             },
         ];
         data.initial_conditions.recent_observations = vec![RecentObservation {
             hydro_id: EntityId::from(1),
-            start_date: d(2000, 1, 1),
-            end_date: d(2000, 1, 8),
+            start_date: date(2000, 1, 1),
+            end_date: date(2000, 1, 8),
             value_m3s: -4.0,
         }];
         data
@@ -1024,6 +1012,39 @@ mod tests {
     }
 
     #[test]
+    fn test_negative_realized_inflow_warning_states_the_configured_method() {
+        let cases = [
+            (InflowNonNegativityMethod::None, "`none` adds no water"),
+            (
+                InflowNonNegativityMethod::Truncation,
+                "`truncation` lifts a negative inflow to zero at no cost",
+            ),
+            (
+                InflowNonNegativityMethod::Penalty,
+                "`penalty` lets the LP add water to a negative inflow",
+            ),
+            (
+                InflowNonNegativityMethod::TruncationWithPenalty,
+                "`truncation_with_penalty` lets the LP lift a negative inflow up to zero",
+            ),
+        ];
+        for (method, expected) in cases {
+            let mut data = negative_inflow_data();
+            data.config.modeling.inflow_non_negativity.method = method;
+
+            let mut ctx = ValidationContext::new();
+            report_negative_realized_inflows(&data, &mut ctx);
+
+            let warnings = ctx.warnings();
+            assert_eq!(warnings.len(), 2, "{method:?}: {warnings:?}");
+            assert!(
+                warnings.iter().all(|w| w.message.contains(expected)),
+                "{method:?} must state its treatment, got: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_non_negative_realized_inflows_produce_no_warning() {
         let mut data = negative_inflow_data();
         for row in &mut data.inflow_history {
@@ -1044,7 +1065,7 @@ mod tests {
     // ── merged_windows_by_hydro: bucketed-map equivalence ──────────────────
 
     /// The bucketed one-pass map's merged windows must match, hydro-for-hydro
-    /// and window-for-window, the retired per-hydro filter-then-merge
+    /// and window-for-window, the per-hydro filter-then-merge reference
     /// ([`merged_windows_for_hydro_reference`]). Hydro 1's two overlapping
     /// `inflow_history` rows make this discriminating: [`merge_layered_windows`]
     /// resolves an overlap to the first-listed covering window, so a bucket
@@ -1064,27 +1085,27 @@ mod tests {
         data.inflow_history = vec![
             crate::InflowHistoryRow {
                 hydro_id: EntityId::from(1),
-                start_date: d(1999, 10, 1),
-                end_date: d(1999, 12, 1),
+                start_date: date(1999, 10, 1),
+                end_date: date(1999, 12, 1),
                 value_m3s: 100.0,
             },
             crate::InflowHistoryRow {
                 hydro_id: EntityId::from(2),
-                start_date: d(1999, 10, 1),
-                end_date: d(2000, 1, 1),
+                start_date: date(1999, 10, 1),
+                end_date: date(2000, 1, 1),
                 value_m3s: 700.0,
             },
             crate::InflowHistoryRow {
                 hydro_id: EntityId::from(1),
-                start_date: d(1999, 10, 15),
-                end_date: d(1999, 11, 1),
+                start_date: date(1999, 10, 15),
+                end_date: date(1999, 11, 1),
                 value_m3s: 999.0,
             },
         ];
         data.initial_conditions.recent_observations = vec![RecentObservation {
             hydro_id: EntityId::from(1),
-            start_date: d(1999, 12, 1),
-            end_date: d(2000, 1, 1),
+            start_date: date(1999, 12, 1),
+            end_date: date(2000, 1, 1),
             value_m3s: 50.0,
         }];
 
@@ -1112,7 +1133,7 @@ mod tests {
         assert!(
             hydro1_windows
                 .iter()
-                .any(|w| w.start_date == d(1999, 10, 15) && w.value_m3s == 100.0),
+                .any(|w| w.start_date == date(1999, 10, 15) && w.value_m3s == 100.0),
             "expected the overlap to resolve to the first-declared row, got: {:?}",
             hydro1_windows
                 .iter()

@@ -780,7 +780,7 @@ mod tests {
         );
     }
 
-    /// AC: a case directory containing `constraints/generic_parameters.json` must set
+    /// A case directory containing `constraints/generic_parameters.json` must set
     /// `manifest.present(InputFile::ConstraintsGenericParametersJson) == true`.
     #[test]
     fn manifest_detects_scalar_parameters_json_when_present() {
@@ -806,7 +806,7 @@ mod tests {
         );
     }
 
-    /// AC: a case directory with no scalar parameter file must report
+    /// A case directory with no scalar parameter file must report
     /// `manifest.present(InputFile::ConstraintsGenericParametersJson) == false` without producing an error.
     #[test]
     fn manifest_reports_absent_when_no_parameter_file() {
@@ -865,7 +865,7 @@ mod tests {
         );
     }
 
-    /// AC #5: `scenarios/inflow_annual_component.parquet` present → manifest flag `true`.
+    /// `scenarios/inflow_annual_component.parquet` present → manifest flag `true`.
     #[test]
     fn test_manifest_detects_inflow_annual_component_present() {
         let dir = TempDir::new().unwrap();
@@ -887,7 +887,7 @@ mod tests {
         );
     }
 
-    /// AC #6: `scenarios/inflow_annual_component.parquet` absent → manifest flag `false`, no error.
+    /// `scenarios/inflow_annual_component.parquet` absent → manifest flag `false`, no error.
     #[test]
     fn test_manifest_inflow_annual_component_absent() {
         let dir = TempDir::new().unwrap();
@@ -907,7 +907,7 @@ mod tests {
         );
     }
 
-    /// AC: `constraints/hydro_unit_group_bounds.parquet` present -> manifest flag
+    /// `constraints/hydro_unit_group_bounds.parquet` present -> manifest flag
     /// `true`; absent (a separate case directory) -> `false`, no error either way.
     #[test]
     fn test_manifest_hydro_unit_group_bounds() {
@@ -1040,9 +1040,8 @@ mod tests {
     fn removed_scalar_parameters_file_is_rejected() {
         let dir = TempDir::new().unwrap();
         make_case_with_required(&dir);
-        // The relocated parameters file at its old system/ path: Layer 1 rejects
-        // on presence alone and never parses, so a well-formed empty list is
-        // still refused rather than silently read.
+        // Layer 1 rejects system/scalar_parameters.json on presence alone and never
+        // parses it, so a well-formed empty list is refused rather than silently read.
         fs::write(
             dir.path().join("system/scalar_parameters.json"),
             b"{\"scalar_parameters\": []}",
@@ -1076,7 +1075,7 @@ mod tests {
             entry
                 .message
                 .contains("constraints/generic_parameters.json"),
-            "message should name the new path so the old file is rejected loudly, got: {}",
+            "message should name the replacement path, got: {}",
             entry.message
         );
     }

@@ -249,7 +249,7 @@ mod tests {
       ]
     }"#;
 
-    // ── AC: valid buses with and without entity-level deficit overrides ────────
+    // ── valid buses with and without entity-level deficit overrides ────────────
 
     /// Given a valid `buses.json` with 2 buses (one with entity-level deficit
     /// overrides, one without), `parse_buses` returns `Ok(vec)` with 2 `Bus`
@@ -298,7 +298,7 @@ mod tests {
         assert!((buses[1].excess_cost - 100.0).abs() < f64::EPSILON);
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `buses.json` with duplicate `id` values, `parse_buses` returns
     /// `Err(LoadError::SchemaError)` with field containing `"buses[1].id"` and
@@ -329,7 +329,7 @@ mod tests {
         }
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given buses in reverse ID order in JSON, `parse_buses` returns a
     /// `Vec<Bus>` sorted by ascending `id`.
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(buses1[1].id, EntityId(1));
     }
 
-    // ── AC: entity-level deficit segment validation ───────────────────────────
+    // ── entity-level deficit segment validation ───────────────────────────────
 
     /// Bus with entity-level deficit segment having cost ≤ 0 → `SchemaError`.
     #[test]
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(buses[0].deficit_segments[0].depth_mw, Some(0.0));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_buses` returns `Err(LoadError::IoError)`.
     #[test]
@@ -563,7 +563,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_buses` returns `Err(LoadError::ParseError)`.
     #[test]

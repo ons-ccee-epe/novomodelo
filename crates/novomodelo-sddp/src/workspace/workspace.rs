@@ -825,7 +825,8 @@ pub struct ScratchBuffers {
     pub(crate) realized_inflow_buf: Vec<f64>,
     /// p, the PAR conditional mean at the pinned lags, per hydro.
     pub(crate) par_mean_buf: Vec<f64>,
-    /// σ·η per hydro for the current opening.
+    /// The noise term per hydro for the current opening: `σ·η`, or the lognormal term under
+    /// `"lognormal_3p"`.
     pub(crate) par_noise_term_buf: Vec<f64>,
     pub(crate) closing_mean_buf: Vec<f64>,
     pub(crate) closing_noise_buf: Vec<f64>,

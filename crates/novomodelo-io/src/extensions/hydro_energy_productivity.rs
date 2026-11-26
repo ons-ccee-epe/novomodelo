@@ -306,7 +306,7 @@ mod tests {
         .expect("valid batch construction")
     }
 
-    /// Round-trip: three rows matching the acceptance criterion fixture.
+    /// Round-trip of the three-row fixture below.
     ///
     /// Fixture:
     /// - row 0: `(hydro=1, stage=0, rho_eq=3.6, Q_ref=NULL, rho_esp=NULL)`
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(rows[0].equivalent_productivity_mw_per_m3s, Some(0.0));
     }
 
-    /// Negative `equivalent_productivity_mw_per_m3s` is still rejected.
+    /// A negative `equivalent_productivity_mw_per_m3s` is rejected.
     #[test]
     fn test_negative_rho_eq_rejected() {
         let batch = make_batch(&[1], &[Some(0)], &[Some(-0.1)], &[None], &[None]);

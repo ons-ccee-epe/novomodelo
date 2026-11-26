@@ -11,21 +11,18 @@
     clippy::needless_range_loop
 )]
 
+use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 use crate::test_support::RankStub;
-use chrono::NaiveDate;
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_core::{
-    Bus, EntityId, SystemBuilder, TrainingEvent, WorkerTimingPhase,
+    EntityId, SystemBuilder, TrainingEvent, WorkerTimingPhase,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
     },
-    temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    },
+    temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
 };
 use novomodelo_solver::{
     Basis, BasisStatus, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
@@ -199,91 +196,56 @@ impl Communicator for StubComm {
 
 /// Minimal `StochasticContext` for `train` with `n_stages` stages, one hydro, branching factor `n_openings`.
 fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use novomodelo_core::entities::hydro::HydroPenalties;
     use novomodelo_core::scenario::InflowModel;
 
-    let bus = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![novomodelo_core::DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(1),
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    let bus = builders::make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![novomodelo_core::DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
+    );
+    let hydro = builders::make_hydro(
+        EntityId(1),
+        HydroSpec {
+            name: "H1".to_string(),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: 100.0,
+            max_generation_mw: 100.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    );
 
-    let make_stage = |idx: usize| Stage {
-        index: idx,
-        id: idx as i32,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: n_openings,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-
-    let stages: Vec<Stage> = (0..n_stages).map(make_stage).collect();
+    let stages: Vec<Stage> = (0..n_stages)
+        .map(|idx| {
+            builders::make_stage(
+                idx,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: n_openings,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..StageSpec::default()
+                },
+            )
+        })
+        .collect();
 
     let inflow_models: Vec<InflowModel> = (0..n_stages)
         .map(|i| InflowModel {
@@ -344,28 +306,22 @@ fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticCont
 
 /// Minimal [`Stage`] values (sequential `id`s 0..n_stages) for [`TrainingContext::stages`].
 fn make_stages(n_stages: usize) -> Vec<Stage> {
+    use crate::test_support::builders::{self, StageSpec};
+
     (0..n_stages)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect()
 }
@@ -393,7 +349,7 @@ fn iteration_limit_rules(limit: u64) -> StoppingRuleSet {
 }
 
 #[test]
-fn ac_train_completes_with_iteration_limit() {
+fn train_completes_with_iteration_limit() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -414,6 +370,7 @@ fn ac_train_completes_with_iteration_limit() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -449,6 +406,7 @@ fn ac_train_completes_with_iteration_limit() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -476,7 +434,7 @@ fn ac_train_completes_with_iteration_limit() {
 }
 
 #[test]
-fn ac_train_returns_partial_on_infeasible() {
+fn train_returns_partial_on_infeasible() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -497,6 +455,7 @@ fn ac_train_returns_partial_on_infeasible() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -532,6 +491,7 @@ fn ac_train_returns_partial_on_infeasible() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -570,7 +530,7 @@ fn ac_train_returns_partial_on_infeasible() {
 }
 
 #[test]
-fn ac_train_emits_correct_event_sequence() {
+fn train_emits_correct_event_sequence() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -593,6 +553,7 @@ fn ac_train_emits_correct_event_sequence() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(2),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -628,6 +589,7 @@ fn ac_train_emits_correct_event_sequence() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -750,7 +712,7 @@ fn ac_train_emits_correct_event_sequence() {
 }
 
 #[test]
-fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
+fn worker_timing_per_worker_event_count_and_setup_invariant() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -773,6 +735,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 4,
             stopping_rules: iteration_limit_rules(1),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -808,6 +771,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -903,7 +867,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
 }
 
 #[test]
-fn ac_train_result_fields_populated() {
+fn train_result_fields_populated() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -924,6 +888,7 @@ fn ac_train_result_fields_populated() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -959,6 +924,7 @@ fn ac_train_result_fields_populated() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -993,7 +959,7 @@ fn ac_train_result_fields_populated() {
 }
 
 #[test]
-fn ac_train_with_no_event_sender() {
+fn train_with_no_event_sender() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -1014,6 +980,7 @@ fn ac_train_with_no_event_sender() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(2),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1049,6 +1016,7 @@ fn ac_train_with_no_event_sender() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1073,7 +1041,7 @@ fn ac_train_with_no_event_sender() {
 }
 
 #[test]
-fn ac_total_time_ms_is_non_negative() {
+fn total_time_ms_is_non_negative() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -1094,6 +1062,7 @@ fn ac_total_time_ms_is_non_negative() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(1),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1129,6 +1098,7 @@ fn ac_total_time_ms_is_non_negative() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1182,6 +1152,7 @@ fn cut_selection_none_skips_step() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1217,6 +1188,7 @@ fn cut_selection_none_skips_step() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1272,6 +1244,7 @@ fn existing_train_tests_pass_with_none() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1307,6 +1280,7 @@ fn existing_train_tests_pass_with_none() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1334,7 +1308,7 @@ fn existing_train_tests_pass_with_none() {
 }
 
 #[test]
-fn ac_train_partial_result_on_mid_iteration_failure() {
+fn train_partial_result_on_mid_iteration_failure() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -1357,6 +1331,7 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1396,6 +1371,7 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1467,6 +1443,7 @@ fn start_iteration_resumes_from_offset() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1502,6 +1479,7 @@ fn start_iteration_resumes_from_offset() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1552,6 +1530,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1587,6 +1566,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1621,7 +1601,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
 // ── broadcast_basis_cache unit tests ─────────────────────────────────────
 
 #[test]
-fn ac_broadcast_basis_cache_uses_scenario_0_not_last() {
+fn broadcast_basis_cache_uses_scenario_0_not_last() {
     use super::broadcast_basis_cache;
     use crate::setup::NodePos;
     use crate::workspace::{BasisStore, CapturedBasis};
@@ -1688,7 +1668,7 @@ fn ac_broadcast_basis_cache_uses_scenario_0_not_last() {
 }
 
 #[test]
-fn ac_broadcast_basis_cache_none_slots_preserved() {
+fn broadcast_basis_cache_none_slots_preserved() {
     use super::broadcast_basis_cache;
     use crate::workspace::BasisStore;
 
@@ -1938,8 +1918,7 @@ fn broadcast_basis_cache_multi_rank_round_trips_full_metadata() {
     assert_eq!(
         cb0.node_id,
         NodeId(3),
-        "node_id now rides the wire; rank 1 must recover rank 0's captured \
-         value, no longer an out-of-band fill from a per-stage node array"
+        "node_id rides the wire; rank 1 must recover rank 0's captured value"
     );
     assert!(cache[1].is_none(), "stage 1 had no basis → None");
 }
@@ -2145,6 +2124,7 @@ fn template_freeze_event_emitted() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(2),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -2181,6 +2161,7 @@ fn template_freeze_event_emitted() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2254,7 +2235,7 @@ fn template_freeze_event_emitted() {
 /// if any field is renamed, reordered, or removed without a corresponding
 /// update to the constructor signature.
 #[test]
-fn ac_training_result_new_assigns_all_fields() {
+fn training_result_new_assigns_all_fields() {
     use crate::workspace::CapturedBasis;
 
     let basis_cache = vec![Some(CapturedBasis {
@@ -2556,7 +2537,7 @@ fn a_two_rank_gather_numbers_each_peer_row_from_its_offset() {
 }
 
 #[test]
-fn a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective() {
+fn a_gather_that_cannot_decode_a_peer_segment_issues_every_collective() {
     use super::gather_basis_store;
     use crate::training::session::rank_distribution::RankDistribution;
     use crate::workspace::BASIS_BROADCAST_FORMAT_TAG;

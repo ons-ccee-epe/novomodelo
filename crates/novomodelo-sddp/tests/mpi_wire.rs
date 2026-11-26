@@ -1283,7 +1283,7 @@ mod by_node_scratch {
     };
     use novomodelo_core::temporal::{NoiseMethod, ScenarioSourceConfig};
     use novomodelo_core::{EntityId, HydroGenerationModel, SystemBuilder};
-    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
     use novomodelo_sddp::{
         BackwardPassInputs, BackwardPassState, ExchangeBuffers,
         context::TrainingContext,
@@ -1631,6 +1631,7 @@ mod by_node_scratch {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims_fixture,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1755,6 +1756,7 @@ mod by_node_scratch {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims_fixture,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3059,7 +3061,7 @@ mod selection_on_determinism {
     //! evidence. It trains on the calling thread, over the ambient rayon pool:
     //! the communicator admits calls only from the thread that initialised it.
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fmt::Debug;
     use std::num::NonZeroU32;
     use std::path::Path;
@@ -3281,16 +3283,22 @@ mod selection_on_determinism {
         (0..pool.populated()).filter(|&slot| pool.role(slot).origin == SlotOrigin::Generated)
     }
 
-    fn stored_state_bits(pool: &CutPool) -> BTreeSet<Vec<u64>> {
-        (0..pool.populated())
-            .filter_map(|slot| pool.trial_state(slot))
-            .map(|state| {
-                state
-                    .iter()
-                    .map(|coordinate| coordinate.to_bits())
-                    .collect()
-            })
-            .collect()
+    fn stored_states_by_iteration(pool: &CutPool) -> BTreeMap<u64, BTreeSet<Vec<u64>>> {
+        let mut by_iteration: BTreeMap<u64, BTreeSet<Vec<u64>>> = BTreeMap::new();
+        for slot in 0..pool.populated() {
+            if let Some(state) = pool.trial_state(slot) {
+                by_iteration
+                    .entry(pool.metadata(slot).iteration_generated)
+                    .or_default()
+                    .insert(
+                        state
+                            .iter()
+                            .map(|coordinate| coordinate.to_bits())
+                            .collect(),
+                    );
+            }
+        }
+        by_iteration
     }
 
     /// The two fan pools of the sampled branching tree, after asserting that
@@ -3311,8 +3319,9 @@ mod selection_on_determinism {
     }
 
     /// [`level1_power`] of a sampled fan run, after asserting that each fan pool
-    /// stores one state per generated cut, that the two pools store different
-    /// states, and that some fan pool holds two different cuts.
+    /// stores one state per generated cut, that at some iteration both pools
+    /// stored states at the two store different ones, and that some fan pool holds
+    /// two different cuts.
     fn fan_power(run: &TrainedRun<'_>) -> Level1Power {
         let pools = fan_pools(run);
         for pool in pools {
@@ -3326,11 +3335,15 @@ mod selection_on_determinism {
                 run.shape
             );
         }
-        assert_ne!(
-            stored_state_bits(pools[0]),
-            stored_state_bits(pools[1]),
-            "{}: the two fan pools store the same trial states, so a state stored in the \
-             sibling's pool would not show",
+        let [first, second] = pools.map(stored_states_by_iteration);
+        assert!(
+            first.iter().any(|(iteration, states)| {
+                second
+                    .get(iteration)
+                    .is_some_and(|sibling| sibling != states)
+            }),
+            "{}: at every iteration both fan pools stored states at, they stored the same \
+             ones, so a state stored in the sibling's pool would not show",
             run.shape
         );
         assert!(
@@ -3583,8 +3596,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(2));
@@ -3607,8 +3619,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3633,7 +3644,7 @@ mod selection_on_determinism {
     fn level1_two_rank_stub_matches_single_rank_on_the_uniform_fixture() {
         let build = || {
             fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 1 });
+                config.training.selection = Some(TrainingSelection::sampled(1));
                 config.training.stopping_rules =
                     Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                 config.training.cut_selection.selection = Some(level1(1));
@@ -3658,8 +3669,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3688,8 +3698,7 @@ mod selection_on_determinism {
             &[STAGES],
             |case_dir| {
                 fresh_setup_with(case_dir, |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 2 });
+                    config.training.selection = Some(TrainingSelection::sampled(2));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3737,8 +3746,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                     config.training.cut_selection.selection = Some(windowed_level1(2));
@@ -3764,8 +3772,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                     config.training.cut_selection.selection = Some(windowed_level1(2));
@@ -3798,8 +3805,7 @@ mod selection_on_determinism {
             &[STAGES, HYDROS],
             |case_dir| {
                 fresh_setup_with(case_dir, |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 3 });
+                    config.training.selection = Some(TrainingSelection::sampled(3));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3926,8 +3932,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 20 }]);
                     config.training.cut_selection.selection = Some(dynamic_selection(5));
@@ -3948,8 +3953,7 @@ mod selection_on_determinism {
         assert_two_rank_stub_matches_single_rank(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 20 }]);
                     config.training.cut_selection.selection = Some(dynamic_selection(5));
@@ -3970,8 +3974,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3993,8 +3996,7 @@ mod selection_on_determinism {
         assert_two_rank_stub_matches_single_rank(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -4019,8 +4021,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = None;
@@ -4045,8 +4046,7 @@ mod selection_on_determinism {
         assert_two_rank_stub_matches_single_rank(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = None;
@@ -4070,8 +4070,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(dynamic_selection(0));
@@ -4101,12 +4100,18 @@ mod compact_fold_determinism {
     //! slice: its leaf pool projects storage and lag but receives no cut, its root
     //! pool storage only. No stub leg runs on the fan: its backward level has
     //! several nodes, where the stub leaves the per-pool count buffer stale.
+    //!
+    //! The lognormal lag study runs the thread and world legs only. It has no
+    //! non-uniform projection leg because the lognormal noise term changes neither a
+    //! projection nor a cut layout, so `d43` under `"normal"` covers that axis; and
+    //! it has no rank-stub or opening-order leg because the world leg covers the rank
+    //! shape and the opening order does not reach the per-trial noise term.
 
     use std::collections::BTreeSet;
     use std::path::Path;
 
     use novomodelo_comm::{BackendKind, LocalBackend, create_communicator};
-    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
     use novomodelo_sddp::indexer::CutStateProjection;
     use novomodelo_sddp::setup::NodePos;
     use novomodelo_sddp::test_support::{
@@ -4119,11 +4124,14 @@ mod compact_fold_determinism {
         assert_world_splits_the_trials, sample, train,
     };
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use crate::common::lognormal_branches::assert_the_stored_pins_reach_both_branches;
     use crate::common::{
         Rank0Of2, StubComm, build_setup_in_code_with_models, fresh_setup_with_openings,
+        train_storing_trial_states,
     };
 
     const LAG_STUDY: &str = "lag study";
+    const LOGNORMAL_LAG_STUDY: &str = "lognormal lag study";
     const LAG_STUDY_OPENINGS: usize = 3;
     const LAG_STUDY_ITERATIONS: u32 = 3;
     const D43: &str = "d43";
@@ -4145,12 +4153,43 @@ mod compact_fold_determinism {
     };
 
     fn lag_study(forward_passes: u32, iterations: u32) -> StudySetup {
+        lag_study_under(
+            InflowResidualDistribution::Normal,
+            forward_passes,
+            iterations,
+        )
+    }
+
+    fn lognormal_lag_study(forward_passes: u32, iterations: u32) -> StudySetup {
+        lag_study_under(
+            InflowResidualDistribution::Lognormal3p,
+            forward_passes,
+            iterations,
+        )
+    }
+
+    /// The lag study under `distribution`; under `Lognormal3p` it reaches the fallback.
+    fn lag_study_under(
+        distribution: InflowResidualDistribution,
+        forward_passes: u32,
+        iterations: u32,
+    ) -> StudySetup {
         let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
             openings: LAG_STUDY_OPENINGS,
+            reach_the_fallback: distribution == InflowResidualDistribution::Lognormal3p,
             ..FphaLagOptions::default()
         });
+        config.modeling.inflow_residual.distribution = distribution;
         sample(&mut config, forward_passes, iterations);
         build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    /// Trains a probe of the lognormal lag study with its trial states stored, apart
+    /// from the setups the gates compare, and asserts its pins reach both branches.
+    fn assert_the_lognormal_lag_study_reaches_both_branches(forward_passes: u32) {
+        let mut probe = lognormal_lag_study(forward_passes, LAG_STUDY_ITERATIONS);
+        train_storing_trial_states(LOGNORMAL_LAG_STUDY, &mut probe);
+        assert_the_stored_pins_reach_both_branches(LOGNORMAL_LAG_STUDY, &probe);
     }
 
     fn d43(forward_passes: u32, iterations: u32) -> StudySetup {
@@ -4300,6 +4339,14 @@ mod compact_fold_determinism {
     }
 
     #[test]
+    fn compact_by_node_cvar_thread_shapes_agree_on_the_lognormal_lag_study() {
+        assert_the_lognormal_lag_study_reaches_both_branches(THREAD_LEG_FORWARD_PASSES);
+        assert_by_node_cvar_thread_shapes_agree(LOGNORMAL_LAG_STUDY, || {
+            lognormal_lag_study(THREAD_LEG_FORWARD_PASSES, LAG_STUDY_ITERATIONS)
+        });
+    }
+
+    #[test]
     fn compact_by_node_cvar_rank_stub_matches_single_rank_on_the_lag_study() {
         assert_by_node_cvar_rank_stub_matches_single_rank(LAG_STUDY, || {
             lag_study(1, LAG_STUDY_ITERATIONS)
@@ -4390,6 +4437,31 @@ mod compact_fold_determinism {
         let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
         let reference = train(build(), &LocalBackend, 1, LAG_STUDY, budget);
         let on_world = train(build(), &world, 1, LAG_STUDY, budget);
+        assert_matches_single_rank(&world, &on_world, &reference);
+    }
+
+    /// The lognormal twin of [`compact_lag_study_is_world_size_invariant`]. Under
+    /// `cargo test` the world has one rank and the comparison is an identity.
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn compact_lognormal_lag_study_is_world_size_invariant() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let trials = usize::try_from(WORLD_FORWARD_PASSES).unwrap();
+        assert_world_splits_the_trials(LOGNORMAL_LAG_STUDY, &world, trials);
+        assert_the_lognormal_lag_study_reaches_both_branches(WORLD_FORWARD_PASSES);
+
+        let build = || {
+            let setup = by_node_cvar(lognormal_lag_study(
+                WORLD_FORWARD_PASSES,
+                LAG_STUDY_ITERATIONS,
+            ));
+            assert_has_multi_block_stage(LOGNORMAL_LAG_STUDY, &setup);
+            setup
+        };
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let reference = train(build(), &LocalBackend, 1, LOGNORMAL_LAG_STUDY, budget);
+        let on_world = train(build(), &world, 1, LOGNORMAL_LAG_STUDY, budget);
         assert_matches_single_rank(&world, &on_world, &reference);
     }
 

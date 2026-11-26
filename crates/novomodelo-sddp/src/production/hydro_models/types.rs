@@ -17,6 +17,7 @@
 //! `novomodelo-core`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use novomodelo_core::{EntityId, Hydro, StudyPos, System};
 use novomodelo_io::FphaDeviationPointRow;
@@ -25,6 +26,7 @@ use novomodelo_io::HydroGeometryRow;
 use serde::{Deserialize, Serialize};
 
 use crate::energy_conversion::HydroEnergyProductivityOverride;
+use crate::fpha_fitting::ProductionFunction;
 
 // ── Hyperplane types ──────────────────────────────────────────────────────────
 
@@ -38,7 +40,9 @@ pub struct FphaPlane {
     pub gamma_v: f64,
     /// Turbined-flow coefficient.
     pub gamma_q: f64,
-    /// Spillage coefficient.
+    /// Tailrace lateral-flow coefficient (MW per m³/s): spill times the own-outflow factor
+    /// plus the declared influences of other plants; the spill coefficient when the hydro
+    /// declares no `tailrace_flow`.
     pub gamma_s: f64,
 }
 
@@ -69,6 +73,9 @@ pub struct ProductionModelSet {
     stage_models: Vec<Vec<ResolvedProductionModel>>,
     /// Number of stages (inner dimension).
     n_stages: usize,
+    /// `[h][t]` is the fit's production function at a computed-FPHA stage; empty when
+    /// none are kept.
+    fpha_production_functions: Vec<Vec<Option<Arc<ProductionFunction>>>>,
 }
 
 impl ProductionModelSet {
@@ -96,7 +103,36 @@ impl ProductionModelSet {
         Self {
             stage_models: models,
             n_stages,
+            fpha_production_functions: Vec::new(),
         }
+    }
+
+    /// Keeps each hydro's per-stage production functions, `per_hydro[h][t]`.
+    pub(crate) fn with_fpha_production_functions(
+        mut self,
+        per_hydro: Vec<Vec<Option<Arc<ProductionFunction>>>>,
+    ) -> Self {
+        debug_assert_eq!(
+            per_hydro.len(),
+            self.n_hydros(),
+            "outer dimension must equal n_hydros"
+        );
+        debug_assert!(
+            per_hydro.iter().all(|row| row.len() == self.n_stages),
+            "each hydro's stage vector must have length n_stages"
+        );
+        self.fpha_production_functions = per_hydro;
+        self
+    }
+
+    /// The production function fitted for `(h, t)`; `None` at a stage without one or
+    /// out of range.
+    pub(crate) fn fpha_production_function(
+        &self,
+        h: usize,
+        t: usize,
+    ) -> Option<&Arc<ProductionFunction>> {
+        self.fpha_production_functions.get(h)?.get(t)?.as_ref()
     }
 
     /// Resolved production model at `(hydro, stage)`.
@@ -319,7 +355,7 @@ pub struct NoTurbineCapacityHydro {
 }
 
 /// A hydro plant with a study stage without turbine capacity, or with a
-/// turbined or generation minimum the LP no longer charges.
+/// turbined or generation minimum the LP does not charge.
 ///
 /// Both stage lists hold ascending study stage ids, are disjoint, and come from
 /// the resolved bounds, independent of commissioning.
@@ -333,11 +369,11 @@ pub struct FrozenTurbiningHydro {
     pub no_capacity_stage_ids: Vec<i32>,
     /// Stages where some but not all of the plant's (cell, block)s have capacity.
     pub partial_capacity_stage_ids: Vec<i32>,
-    /// Minima the LP no longer charges.
+    /// Minima the LP does not charge.
     pub dropped_floors: Vec<DroppedFloor>,
 }
 
-/// A turbined or generation minimum the LP no longer charges at one stage
+/// A turbined or generation minimum the LP does not charge at one stage
 /// block, on the plant or on one of its unit groups.
 ///
 /// `hydro_unit_group_id` and `bus_id` are both `None` (`null`) exactly when
@@ -356,10 +392,10 @@ pub struct DroppedFloor {
     pub hydro_unit_group_id: Option<EntityId>,
     /// The unit group's bus.
     pub bus_id: Option<EntityId>,
-    /// The resolved minimum the LP no longer charges, in the floor's own unit;
+    /// The resolved minimum the LP does not charge, in the floor's own unit;
     /// always > 0.
     pub value: f64,
-    /// Why the LP no longer charges it.
+    /// Why the LP does not charge it.
     pub reason: DroppedFloorReason,
 }
 
@@ -384,7 +420,7 @@ pub enum DroppedFloorLevel {
     UnitGroup,
 }
 
-/// Why the LP no longer charges a [`DroppedFloor`].
+/// Why the LP does not charge a [`DroppedFloor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DroppedFloorReason {
@@ -410,7 +446,7 @@ pub struct HydroModelSummary {
     /// `hydro_id`. They are also counted in `n_constant`.
     pub no_turbine_capacity: Vec<NoTurbineCapacityHydro>,
     /// Hydro plants with a study stage without turbine capacity or a minimum the
-    /// LP no longer charges, as computed by `frozen_turbining_hydros`, sorted
+    /// LP does not charge, as computed by `frozen_turbining_hydros`, sorted
     /// ascending by `hydro_id`.
     pub frozen_turbining: Vec<FrozenTurbiningHydro>,
     /// Number of hydro plants with linearized evaporation.

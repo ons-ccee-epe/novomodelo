@@ -118,7 +118,11 @@ baselines + deterministic case decks), the `mpi_wire.rs` determinism-gate binary
    condition it guards), dual HiGHS/CLP golden baselines, an order-invariance
    shuffle matrix, and real multi-rank MPI. This matches the strict end of the
    parallel-numerics reproducibility spectrum.
-4. **O(1) fixture field-add builder** (`tests/common/builders.rs`).
+4. **One builder literal per entity per crate home.** Each crate's tests build entities
+   through that crate's `test-support` home (`src/test_support`), so a new required field
+   touches one `make_<entity>` per home that builds the entity, plus the literal-required
+   sites and production readers, not the consumer tests. Keep and standardize; the rule
+   lives in `.claude/rules/testing.md` ("Cost discipline").
 5. **Coverage measured; compile-fail tested (via doctests); property tests for
    ordering.**
 
@@ -266,9 +270,9 @@ file. Each such binary embeds the solver object code + debug info + the crate
 rlib — on the order of hundreds of MB in a debug build — and pays a full C++
 static link (several seconds) at build time. This is the dominant steady-state
 contributor to `target/` size and CI link wall-time _after_ a clean build.
-(Cause separation: the multi-hundred-GB `target/` that first motivated the work
-was mostly stale accumulated artifacts, addressed separately by build hygiene —
-`CONTRIBUTING.md` → "Reclaiming disk space". Layer 1 addresses only the
+(Cause separation: a multi-hundred-GB `target/` is mostly stale accumulated
+artifacts, which build hygiene reclaims — `CONTRIBUTING.md` → "Reclaiming disk
+space". Layer 1 addresses only the
 steady-state cost that survives `cargo clean`: binary count × solver-link
 size/time.) Consolidation also brings the suite back into compliance with
 `.claude/rules/testing.md`, which mandates grouping related tests with `mod`
@@ -355,9 +359,10 @@ proportionally.
 - **No change to feature or slow gating** — `#[cfg(feature = "mpi")]`,
   `#[cfg_attr(not(feature = "slow-tests"), ignore = …)]`, and every other gate
   are preserved verbatim.
-- **The shared `tests/common/` harness stays the single source** of fixture
-  builders; it is not duplicated or forked per domain binary. (This is the
-  interim state; §5.2 later collapses `tests/common/` into `novomodelo-sddp`'s
+- **Fixture builders live only in the crate `test-support` homes, and the shared
+  harness helpers only in `tests/common/`**; neither is
+  duplicated or forked per domain binary. (This is the interim state; §5.2 later
+  collapses the harness helpers in `tests/common/` into `novomodelo-sddp`'s
   `test-support` surface.)
 - **Determinism gates keep their power** (e.g. `mpi_wire.rs`'s self-checked
   thresholds). Integration submodules share no mutable global state today and
@@ -420,13 +425,14 @@ The convention:
 - **`novomodelo-python` dev-depends on `novomodelo-sddp`'s `test-support`**, which (with the
   §5.11 CI wiring) lets its Rust tests share the same fixtures.
 
-**Adoption (2026-09-15).** The convention is the adopted standard for the crates that own
+**Adoption.** The convention is the adopted standard for the crates that own
 shareable fixtures: each exposes them behind its own `test-support` feature under the gate
-above, and consumers enable it as a dev-dependency feature. Two of its bullets are not yet
-carried out: `crates/novomodelo-sddp/tests/common/` still holds its own fixture directory rather
-than collapsing into the crate's `test-support` surface, and `crates/novomodelo-python/Cargo.toml`'s
-`[dev-dependencies]` does not yet name `novomodelo-sddp` with that feature. Until both land, the
-status line above reads "partially adopted" rather than "adopted".
+above, and consumers enable it as a dev-dependency feature. The entity builders moved into
+`crates/novomodelo-sddp/src/test_support/builders.rs`, which `crates/novomodelo-sddp/tests/common/mod.rs`
+re-exports. Two of the convention's bullets are not yet carried out: the harness helpers in
+`crates/novomodelo-sddp/tests/common/` have not collapsed into the crate's `test-support`
+surface, and `crates/novomodelo-python/Cargo.toml`'s `[dev-dependencies]` does not yet name
+`novomodelo-sddp` with that feature.
 
 A dedicated crate wins in exactly one case — heavy test-only dependencies you
 want kept out of every production crate's dev-graph, or a pristine

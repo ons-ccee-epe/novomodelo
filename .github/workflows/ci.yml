@@ -315,6 +315,10 @@ jobs:
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/ci/check-allow-rationale.sh
+      - name: Fixture-table gate self-test
+        run: bash scripts/ci/check-fixture-tables.sh --verify
+      - name: Fixture-table gate
+        run: bash scripts/ci/check-fixture-tables.sh
       - name: Check Python parity
         run: python3 scripts/ci/check_python_parity.py --max 0
       - name: Check Python binding version lockstep

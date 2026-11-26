@@ -165,11 +165,11 @@ pub struct CutPool {
     prefix_len: usize,
 
     /// Iteration that maps to the first training slot (`slot_base`). The
-    /// slot formula subtracts it so 1-based iterations pack densely. Default 0 is
-    /// the legacy layout that leaves the block `[slot_base, +visit_stride)`
-    /// unused; production sets 1 via [`set_iteration_base`], on a resumed run
-    /// too, so an iteration's slots do not depend on where the run started.
-    /// Both are correct; dense is tighter.
+    /// slot formula subtracts it so 1-based iterations pack densely. Default 0
+    /// leaves the block `[slot_base, +visit_stride)` unused; production sets 1
+    /// via [`set_iteration_base`], on a resumed run too, so an iteration's
+    /// slots do not depend on where the run started. Both are correct; dense
+    /// is tighter.
     ///
     /// [`set_iteration_base`]: CutPool::set_iteration_base
     pub iteration_base: u64,
@@ -1924,7 +1924,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_add_cut_stores_at_slot_zero_and_active_count_is_one() {
+    fn add_cut_stores_at_slot_zero_and_active_count_is_one() {
         let mut pool = CutPool::new(100, 9, 10, 0);
         let coeffs = vec![0.0; 9];
         pool.add_cut(NodeId(0), 0, 0, 5.0, &coeffs);
@@ -1934,7 +1934,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_deactivate_reduces_active_count_correctly() {
+    fn deactivate_reduces_active_count_correctly() {
         let mut pool = CutPool::new(10, 1, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 1.0, &[1.0]);
         pool.add_cut(NodeId(0), 1, 0, 2.0, &[2.0]);
@@ -1947,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_evaluate_at_state_returns_correct_max() {
+    fn evaluate_at_state_returns_correct_max() {
         let mut pool = CutPool::new(10, 2, 1, 0);
         pool.add_cut(NodeId(0), 0, 0, 10.0, &[1.0, 0.0]);
         pool.add_cut(NodeId(0), 1, 0, 5.0, &[0.0, 2.0]);
@@ -1956,7 +1956,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_slot_base_offsets_slot() {
+    fn slot_base_offsets_slot() {
         let mut pool = CutPool::new(100, 9, 10, 5);
         let coeffs = vec![0.0; 9];
         pool.add_cut(NodeId(0), 0, 0, 1.0, &coeffs);
@@ -1966,7 +1966,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_empty_pool_evaluate_returns_neg_infinity() {
+    fn empty_pool_evaluate_returns_neg_infinity() {
         let pool = CutPool::new(10, 2, 1, 0);
         assert_eq!(pool.evaluate_at_state(&[1.0, 2.0]), f64::NEG_INFINITY);
     }
@@ -3284,11 +3284,11 @@ mod tests {
     ///
     /// Pool has `populated_count = 100` and only slot 0 is active
     /// (`cached_active_count = 1`).  The early-exit iterator must stop after
-    /// visiting slot 0, yielding exactly 1 item.  If the old O(populated)
-    /// walk were still in place the count would still be 1, but the
-    /// scan-based implementation verifies correctness by construction:
-    /// `remaining` hits 0 after the first active slot and `scan` returns
-    /// `None` for all subsequent elements, preventing any further polling.
+    /// visiting slot 0, yielding exactly 1 item.  An O(populated) walk would
+    /// yield the same count, so the scan-based implementation is correct by
+    /// construction: `remaining` hits 0 after the first active slot and
+    /// `scan` returns `None` for all subsequent elements, preventing any
+    /// further polling.
     #[test]
     fn active_cuts_early_exit_stops_at_cached_count() {
         // visit_stride = 1 so slot = slot_base + iteration * 1 + fp_index
@@ -3304,7 +3304,7 @@ mod tests {
         //
         // We do this by exploiting that slot_index(i, 0) = i * 1 + 0 = i.
         // We need slot 99 to be "populated" (high-water mark = 100) so that
-        // the old O(populated) walk would have to visit all 100 slots.
+        // an O(populated) walk would have to visit all 100 slots.
         pool.populated_count = 100;
         // active[0] is already true; active[1..100] are all false (default).
 

@@ -332,12 +332,13 @@ ranges, lag-major, so slot `lag0.start + l·N + h` holds `(h, l)`. `full` spans
 every lag slot whatever the mode. `lag0` and `shifted` follow the mode: under
 `Carry`, `lag0` is empty and `shifted` is `full`, so a Carry pool reads every
 slot against the lag it holds. `mean_lane` and `noise_lane` write the operands
-the P and W dots read, `b + c ⊙ p` and `c ⊙ σ·η` under `Closing`, the input
-slice itself otherwise. The chain rule branches on the resident pool's
-`CutLagPoint::mode`, and `has_lag_slots` reads `full`. The cut-row RHS
-functions of `cut/rhs.rs` and the chain rule, through `ChainRuleSlots::compose`,
-which composes the extracted and resident projections by global dimension, read
-it; no call site computes a lag slot, a mode or a coefficient.
+the P and W dots read, `b + c ⊙ p` and `c ⊙ ε` under `Closing` (`ε` the noise
+term of the cut-row RHS section below), the input slice itself otherwise. The
+chain rule branches on the resident pool's `CutLagPoint::mode`, and
+`has_lag_slots` reads `full`. The cut-row RHS functions of `cut/rhs.rs` and the
+chain rule, through `ChainRuleSlots::compose`, which composes the extracted and
+resident projections by global dimension, read it; no call site computes a lag
+slot, a mode or a coefficient.
 
 A stage that rebuilds its lags from the downstream ring keeps `Shifted` and warns
 once at setup: its cuts evaluate the lags as at a single-resolution stage. The
@@ -499,11 +500,12 @@ guard the rank-local partial sum rests on (`training/session/mod.rs`); and, in
 
 A cut row's RHS is `fl(fl(fl(α + S) + P) + W)`: `S` dots the cut's shifted lag
 slots (`l ≥ 1`) with the trial lags they read, `P` its lag-0 slots with the
-conditional mean `p(â)`, and `W` its lag-0 slots with the noise term `σ·η`
-(the lag point of the section above). Each is an ascending-slot dot from +0.0
-(the chain-rule subsection above) with no fused multiply-add, and
-`ẑ = p + σ·η` is never dotted in one piece. The bracket `B = fl(fl(α + S) + P)`
-is written by `cut_brackets_into`, with lanes across rows only, and
+conditional mean `p(â)` at the lag point of the section above, and `W` its lag-0
+slots with the noise term `ε` (`σ·η` under the normal residual; the lognormal
+section below). Each is an ascending-slot dot from +0.0 (the chain-rule
+subsection above) with no fused multiply-add, and `ẑ = p + ε` is never dotted in
+one piece. The bracket `B = fl(fl(α + S) + P)` is written by
+`cut_brackets_into`, with lanes across rows only, and
 `rhs_reference::cut_bracket` is its scalar statement; `cut_noise_terms_into`
 writes `W` the same way, with `rhs_reference::cut_noise_term` as its scalar
 statement; `cut_rhs_into` and `cut_rhs_from_noise_terms_into` write `fl(B + W)`. The
@@ -511,12 +513,12 @@ value of a row therefore does not depend on the batch it is computed in.
 
 A cache holds only values these functions produced: a trajectory record's
 `FrozenBrackets` slab holds the brackets `cut_brackets_into` wrote for the
-node's frozen rows, and `StageNoiseTable` holds the `σ·η` that
-`evaluate_par_noise_term_batch` wrote and the `W` that `cut_noise_terms_into` wrote
-for each outcome. A solve with a cache gives the bits of the solve without it.
-The RHS reaches the solver through `StageOpeningSolver::push_cut_rhs` on a
-frozen LP, and through the rows a lazy solve makes resident from
-`ActiveCutRhs`.
+node's frozen rows, and `StageNoiseTable`, which only a normal-residual study
+reserves, holds the `σ·η` that `evaluate_par_noise_term_batch` wrote and the `W`
+that `cut_noise_terms_into` wrote for each outcome. A solve with a cache gives
+the bits of the solve without it. The RHS reaches the solver through
+`StageOpeningSolver::push_cut_rhs` on a frozen LP, and through the rows a lazy
+solve makes resident from `ActiveCutRhs`.
 
 The slab is positional: entry `i` is the bracket of LP cut row `i` of the
 node's frozen template, in `active_cuts()` order, and the read compares the row
@@ -536,7 +538,7 @@ lengths in every build.
 
 The wrong-but-compiling alternatives:
 
-- one dot over `ẑ`: `fl(p + σ·η)` rounds before the products, so the RHS loses
+- one dot over `ẑ`: `fl(p + ε)` rounds before the products, so the RHS loses
   the bits of every writer that adds `W` last;
 - a fused multiply-add (`mul_add`) in a dot: each product is no longer rounded
   on its own;
@@ -639,9 +641,13 @@ to a row:
 `push_local_inflow_coupling` records `−ζ` on a parallel stage and `−τ_k` (block
 `k`'s duration hours times `M3S_TO_HM3`) on each chronological block row — on
 the hydro's own water-balance row(s), or its `PreFilling` short-circuit
-target's — and `fill_generic_constraint_entries` records the generic
-`hydro_inflow` terms. `InflowCouplingSink::finish` returns the coupling `G`
-(`InflowCoupling`), unscaled, with each touched row's unscaled bounds. Every
+target's — `fill_generic_constraint_entries` records the generic
+`hydro_inflow` terms, and `fill_fpha_entries` records `σ_c·(−γ_s)·f_k` for
+each incremental-inflow influence `k` of an FPHA plant on each of that plant's
+plane rows, at the rate (no block-duration factor), and puts the same
+coefficient on `k`'s inflow-slack column under the truncation methods only (the
+FPHA lateral-flow subsection below). `InflowCouplingSink::finish` returns the
+coupling `G` (`InflowCoupling`), unscaled, with each touched row's unscaled bounds. Every
 solve writes each touched row's bounds as its unscaled bound minus
 `Σ_h G(r, h)·ẑ_h`, the sum accumulated from +0.0 in ascending hydro, then entry,
 order, times the row's `row_scale`; both sides of a range row move, and an
@@ -649,7 +655,9 @@ infinite side stays infinite (`PatchBuffer::fill_inflow_shift_patches`).
 
 The same router gives the hydro's inflow-slack column, when the method has
 one, exactly the hydro's water-row entries: the target's rows for a `PreFilling`
-hydro, no row at a sink, never a frozen identity row. Under `truncation` and
+hydro, no row at a sink, never a frozen identity row; under the truncation
+methods it also carries the FPHA plane-row entries of every plant `h`
+influences. Under `truncation` and
 `truncation_with_penalty` the noise also patches the column bounds of hydro
 `h`'s own inflow-slack column (`apply_inflow_slack_col_bounds`, divided by
 `col_scale`), and nothing else. A water-balance row has no inflow term of its
@@ -669,7 +677,7 @@ The wrong-but-compiling alternatives:
 
 Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
 `lp/builder/entries.rs` (`push_local_inflow_coupling`,
-`fill_generic_constraint_entries`), `lp/builder/patch.rs`
+`fill_generic_constraint_entries`, `fill_fpha_entries`), `lp/builder/patch.rs`
 (`PatchBuffer::fill_inflow_shift_patches`), `stochastic/noise.rs`
 (`realize_inflow`, `apply_inflow_slack_col_bounds`). Pinned by
 `chronological_inflow_noise_moves_only_its_own_hydro`
@@ -679,7 +687,13 @@ Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
 rows under `none` and `penalty`, and the coupled rows plus the hydro's own
 inflow-slack column bounds under the truncation methods;
 `inflow_slack_follows_z_routing_for_prefilling` (`lp/builder/entries.rs`) for
-the slack route; `every_study_reads_z_inflow_on_its_water_rows`
+the slack route;
+`fpha_lateral_inflow_records_the_coupling_and_the_truncation_slack` and
+`fpha_lateral_inflow_skips_the_slack_outside_truncation`
+(`tests/template_integration/fpha_structure.rs`: the FPHA record of an
+influencing plant's inflow on each plane row at `σ_c·(−γ_s)·f_k`, and the same
+coefficient on its inflow-slack column under `truncation` and none under
+`penalty` or `none`); `every_study_reads_z_inflow_on_its_water_rows`
 (`tests/template_integration/water_balance_coupling.rs`: every study's water
 rows read the inflow through the sink, on a chronological stage with unequal
 block hours, a `PreFilling` route and a generic `hydro_inflow` entry);
@@ -696,19 +710,21 @@ lower bounds alone breaks the upper-side solve), with their twins, in
 ## Truncation keeps the PAR state raw; the correction is a bounded column
 
 Under `truncation` and `truncation_with_penalty` η is never clamped. One
-`realize_inflow` call per solve writes the realized inflow `ẑ = p(â) + σ·η`,
-where `p(â)` is the PAR conditional mean at this solve's pinned lags (`ẑ` is 0
-without a PAR model), and that one value feeds the coupled rows' shift (the
-coupling-sink section above), the slack bound `l*` and outgoing lag 0.
-`assemble_outgoing_state` builds outgoing lag 0 from `ẑ` — directly, or through
-the multi-resolution lag accumulator (`advance_lag_chain`) — with no clamp, so
-it may be negative (it never clamps inflow lags; they are unbounded in the state
-box). The correction is
-the hydro's own inflow-slack column. Whenever the family exists it carries
-exactly the hydro's water-row entries (`push_local_inflow_coupling`); only under
-the truncation methods does it also carry `+1` in the generic `hydro_inflow`
-term (`push_local_inflow_rate`). Its template bounds are `[0, 0]`
-(`fill_inflow_slack_columns`), and every solve patches them to `[l*, l*]` at
+`realize_inflow` call per solve writes the realized inflow `ẑ = p(â) + ε`, with
+`ε` the noise term (the cut-row RHS section above), where `p(â)` is the PAR
+conditional mean at this solve's pinned lags (`ẑ` is 0 without a PAR model), and
+that one value feeds the coupled rows' shift (the coupling-sink section above),
+the slack bound `l*` and outgoing lag 0. `assemble_outgoing_state` builds
+outgoing lag 0 from `ẑ` — directly, or through the multi-resolution lag
+accumulator (`advance_lag_chain`) — with no clamp, so it may be negative (it
+never clamps inflow lags; they are unbounded in the state box). The correction
+is the hydro's own inflow-slack column. Whenever the family exists it carries
+the hydro's water-row entries (`push_local_inflow_coupling`); only under the
+truncation methods does it also carry `+1` in the generic `hydro_inflow` term
+(`push_local_inflow_rate`) and the FPHA plane-row entries of every plant that
+declares the hydro in `incremental_inflow_influences` (`fill_fpha_entries`).
+Its template bounds are `[0, 0]` (`fill_inflow_slack_columns`), and every
+solve patches them to `[l*, l*]` at
 cost 0 under `truncation` or to `[0, l*]` at `c_inf·T` (the hydro's
 `inflow_nonnegativity_cost` times the stage hours) under
 `truncation_with_penalty`, with `l* = max(−ẑ, 0)` written as `+0.0` when
@@ -722,7 +738,7 @@ cut's own trial state.
 
 Wrong-but-compiling alternatives:
 
-- clamping η before the solve (the old mechanism): it censors the PAR state,
+- clamping η before the solve: it censors the PAR state,
   so the lag carries `ẑ⁺` instead of `ẑ` and every successor cut is evaluated
   at the wrong lag;
 - computing `l*` from a precomputed scenario path instead of the pinned lags:
@@ -751,7 +767,9 @@ reads `(UB − LB).max(0.0)`. This is not remedied. Each stored cut stays a
 valid minorant of the successor value with the slack bounds frozen at its own
 trial state, which is what the cut oracles assert (`check_pool` in
 `tests/common/stored_cut_oracles.rs`), so validity is checked on every truncation
-deck with no exclusion.
+deck with no exclusion. The lognormal residual's noise term depends on the trial
+state too, with the same limitation and the same frozen reference (the lognormal
+section below).
 
 Read: `stochastic/noise.rs` (`realize_inflow`, `apply_inflow_slack_col_bounds`),
 `training/stage_solve_prep.rs` (`StageSolvePrep::patch_opening`),
@@ -823,6 +841,15 @@ canonically whatever order the sites recorded them in, so the coupling does not
 depend on the declaration order. ψ, b and σ have one owner, `PrecomputedPar`: the conditional mean, the
 noise term and the chain rule's ψ all read it.
 
+An FPHA plane row is a coupled row when its plant declares an incremental-inflow
+influence (the FPHA lateral-flow subsection below): its bounds shift with the
+influencing plant's realized inflow, and its dual enters that plant's lag price
+like a water row's. The chronological/parallel coupling-sum identity (a hydro's
+water-row entries sum to `−ζ` on either block mode) covers the water-balance
+and generic rows only, never a plane row: a plane row records the rate on every
+block row, with no block-duration factor, so summing a hydro's entries over
+every coupled row does not give `−ζ`.
+
 The wrong-but-compiling alternatives:
 
 - an inflow coupling written outside the sink (a coupled row's bound offset by
@@ -831,7 +858,10 @@ The wrong-but-compiling alternatives:
 - a second copy of ψ, b or σ: it can drift from the one the conditional mean
   reads, and the lag price then no longer matches the realized inflow;
 - a coupling kept in push order: the touched rows follow the declaration order,
-  and the template and the shift with them.
+  and the template and the shift with them;
+- an FPHA plane-row coupling multiplied by `τ_k` to match the water rows: the
+  plane balances MW against flows in m³/s, so the lateral inflow term is off by
+  the block's hours times `M3S_TO_HM3`.
 
 Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
 `crates/novomodelo-stochastic/src/par/precompute.rs` (`PrecomputedPar`). Pinned by
@@ -843,25 +873,274 @@ the sink's structural tests in `lp/builder/inflow_coupling/tests.rs`,
 `record_rejects_a_hydro_past_the_sink` and the `finish_*` tests; and the
 declaration-order gates `every_lag_deck_compact_template_is_invariant_to_declaration_order`
 and `the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order`
-(`tests/template_permutation.rs`).
+(`tests/template_permutation.rs`); and, for the FPHA route,
+`every_study_reads_z_inflow_on_its_water_rows`
+(`tests/template_integration/water_balance_coupling.rs`: every sink entry sits
+on a water, an FPHA or a generic row, the `−ζ` sum is checked on the water rows
+alone, and the sweep must reach an FPHA row entry) and the sweep label
+`in-code/fpha-lateral-lag` of `every_noise_dimension_patches_only_its_own_entity`
+(`tests/patch_ownership_sweep.rs`: the influencing plant's noise moves the
+plane rows it is coupled to and nothing it does not own).
+
+## The lognormal residual is formed at the solve, from the pinned conditional mean
+
+Under `modeling.inflow_residual.distribution = "lognormal_3p"` the noise term
+`ε_h` of hydro `h` is formed at every solve from the PAR conditional mean `p_h`
+at the solve's pinned lags, the PAR `σ_h` of `PrecomputedPar` and the raw noise
+`η_h`:
+
+`ε_h = p_h·expm1(σ̃_h·η_h − σ̃_h²/2)`, with `σ̃_h² = ln_1p((σ_h/p_h)²)`.
+
+`p_h + ε_h` keeps the conditional mean `p_h` and the standard deviation `σ_h`
+and is never negative. Where `p_h` is not positive, or `(σ_h/p_h)²` is not
+finite, `ε_h` is the normal term `σ_h·η_h` with the bits of
+`evaluate_par_noise_term_batch`; under `"normal"`, the default, it is that term
+at every solve. `evaluate_lognormal_noise_term_batch` (`novomodelo-stochastic`)
+is the only owner of the formula, the fallback rule and the evaluation order:
+each operation rounded on its own, with no fused multiply-add, in the order its
+documentation gives. `realize_inflow` is the only place that chooses the
+kernel, on `TrainingContext::inflow_residual`.
+
+What does not change:
+
+- `ẑ = fl(p + ε)`, written by `add_noise_term_batch`, is the one value that
+  feeds the coupled rows' shift, the truncation slack bound `l*` and outgoing
+  lag 0 (the truncation section above); the PAR state stays raw.
+- The cut-row RHS reads `p` in P and `ε` in W (the cut-row RHS section above);
+  under `Closing`, `noise_lane` scales `ε` by the share `c_h`.
+- η, its sampling and the opening tree are the normal residual's; the option
+  changes the noise term only.
+- The chain rule, `β(h, l) = ψ_l·g_h + w(h, l)` (the cut-sign section above),
+  has no factor for the transform.
+- The policy, the checkpoint and the run metadata record nothing about the
+  option, so a policy trained under either value loads and simulates under the
+  other with no warning.
+
+**No cache of the noise term.** `ε` depends on the solve's pinned lags, so every
+solve computes it. Under the option `reserve_for_pool_capacity` reserves no
+`StageNoiseTable`, every backward opening takes `NoiseTermSource::OnTheFly`
+(`solve_backward_opening`), and `realize_inflow` refuses a cached noise term.
+
+**The chain rule never differentiates the transform.** A cut's lag
+coefficients are its subgradient with the noise term frozen at the cut's own
+trial state, so each cut is tight at its trial point. A stored cut is a valid
+minorant of the successor value with the noise term frozen at its trial state,
+not of the successor value itself, and the lower bound is not guaranteed to stay
+below the upper bound: the truncation section's known limitation, for the noise
+term. The cut oracles compare each stored cut with the successor value at its
+own frozen noise term (`successor_objective_with_frozen_noise_term` and
+`CutFreeze` in `tests/common/stored_cut_oracles.rs`); against the unfrozen value
+they report sloped cuts unsound.
+
+**Where the option is refused or warned about.** With a PAR model,
+`reject_unsupported_combinations_under_lognormal` refuses the option, in one
+error naming every conflict, together with an `external` or `historical` inflow
+scheme, a stage whose `sampling_method` is `historical_residuals`, a node with a
+`scenario_id`, or `enumerated` selection in training or simulation. The
+enumerated-forward, fused-terminal and replicated-backward solve sites therefore
+never run under it; the refusal stands until the `every_solve_site_*` tests in
+`tests/cut_basis/cut_row_push_coverage.rs` gain lognormal legs for them.
+`novomodelo validate` warns (`inflow_residual_warnings`) where solves take the
+normal term: a seasonal mean at or below 0, and
+`modeling.inflow_non_negativity.method = "none"`, under which those solves can
+realize negative inflows. A run counts and reports no fallback solve; a test
+reads the branch a solve took from the bits of `ẑ` (`classify` in
+`tests/common/lognormal_branches.rs`).
+
+**Determinism and its preconditions.** The kernel is elementwise, with no
+reduction, so `ε` is invariant to declaration order, thread count and rank count
+wherever `p`, `σ` and `η` are. `exp_m1` and `ln_1p` come from the platform libm,
+whose last bits can differ between implementations: a run is reproducible on one
+build and one platform, and the ranks of a run need the same build, OS and ISA,
+which no run-time probe checks: `refuse_rank_disagreement` refuses ranks whose
+PAR tables differ (`PrecomputedPar::fingerprint`), not ranks whose libm differs.
+At the far tail of `η` with `(σ_h/p_h)²` near `f64::MAX`, `exp_m1` overflows to
+infinity; generated noise does not reach it, only a hand-written opening-tree
+file can, and no run-time check guards it (the kernel's documentation states the
+bound).
+
+The wrong-but-compiling alternatives:
+
+- a cache of `ε` or W per (stage, opening), as a `StageNoiseTable` under the
+  option or a store in `solve_backward_opening`: every trial state then reads
+  the noise term of the trial that filled it, so the cut follows the thread and
+  rank that filled it;
+- `ε` taken from a forward path, or from a store keyed by opening alone: the
+  backward openings and the lower bound pin other lags than the path;
+- the exact derivative of the transform in the chain rule (each opening's `g`
+  times `∂ẑ/∂p`), or any other slope: its cuts are not valid either, and the
+  frozen-slope closed forms move;
+- `exp(…) − 1`, `ln(1 + (σ_h/p_h)²)` or `fl(p_h·exp(…)) − p_h`: they cancel near
+  the Gaussian limit, and the last also changes the bits of `ẑ`;
+- the kernels swapped in `realize_inflow`, or the fallback written as another
+  expression than the normal kernel's: `ẑ` loses the bits of the residual the
+  study names;
+- a reordered evaluation or a fused multiply-add in the kernel: the last bits of
+  every lognormal result move;
+- a cut oracle that compares a stored cut with the unfrozen successor value: the
+  cuts this contract admits fail it, so it checks a property they do not have;
+- an allocation in either branch of the kernel or in `realize_inflow`: the hot
+  path allocates at every solve;
+- `#[default]` moved to `InflowResidualDistribution::Lognormal3p`: a study
+  without the key changes results;
+- one dot over `ẑ`: the cut-row RHS section forbids it.
+
+Read: `crates/novomodelo-stochastic/src/par/evaluate.rs`
+(`evaluate_lognormal_noise_term_batch`, `add_noise_term_batch`),
+`stochastic/noise.rs` (`realize_inflow`), `training/session/mod.rs`
+(`reserve_for_pool_capacity`), `training/backward/opening_solve.rs`
+(`solve_backward_opening`), `training/stage_solve_prep.rs` (`NoiseTermSource`),
+`setup/mod.rs` (`reject_unsupported_combinations_under_lognormal`),
+`validate_phases.rs` (`inflow_residual_warnings`),
+`crates/novomodelo-io/src/config/modeling.rs` (`InflowResidualDistribution`),
+`crates/novomodelo-stochastic/src/par/precompute.rs`
+(`PrecomputedPar::fingerprint`) and
+`crates/novomodelo-cli/src/commands/run/setup.rs` (`refuse_rank_disagreement`).
+Pinned by, in `crates/novomodelo-stochastic/src/par/evaluate.rs`,
+`lognormal_term_keeps_the_conditional_mean_and_std` (quadrature gives the mean
+`p` and the standard deviation `σ`),
+`lognormal_term_matches_the_second_order_gaussian_limit` (each cancelling form
+above fails it),
+`lognormal_inflow_is_finite_and_non_negative_at_sampler_extremes`,
+`lognormal_term_rounds_each_operation_in_the_documented_order` (a reordered
+evaluation or a fused multiply-add fails it),
+`lognormal_fallback_has_the_bits_of_the_normal_term`,
+`lognormal_zero_sigma_leaves_the_conditional_mean` and
+`lognormal_term_is_invariant_to_hydro_order`; in `stochastic/noise.rs`,
+`realize_inflow_under_lognormal_writes_the_kernel_term` and
+`realize_inflow_under_lognormal_takes_the_normal_term_where_the_mean_is_not_positive`
+(swapped kernels fail both), their normal twin
+`realize_inflow_under_normal_writes_sigma_eta_where_the_mean_is_not_positive`
+and `realize_inflow_under_lognormal_refuses_a_cached_noise_term`; the reach of
+both branches, in `tests/inflow_nonnegativity.rs`,
+`the_forward_pass_reaches_both_lognormal_branches`,
+`the_backward_openings_reach_both_lognormal_branches`,
+`the_simulation_reaches_both_lognormal_branches` and
+`lognormal_branch_solves_need_no_truncation_correction`; the absent cache,
+`lognormal_lag_study_reserves_no_stage_noise_table` (`training/session/mod.rs`),
+`compact_by_node_cvar_thread_shapes_agree_on_the_lognormal_lag_study` and
+`compact_lognormal_lag_study_is_world_size_invariant` (`tests/mpi_wire.rs`, the
+latter registered in `scripts/ci/run-mpi-launcher-gates.sh`; a per-(stage,
+opening) store fails both); the frozen slope, in
+`tests/cut_oracles/analytical_fold_cuts.rs`,
+`a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope` and
+`a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope_on_another_psi_and_stage_length`
+(a derivative through the transform, or another slope, moves the coefficient off
+the closed form); the frozen reference, in `tests/cut_oracles.rs`,
+`cut_oracles_hold_with_the_noise_term_frozen_on_the_lognormal_lag_study` and
+`cut_oracles_hold_with_the_noise_term_frozen_on_the_fallback_reaching_lognormal_lag_study`
+(every stored cut is a minorant of its frozen-noise successor value; an unfrozen
+reference or another slope fails them); every solve site, in
+`tests/cut_basis/cut_row_push_coverage.rs`,
+`every_solve_site_patches_every_resident_cut_row_at_every_solve_under_lognormal`
+and `every_solve_site_pushes_cut_rows_at_its_own_partial_sum_under_lognormal`;
+`the_compact_lognormal_lag_study_trains_to_the_same_bits_in_either_declaration_order`
+(`tests/template_permutation.rs`) and
+`lognormal_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`);
+`a_warm_backward_iteration_allocates_nothing_on_any_thread`
+(`tests/backward_iteration_no_alloc.rs`) and
+`a_lognormal_folded_solve_and_its_cut_allocate_nothing_after_warm_up`
+(`tests/forward_sampler_no_alloc.rs`); the default,
+`d19_an_explicit_normal_residual_trains_to_the_bits_of_an_absent_key`
+(`tests/deterministic.rs`), and the cross-load,
+`a_lognormal_residual_policy_loads_and_simulates_under_normal_with_no_warning`
+and `a_normal_residual_policy_loads_and_simulates_under_lognormal_with_no_warning`
+(`tests/full_fcf_load.rs`); the refusals, in `setup/tests.rs`,
+`lognormal_3p_refuses_external_and_historical_inflow_schemes`,
+`lognormal_3p_refuses_a_historical_residuals_stage_and_a_scenario_id_node`,
+`lognormal_3p_refuses_enumerated_selection_in_either_phase`,
+`lognormal_3p_refuses_every_conflict_in_one_error` and
+`lognormal_3p_refuses_nothing_under_normal_or_without_a_par_model`; the
+warnings, in `validate_phases.rs`,
+`validate_study_under_lognormal_3p_warns_once_about_nonpositive_seasonal_means`,
+`validate_study_under_lognormal_3p_names_a_shared_season_once`,
+`validate_study_under_lognormal_3p_with_method_none_warns_about_negative_inflows`,
+`validate_study_under_lognormal_3p_without_a_par_model_adds_no_warning` and
+`nonpositive_mean_list_joins_periods_and_counts_unnamed_hydros`; and
+the rank check, `fingerprint_changes_with_one_ulp_in_each_table`
+(`crates/novomodelo-stochastic/src/par/precompute.rs`) and
+`refuse_rank_disagreement_names_both_fingerprints_when_ranks_differ`
+(`crates/novomodelo-cli/src/commands/run/setup.rs`).
 
 ## FPHA uses average storage
 
 The FPHA generation constraint is
-`g ≤ γ₀ + (γᵥ/2)·(V_in + V_out) + γ_q·q (+ γ_s·s)`. The `−γᵥ/2` coefficient
-appears on **both** the incoming and outgoing storage columns — not on `V_out`
+`g ≤ γ₀ + (γᵥ/2)·(V_in + V_out) + γ_q·q (+ γ_s·L)`, with `L` the plant's own
+spillage `s` unless it declares a tailrace lateral flow (the subsection below).
+The `−γᵥ/2` coefficient appears on **both** the incoming and outgoing storage columns — not on `V_out`
 alone. (Discovered during deterministic case D06.)
 Read: `lp/builder/entries.rs` (`fill_fpha_entries` — pushes `−γᵥ/2` onto both the
 incoming- and outgoing-storage columns), `lp/builder/rows.rs` (`fill_fpha_rows`),
 and `lp/builder/template.rs`.
 
+### FPHA rows carry the tailrace lateral flow
+
+The plane's spillage term is the tailrace lateral flow `L`, so each plane row
+of cell `c` of plant `i` reads
+`g − σ_c·(γᵥ/2)·(V_in + V_out) − γ_q·q_c − σ_c·γ_s·L − σ ≤ σ_c·γ₀` with
+`L = f_i·s_i + Σ_j f_ij·(Σ_c' q_j,c' + s_j) + Σ_k f_ik·z_k`: plant `i`'s own
+spillage, the release of each outflow-influencing plant `j` (every cell's
+turbined flow plus its spillage) and the realized incremental inflow `z_k` of
+each inflow-influencing plant `k`. `γ_s` is per m³/s of lateral flow, so every
+term of `L` takes the one coefficient `σ_c·(−γ_s)` times its factor; `σ_c` is
+the cell's share of the plant's declared maximum turbined flow
+(`HydroCellIndex::share_of`), the same apportioning as the plane's other
+flow-independent terms. `ResolvedTailraceLateral` holds the factors; a plant
+that declares nothing has `f_i = 1` and no influences, so `L = s_i`.
+
+`fill_fpha_entries` writes the terms on each plane row of the cell:
+
+- the own-spillage entry `σ_c·(−γ_s)·f_i` is always pushed, so a plant that
+  declares only zero factors builds the template of a plant that declares
+  nothing, bit for bit;
+- each cross-plant term whose coefficient `σ_c·(−γ_s)·f` is exactly zero
+  (`is_exact_zero`) is skipped, column and record alike;
+- an outflow influence puts the coefficient on every column of
+  `plant_release_cols(j)`, replicated across `j`'s cells, never divided;
+- an inflow influence is recorded through `InflowCouplingSink::record` at the
+  rate (the coupling-sink section above) and, under the truncation methods
+  only, put on `k`'s inflow-slack column, so the plane reads `k`'s effective
+  inflow `ẑ_k + l*_k` as `k`'s water row does.
+
+The wrong-but-compiling alternatives:
+
+- dividing the lateral coefficient by the influencing plant's cell count: the
+  release `Σ_c' q_j,c' + s_j` is a sum of columns, so the division prices `j`'s
+  turbined flow at a fraction of its weight on every multi-cell plant;
+- omitting the inflow-slack entry under the truncation methods: the plane reads
+  the raw `ẑ_k`, negative where truncation lifts it, while `k`'s water row reads
+  the corrected inflow;
+- adding the slack entry under `penalty`: there the slack is a priced water
+  source in `k`'s water row, and its entry on the plane lets it raise the
+  tailrace as well, so the plane prices water that is not in the river.
+
+Read: `lp/builder/entries.rs` (`fill_fpha_entries`),
+`lp/builder/build_inputs.rs` (`ResolvedTailraceLateral`),
+`lp/builder/layout.rs` (`plant_release_cols`, `effective_inflow_slack_col`).
+Pinned by, in `tests/template_integration/fpha_structure.rs`,
+`fpha_lateral_entries_carry_the_scaled_plane_slope_on_every_influencing_column`
+(the own-spillage, turbine and spillage entries at `−γ_s·f` on every plane row
+of the plant and on no other plant's),
+`fpha_lateral_inflow_records_the_coupling_and_the_truncation_slack` and
+`fpha_lateral_inflow_skips_the_slack_outside_truncation` (the slack entry under
+the truncation methods only) and
+`fpha_zero_factor_declaration_builds_the_undeclared_template` (columns, values,
+row bounds and coupling bit for bit); and, in `tests/template_permutation.rs`,
+`the_lateral_lag_study_template_is_invariant_to_declaration_order` and
+`the_compact_lateral_lag_study_trains_to_the_same_bits_in_either_declaration_order`.
+
 ## The FPHA slack sits only in plane rows
 
 Each FPHA cell has one plane slack `σ` per block: a column in `[0, ∞)` with
 `−1` in every plane row of that cell and block and in no other row. No
-water-balance, load-balance or generic-constraint row holds it, so the inflow
-coupling and the lag fold see no new term. The family is
-`StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
+water-balance, load-balance or generic-constraint row holds it, so the slack
+column itself is in no coupled row. A plane row can be coupled, though (the
+FPHA lateral-flow subsection above): while `σ` is basic it sets the plane
+dual, so the lag price of an inflow-influencing plant `k` reads the slack price
+through `σ_c·(−γ_s)·f_k`, not the marginal resource's cost. That is a valid
+subgradient of the penalized LP, whose plane is soft at the slack price. The
+family is `StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
 BlockIdx)` and allocated last, so it shifts no other family's start. Its price
 is the hydro's `fpha_violation_cost` times the block's hours, divided by the
 cost scale like every other objective term. A Dormant plant has no FPHA cell at
@@ -905,6 +1184,14 @@ and `an_fpha_storage_coefficient_prices_the_head_at_the_slack_price_when_the_sla
 `a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum` (a priced
 generation floor makes `σ` basic at a price above the two-term sum, with the
 plane dual equal to the load dual plus the floor dual);
+`a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_idle`
+and `a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_active`
+(the influencing plant's lag coefficient gains `−p·h·σ_c·γ_s·f_k·ψ_k/K`, with
+`p` the thermal cost while `σ` is 0 and the slack price once `σ` is basic);
+`cold_solves_and_cuts_agree_across_the_formulations_with_a_lateral_fpha_inflow`
+(`tests/cut_oracles/cross_formulation.rs`: with another plant's outflow and
+inflow in the tailrace flow, the stage LP and an LP that defines the inflow in a
+row agree on objectives and cuts);
 `cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack`
 (`tests/cut_oracles/cross_formulation.rs`: with `σ` active in some solve, the
 stage LP and an LP that defines the inflow in a row agree on objectives and
@@ -916,89 +1203,79 @@ its bounds, price and plane-row entries); and
 the bounds, the price and a `−1` in each plane row and nowhere else, and no
 column without FPHA).
 
-## A computed plane is ≥ 0 at zero turbining over its fitting window
+## A computed plane keeps its fitted secant spill slope
 
-A computed plane `P = γ₀ + γᵥ·v + γ_q·q + γₛ·s` has `γᵥ ≥ 0` and `γₛ ≤ 0`
-(`validate_fitted_planes` refuses any other sign beyond round-off), so at
-`q = 0` over `v ∈ [v_min, v_max]` and `s ∈ [0, S_max]` its minimum is the corner
-`(v_min, 0, S_max)`, where it reads `γ₀ + γᵥ·v_min + γₛ·S_max`. A plane below 0
-there needs `σ ≥ −P > 0` even at `g = 0`, so a plant that spills without
-turbining pays plane slack and reports `fpha_violation_mw`.
+A computed plane `P = γ₀ + γᵥ·v + γ_q·q + γₛ·s` takes γₛ from
+`fit_gamma_s_for_planes`: the mean zero-anchored secant slope over the grid
+points where the plane binds, with no bound tied to the fitting window.
+`validate_fitted_planes` refuses `γᵥ < 0` and `γₛ > 0` beyond round-off, and
+the `GAMMA_S_SNAP_EPS` snap maps a mean above `−GAMMA_S_SNAP_EPS`, a positive one
+or a tiny negative residual, to +0.0. `S_max ≤ 0` leaves γₛ at +0.0.
 
-`fit_gamma_s_for_planes` limits each plane's γₛ by
-`γₛ ← max(γₛ, min(0, −(γ₀ + γᵥ·v_min) / S_max))`, which puts the corner at or
-above 0 whenever `γ₀ + γᵥ·v_min ≥ 0`; `min(0, ·)` keeps `γₛ ≤ 0`. `v_min` is
+A plane can therefore fall below 0 at `q = 0` once the plant spills: the origin
+plane (`γ₀ = γᵥ = 0`) does at every `s > 0` when its γₛ is negative. There the LP
+meets `g ≤ P` by turbining water at 0 MW, since `γ_q·q` lifts the plane back to 0
+at no cost, or, where the turbines cannot lift it, with the plane slack `σ`, which
+`fpha_violation_mw` reports. A spilling plant can then show turbined flow at 0 MW
+in `simulation/hydros`. This is DECOMP's secant convention (its reference manual,
+ch. 5, "Modelagem do Vertimento"), which turbines at 0 MW at the same plants.
+
+`reduce_planes` merges a pair by the coefficient-wise `f64::midpoint`
+(`mean_plane`), so a merged plane carries the midpoint of the pair's slopes; the
+origin plane is never merged. The single-volume path fits γₛ the same way, with
+`γᵥ = 0`.
+
+Precomputed planes are read as given. `semantic.5b.55`
+(`check_fpha_precomputed_plane_at_zero_turbining`) warns on a precomputed plane the
+LP reads at an FPHA stage that is below 0 at `(v_min, 0, 0)`, with the LP
+intercept `κ·γ₀`, by more than `envelope_tolerance` of its larger term. `v_min` is
 the lower bound of the fitting window that
-`FphaColumnLayout::resolve_fitting_window` resolves, and `S_max` is
-`FphaColumnLayout::resolve_spillage_fit_max_m3s` of the long-term mean inflow
-that `long_term_mean_inflow_by_hydro` (`novomodelo_core`) gives; the warning
-below calls the same functions. The single-volume path is
-limited too: its `bounds.v_min` sits a synthetic half-width below the window's
-lower bound, and with `γᵥ = 0` there (the table is pinned at that bound) the
-corner does not depend on `v`.
-
-The limit runs before the `GAMMA_S_SNAP_EPS` snap, so the snap maps a limit
-inside its band to +0.0, the origin plane's included (`γ₀ = γᵥ = 0`, so its
-limit is 0), and no negative residual reaches the spillage column. It is skipped
-when `S_max ≤ 0`; `S_max = 0` leaves γₛ at +0.0.
-
-`reduce_planes` runs after the limit and keeps the bound with no second pass:
-`mean_plane` merges a pair by the coefficient-wise `f64::midpoint`, and the
-corner is linear in the coefficients, so a merged plane's corner is the midpoint
-of two corners at or above 0. The origin plane is never merged.
-
-Precomputed planes are not limited. `semantic.5b.55`
-(`check_fpha_precomputed_plane_at_zero_turbining`) warns on a precomputed plane
-the LP reads at an FPHA stage whose corner, taken with the LP intercept `κ·γ₀`
-and the same `v_min` and `S_max`, is below 0 by more than `envelope_tolerance`
-of its largest term, the margin the fit's corner pins read. A computed plane
-exported with `κ = 1` and read back as precomputed under the same `fpha_config`
-therefore raises nothing.
+`FphaColumnLayout::resolve_fitting_window` resolves, where the plane is lowest
+because `γᵥ ≥ 0`. Such a plane turbines at 0 MW or pays plane slack while the
+plant does not spill at all. A plane that falls below 0 only as the plant spills
+follows the convention above and raises nothing, so computed planes exported with
+`κ = 1` and read back as precomputed under the same `fpha_config` raise nothing.
 
 The wrong-but-compiling alternatives:
 
-- the limit after the snap: a sub-snap negative γₛ survives in the spillage
-  column. Pinned by `gamma_s_limit_runs_before_the_snap`
-  (`production/fpha_fitting/secant.rs`: a limit inside the snap band and the
-  origin plane both end at +0.0 bits);
-- only the origin plane limited, or γₛ forced to 0 for every plane: the first
-  leaves every other plane whose mean is steeper than its limit below 0 at the
-  corner, and the second drops the spillage effect of every plane. Pinned by
-  `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`
-  (`production/fpha_fitting/secant.rs`: a plane whose limit binds sits at the
-  limit with its corner at 0, and its twin, whose limit does not bind, keeps the
-  hand mean of its slopes);
-- the limit at `min_storage_hm3` or at 0 in place of the window's `v_min`: it
-  over-limits γₛ wherever the window starts above the plant minimum. Pinned by
-  `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`, whose window
-  starts above its storage range's lower end;
-- the limit at a `v` above the window's `v_min`, or the warning at a `v` below
-  it: the fit and the check then disagree on the corner. Pinned by
+- a bound on γₛ that keeps every plane at or above 0 at `(v_min, 0, S_max)`, such
+  as `γₛ ← max(γₛ, min(0, −(γ₀ + γᵥ·v_min) / S_max))`: most planes then sit at
+  the bound instead of the secant, so a spilling plant generates more than its
+  production function gives. Pinned by
+  `gamma_s_keeps_its_mean_below_zero_at_the_window_corner`
+  (`production/fpha_fitting/secant.rs`), and by
+  `fit_fpha_planes_keeps_the_secant_slope_below_zero_at_the_window_corner` (with
+  and without a window, the origin plane's γₛ negative),
+  `fit_fpha_planes_keeps_the_secant_slope_on_the_single_volume_path` and
+  `reduce_planes_keeps_the_merged_secant_slope_below_zero_at_the_window_corner`
+  (Angle and Distance reduction, with and without a window), in
+  `production/fpha_fitting/tests.rs`;
+- `mean.min(0.0)` in place of the snap: a tiny negative residual survives into
+  the spillage column and wrecks its scaling. Pinned by
+  `gamma_s_snap_maps_a_positive_mean_and_a_tiny_negative_residual_to_positive_zero`
+  (`production/fpha_fitting/secant.rs`: a positive mean and one inside the band
+  both end at +0.0 bits), with `degenerate_s_max_zero_is_neutral` for
+  `S_max = 0`;
+- `semantic.5b.55` evaluated at the spillage end `(v_min, 0, S_max)`: it warns on
+  computed planes read back, which fall below 0 there by design. Pinned by
+  `precomputed_plane_below_zero_only_while_spilling_is_silent`
+  (`crates/novomodelo-io/src/validation/semantic/scenarios.rs`) and
   `computed_fpha_planes_round_trip_without_a_zero_turbining_warning`
   (`tests/deterministic.rs`: on a D07 copy with a sloped tailrace and a window
-  above `min_storage_hm3`, the first fails its check that the limit binds at the
-  window corner, and the second warns on the read-back planes);
-- the single-volume path left unlimited: a run-of-river plant keeps corners
-  below 0. Pinned by `fit_fpha_planes_limits_gamma_s_on_the_single_volume_path`
-  (`production/fpha_fitting/tests.rs`);
-- a merge that is not a convex combination of the coefficients, such as keeping
-  the steeper γₛ: merged planes fall below 0 at the corner. Pinned by
-  `reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner`
-  (`production/fpha_fitting/tests.rs`: Angle and Distance reduction, with and
-  without a window).
+  from 50 hm³, some read-back plane is below 0 at `(v_min, 0, S_max)`, none warns,
+  and a twin shifted below 0 at zero flow warns once);
+- the check at a storage below the window's `v_min`, such as `min_storage_hm3`: it
+  warns on a plane the window never reads that low. Pinned by
+  `precomputed_plane_check_reads_v_min_from_the_fitting_window` (`scenarios.rs`)
+  and the same round-trip test, where some read-back plane is below 0 at
+  `(min_storage_hm3, 0, 0)`.
 
-Read: `production/fpha_fitting/secant.rs` (`fit_gamma_s_for_planes`),
-`production/fpha_fitting/reduction.rs` (`mean_plane`),
+Read: `production/fpha_fitting/secant.rs` (`fit_gamma_s_for_planes`,
+`GAMMA_S_SNAP_EPS`), `production/fpha_fitting/reduction.rs` (`mean_plane`),
 `crates/novomodelo-io/src/extensions/production_models.rs`
-(`FphaColumnLayout::resolve_fitting_window`,
-`FphaColumnLayout::resolve_spillage_fit_max_m3s`) and
+(`FphaColumnLayout::resolve_fitting_window`) and
 `crates/novomodelo-io/src/validation/semantic/scenarios.rs`
-(`check_fpha_precomputed_plane_at_zero_turbining`). Pinned also by
-`fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner`
-(`production/fpha_fitting/tests.rs`: every plane of uncapped Sobradinho at or
-above 0 at the corner, with and without a window, with the origin plane at +0.0)
-and `degenerate_s_max_zero_is_neutral` (`production/fpha_fitting/secant.rs`:
-`S_max = 0` leaves γₛ at +0.0 bits).
+(`check_fpha_precomputed_plane_at_zero_turbining`).
 
 ## Parallel evaporation is one stage-level slot
 
@@ -2875,8 +3152,7 @@ The independence is pinned for up to `PINNED_MAX_ROWS` rows,
 `INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
 is never reached, because a call passes at most `M_BLOCK` states. An inner
 dimension above the largest of `INNER_DIMS` is summed in further blocks of
-`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and
-600.
+`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and 600.
 
 The wrong-but-compiling alternatives:
 
@@ -3519,9 +3795,9 @@ Integration job's rank-invariance comparison on `examples/4ree`.
 ## By-node scheduler is warm-start-only
 
 The live scheduler spellings are `by_scenario` (the default) and `by_node`, both
-under `training.parallelism.backward_scheduler`. The retired `trial_point` /
-`opening_block` spellings are unknown-variant deserialize errors — a clean break
-with no `serde(alias)` fallback — pinned by
+under `training.parallelism.backward_scheduler`. The spellings `trial_point` /
+`opening_block` are unknown-variant deserialize errors, with no `serde(alias)`
+fallback, pinned by
 `retired_scheduler_spellings_are_deserialize_error`
 (`crates/novomodelo-io/src/config/training.rs`).
 
@@ -4150,7 +4426,9 @@ pool's factor is bit-equal (`to_bits`) to the loading study's, the records are
 used unchanged, so a same-factor round trip, a resume included, is bit for bit;
 otherwise every value becomes `(value * source) / loading`, multiplying first.
 `value * (source / loading)` rounds the ratio first and moves the bits of a
-pool written at `1.0`.
+pool written at `1.0`. A pool whose factor is absent, not finite or not positive
+is refused by `pool_cost_scale_factor`, naming the pool; no factor is assumed
+for it.
 
 The wrong-but-compiling alternatives:
 
@@ -4158,7 +4436,9 @@ The wrong-but-compiling alternatives:
   not cancel at a factor that is not a power of two, the default included, so a
   resumed run drifts from the run it continues;
 - ignoring the source factor on load (dividing by the loading factor alone): a
-  checkpoint written at another factor loads at the wrong scale.
+  checkpoint written at another factor loads at the wrong scale;
+- assuming a default factor for a pool that records none: its values load at a
+  scale the checkpoint does not state.
 
 Read: `policy/policy_export.rs` (`build_stage_cut_records`),
 `policy/policy_load.rs` (`rescale_cut_records_for_load`, `pool_cost_scale_factor`,
@@ -4245,8 +4525,8 @@ local-row key and under rank 0's rows only),
 0 returns the decode error after consuming every collective the peer issued) and
 `a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank` (a `-1`
 length is refused naming its rank and node), with the `complete` flag of a clean
-end and of a failure exit in `ac_train_result_fields_populated` and
-`ac_train_partial_result_on_mid_iteration_failure`; and by
+end and of a failure exit in `train_result_fields_populated` and
+`train_partial_result_on_mid_iteration_failure`; and by
 `periodic_checkpoint_with_several_forward_passes_holds_every_scenario_basis_and_equals_the_final_one`
 (`tests/periodic_checkpoint.rs`: three forward passes, the periodic and the final
 checkpoint at the same iteration hold scenarios 0, 1 and 2 at every node with a
@@ -4592,7 +4872,7 @@ matching zero pools, or more than one pool, REJECTS — naming the boundary date
 and every pool's own priced date, or every matching pool id, respectively; a
 resolved pool whose `cost_scale_factor` reads `None` (a pre-self-describing
 `.bin`) REJECTS (`boundary_predates_self_describing_cuts`, advising
-re-export), never silently defaulting to `LEGACY_COST_SCALE_FACTOR`; and a
+re-export), never assuming a factor for it; and a
 resolved pool whose `node_id` is the `-1` sentinel (a shared, multi-owner
 pool) REJECTS — a boundary source must be a single-node terminal pool. The
 `FullFcf` path mirrors the `cost_scale_factor` read and its rejects through the
@@ -4600,8 +4880,8 @@ per-pool check `pool_cost_scale_factor`, applied to every pool by
 `convert_checkpoint_cuts_for_load`: each pool converts by its own factor, and a
 factor that is absent, not finite or not positive is refused naming the pool. Resurrecting a read of `metadata.graph_manifest` or
 `metadata.producer.cost_scale_factor` on either load path is the
-wrong-but-compiling alternative this contract rules out: `metadata.json` is
-retired — the study-global graph, `num_stages`, and provenance now live on the
+wrong-but-compiling alternative this contract rules out: no `metadata.json`
+exists — the study-global graph, `num_stages`, and provenance live on the
 `manifest.bin` `CheckpointManifest` root, consumed only by the `FullFcf`
 graph-identity check — so a metadata read would fail to compile or silently
 reintroduce a stale-scale bug.
@@ -4717,9 +4997,9 @@ study's own opinion can be absent; a source that priced a season the study
 never visited is not, on that account alone, treated as absent.
 `StudySeasonManifest::to_season_manifest` projects every `None` to `0` when
 `write_checkpoint` builds the outgoing wire manifest, so a study's own
-checkpoint is byte-identical to what it was before this relaxation existed —
+checkpoint bytes do not depend on it —
 the "no opinion" state lives only on the study-side type, never on the wire.
-This is why a pure horizon reduction against a longer source now loads: the
+This is why a pure horizon reduction against a longer source loads: the
 reduction's stages reference a strict subset of the source's seasons, and the
 seasons only the source visited are skipped rather than compared against the
 reduction's zero allocation.
@@ -4735,14 +5015,13 @@ distinct messages the reject tier requires, and it would report a hydro-SET
 difference (a missing hydro) as if it were a PAR-ORDER difference.
 
 The wire-side `SeasonManifest`'s ascending-`hydro_id` order and each hydro's
-`orders.len() == n_seasons` are no longer assumed from the writer alone: `novomodelo-io`
+`orders.len() == n_seasons` are not assumed from the writer alone: `novomodelo-io`
 rejects a decoded manifest violating either shape before this gate ever runs,
 pinned by `checkpoint_manifest_rejects_unsorted_season_hydro_orders` and
 `checkpoint_manifest_rejects_season_orders_length_mismatch` in
 `crates/novomodelo-io/src/output/policy/codec.rs`.
 
-`orchestration::build_season_manifest` (renamed from the file-private
-`season_manifest`, now `pub`) is the single owner both the checkpoint writer
+`orchestration::build_season_manifest` is the single owner both the checkpoint writer
 (`write_checkpoint`) and this gate build their descriptor from via
 `BoundaryLoadRequest::with_study_seasons`, so the two sides can never be
 constructed by diverging code. This makes the gate's read of
@@ -4795,7 +5074,7 @@ examined here — that is `BoundaryReconciliationReport::superset_summary`'s and
 path emits no warning for a dropped source slot.
 
 `reconcile::resolve_storage`/`resolve_inflow_lag`'s own `RebindOp::Reject` arms
-are UNCHANGED: through `load_boundary_cuts` they are now unreachable once the
+stay: through `load_boundary_cuts` they are unreachable once the
 gate has passed, but they remain `build_rebind`'s own postcondition for a direct
 in-crate caller. Downgrading either arm to a `debug_assert!` instead is the
 wrong-but-compiling alternative this contract forbids: it would let a future gate
@@ -4874,7 +5153,7 @@ span, never a single anchor — `HydroInflowLag` is the one family keyed on a
 single `reference_date` instead (a past stage, not a delivery target).
 
 The calendar-`subindex` relaxation the parent section reserves for a date family
-IS this fan-out, and it now covers BOTH forward-dated families —
+IS this fan-out, and it covers BOTH forward-dated families —
 `AnticipatedThermalState` and `HydroTransitBucket` — inside `load_boundary_cuts`,
 dispatched through the single `resolve_by_interval_overlap` resolver, which takes
 one `on_source_miss` op. `resolve_target_slot` chooses it per family and the
@@ -4888,10 +5167,8 @@ reconciles each target slot `w` against the source intervals `M` of the SAME fam
 it overlaps **by real calendar date**, not by subindex. The weight depends on
 the family's `QuantityClass` (`quantity_class` in `policy/reconcile.rs`, an
 exhaustive match with no wildcard arm, so a new `StateFamily` variant must declare
-its class before it compiles). The rule applies to every deck, legacy included.
-It moves a legacy deck's results only when that deck loads a boundary policy whose
-source and target bucket grids differ. The old source-hours weight for volumes is
-replaced, not kept behind a flag.
+its class before it compiles). The rule applies to every deck and has no opt-out
+flag.
 
 - **`Rate` (`AnticipatedThermalState`, MW).** Full coverage yields
   `RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M`, divided
@@ -4970,20 +5247,20 @@ the terminal stage's own delivery class, the same slot the always-fish arm
 reads via `in_col` that stage — is NOT this in-study case. Resolved at the
 outgoing anchor (one stage past the terminal stage), its next same-residue
 ring-axis target is always a full `k_max` stages past the terminal stage:
-the slot now dates and intervals onto its REAL post-study delivery and fans
+the slot dates and intervals onto its REAL post-study delivery and fans
 out (`interval_end` past `boundary_date`, `Blend`/`Renormalize`) whenever a
 declared post-study calendar reaches that far, or reads the sentinel — still
 `Zero`, but because no calendar exists to date it against, never because the
 delivery is discharged in-study — when none does. Anchoring this slot on the
-entering `current_stage_idx` instead of the outgoing anchor — the RETIRED
-behavior — is now the wrong-but-compiling alternative: it dates the terminal
+entering `current_stage_idx` instead of the outgoing anchor is the
+wrong-but-compiling alternative: it dates the terminal
 maturing residue onto the terminal stage's own in-study month, silently
 zeroing a real post-study delivery a declared post-study calendar should
 have priced. Pinned by
 `terminal_maturing_residue_dates_onto_its_post_study_delivery` and
 `terminal_maturing_residue_stays_sentinel_without_a_post_study_calendar`
-(`policy/policy_export.rs`). Two further wrong-but-compiling alternatives,
-retired earlier and still forbidden: `RebindOp::Reject` here aborts a
+(`policy/policy_export.rs`). Two further wrong-but-compiling alternatives:
+`RebindOp::Reject` here aborts a
 legitimate boundary load the moment any anticipated thermal targets an
 in-study delivery (the `K = 0` case); resolving an in-study slot an
 in-horizon interval and fanning it out would wrongly `Blend` a within-horizon
@@ -5022,7 +5299,7 @@ maturity lag) plays no part in the join, for a reason distinct from anticipated'
 non-monotone-residue one: two buckets of one downstream plant at different lags
 have disjoint arrival intervals (each stamped from its own arrival stage on the
 study stages extended by the water calendar — the declared
-`water_bucket_stages`, or the thermal post-study `stages` on the legacy path;
+`water_bucket_stages`, or the thermal post-study stages on the padded-thermal path;
 Water calendar paths below) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
@@ -5031,7 +5308,7 @@ interval the overlap is full and the single term's weight is
 reconciliation report tallies that slot as `fan_out`, never `copy`: the
 coefficients are unchanged, the JOIN MECHANISM is not, and collapsing a
 full-coverage single term back into `RebindOp::Copy` would hide that the family is
-now date-validated (and would have to apply to the anticipated family's own
+date-validated (and would have to apply to the anticipated family's own
 copy-equivalent, fully-inside-one-source-interval case too, silently changing its
 tally as well). A dated transit miss that is NOT the storage-fill case above —
 both sides declare transit arcs but their intervals do not overlap — still resolves
@@ -5052,12 +5329,12 @@ mirroring `RebindOp::Zero`, never an error — and the fold's own filter drops
 every exact `0.0` factor rather than emit a zero-weighted term. `load_boundary_cuts`
 adds the fold onto each cut's RAW intercept (`record.intercept += Σ
 coeff[source_pos] · factor`) BEFORE `rescale_cut_records_for_load`'s cost-scale
-and legacy-ratio transforms, in the same source-coefficient frame `rebind_cut`
-reads — so the folded future-cost term rides both rescale transforms with the
-rest of the intercept. Folding after rescale, or reading a rescaled coefficient
-into the fold sum, is the wrong-but-compiling alternative: the transforms are
-not idempotent across that boundary, so a post-rescale fold prices the fixed
-commitment at the wrong scale.
+conversion, in the same source-coefficient frame `rebind_cut` reads — so the
+folded future-cost term rides the conversion with the rest of the intercept.
+Folding after rescale, or reading a rescaled coefficient into the fold sum, is
+the wrong-but-compiling alternative: the conversion is not idempotent across
+that boundary, so a post-rescale fold prices the fixed commitment at the wrong
+scale.
 Read: `policy/reconcile.rs` (`QuantityClass`, `quantity_class`,
 `resolve_by_interval_overlap`, `build_rebind`, `FillFromStorage`,
 `receiver_storage_fill`, `rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
@@ -5407,7 +5684,7 @@ Un-masking the water terminal slots UNCONDITIONALLY — dropping the
 `config.policy.boundary` gate — is the wrong-but-compiling alternative. It
 re-enables the terminal deposit and outgoing columns for every study, so a
 zero-terminal-value water-travel-time study, whose terminal value is still zero,
-now routes the end-of-horizon release into a bucket slot it used to drop; the LP
+routes the end-of-horizon release into a bucket slot the gated LP drops; the LP
 the solver sees changes, silently perturbing every existing water-travel-time
 golden even though the optimal cost is unchanged. Byte-neutrality for the
 no-boundary case is the property the gate protects.
@@ -5466,7 +5743,7 @@ imprecision, not a bug to patch by capping `TransitBucketTopology::column_order`
 too — it sizes from the global max over every anchor and must retain what the
 earliest stages need. Both
 drop sites (`fill_arc_release_block_entries`, `fill_arc_release_chrono_block_entries`)
-now assert the confinement directly: a debug-only check at the `None` row-lookup
+assert the confinement directly: a debug-only check at the `None` row-lookup
 arm requires the dropped lag `d` at stage `t` to satisfy `t + d >= n_stages`,
 so the drop is provably confined to a target past the horizon and unreachable
 once `boundary_present` un-caps the mask; the `HashMap` lookup the check needs
@@ -5497,10 +5774,10 @@ The bucket state stays a pure function of stage lengths, never of
   reaches the depth arithmetic through one of two paths (Water calendar paths
   below): a deck declaring `water_bucket_stages` is resolved on the study
   stages plus that calendar UNPADDED, and must cover the deepest travel time
-  or setup refuses it; a deck without it (the legacy `stages` key of
-  `post_study_stages.json`, or no file) is resolved on the study stages plus
-  the thermal post-study `stages`, padded by `extend_for_resolution`, which is
-  reachable only through `resolution_base`'s `WaterDeliveryBasis::Legacy` arm.
+  or setup refuses it; a deck without `post_study_stages.json` is resolved on
+  the study stages plus the thermal post-study stages, padded by
+  `extend_for_resolution`, which is reachable only through `resolution_base`'s
+  `WaterDeliveryBasis::PaddedThermal` arm.
   Either way the base is a list of stage lengths, so the property holds on both
   paths. Pinned by
   `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`,
@@ -5552,26 +5829,25 @@ by `WaterDeliveryBasis::of` from the core `WaterBucketStages` carried on
   `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
   the declared water stages, and `resolution_base`'s `Declared` arm borrows it
   UNPADDED — no padding, no fallback to the thermal calendar.
-- **Legacy (`WaterBucketStages::FromThermalStages`, the core default: the
-  deprecated `stages` key, or no post-study file).** `DeliveryCalendar::water` is
-  `DeliveryCalendar::thermal`, and `resolution_base`'s `Legacy` arm pads it with
-  `extend_for_resolution`. That arm is `extend_for_resolution`'s only production
-  caller; the pad never exists on the declared path. This path is recorded
-  debt: it exists for decks still in the deprecated format and is removed
-  together with that format, not on its own.
+- **Padded thermal (`WaterBucketStages::FromThermalStages`, the core default: no
+  post-study file).** `DeliveryCalendar::water` is `DeliveryCalendar::thermal`,
+  and `resolution_base`'s `PaddedThermal` arm pads it with `extend_for_resolution`. That
+  arm is `extend_for_resolution`'s only production caller; the pad never exists
+  on the declared path. This path is recorded debt: it exists for decks without
+  a post-study file and is removed together with that case, not on its own.
 
 The basis is passed by value and never stored on `DeliveryCalendar`, which feeds
 the frozen digest. Four invariants hold across the two paths:
 
 - **Pad-free neutrality.** For any water calendar covering the deepest travel
-  time, the declared-unpadded and the legacy-padded bases build a bit-identical
+  time, the declared-unpadded and the padded-thermal bases build a bit-identical
   `TransitBucketTopology` — `column_order`, `per_stage_mask`, stage weights, the
   chronological spreads (`stage_reach` included) and `arc_arrival_density` —
   with and without a loaded boundary: a covering calendar already holds every
   travel-time window, so the pad is never read. This is what makes the declared
   path a format change, not a results change, for a deck whose migrated water
   calendar covers its arcs. `scripts/migrate/post_study_stages.py` writes such a
-  calendar: the legacy one extended with copies of its last stage, the periods the
+  calendar: the thermal one extended with copies of its last stage, the periods the
   pad reads. Pinned by the
   `declared_and_padded_bases_agree_on_covering_water_calendars` property test
   and `declared_and_padded_bases_agree_at_equality_coverage`
@@ -5580,20 +5856,20 @@ the frozen digest. Four invariants hold across the two paths:
   `resolve_state_and_topology` calls `deepest_uncovered_travel_time_arc`
   (core) before building the topology and returns `SddpError::Validation` naming
   the hydro, its travel time and the declared span. Padding the declared
-  calendar, or falling back to the legacy base, is the wrong-but-compiling
+  calendar, or falling back to the padded-thermal base, is the wrong-but-compiling
   alternative: it silently invents water stages the deck did not declare. Pinned
   by `resolve_state_and_topology_refuses_uncovered_declared_water_calendar` and
   `resolve_state_and_topology_accepts_covering_declared_water_calendar`
   (`setup/tests.rs`).
-- **A short legacy calendar is padded, never refused.** The refusal is scoped to
-  the declared path; applying it to a legacy deck rejects decks the deprecated
-  format accepts. Pinned by
-  `resolve_state_and_topology_pads_a_short_legacy_water_calendar`.
+- **A short thermal water calendar is padded, never refused.** The refusal is
+  scoped to the declared path; applying it to the padded-thermal path rejects
+  decks that path accepts. Pinned by
+  `resolve_state_and_topology_pads_a_short_thermal_water_calendar`.
 - **Bucket slots are dated from the water calendar, never from the pad.**
   `build_stage_entity_manifest` dates a `HydroTransitBucket` slot's arrival
   interval over the study stages extended by `DeliveryCalendar::water`: the
   declared `water_bucket_stages` on the declared path, with or without a loaded
-  boundary; the thermal post-study stages on the legacy path, as before. A slot
+  boundary; the thermal post-study stages on the padded-thermal path. A slot
   whose arrival lands past that calendar carries the sentinel. Anticipated ring
   slots stay on `DeliveryCalendar::thermal`. Dating a bucket from the thermal
   calendar on the declared path moves every bucket interval a boundary fan-out
@@ -5705,13 +5981,11 @@ A class-4 delivery — pre-study-decided, post-study-delivered — is
 representable as a DECLARED CONSTANT that NEVER ENTERS THE RING once its
 window tiles exactly: priced by the boundary intercept fold, reported at its
 real delivery date, with no decision column, no ring slot, and no carry row.
-The retired reject that used to fire on any window reaching past the horizon
-is gone, but the scope boundary it protected is NOT: no pre-study decision is
+A window reaching past the horizon is accepted, but no pre-study decision is
 EVER carried through the ring into the post-study — the fixed commitment
 bypasses the ring precisely to keep that boundary. Carrying a class-4
-delivery through the ring instead — the boundary that retired reject used to
-enforce — is the wrong-but-compiling alternative this contract still
-forbids.
+delivery through the ring instead is the wrong-but-compiling alternative this
+contract forbids.
 
 The DECLARATION requirement above is commissioning-FILTERED — a
 `commissioning_inactive` post-study stage needs NO declared window at all (V2
@@ -5810,8 +6084,8 @@ per-plant lead `k_i` (`StateSpace::anticipated_lead_stages`, the
 `LeadTime` arm) both read it. The `LeadStages(l)` arm instead returns `l`
 VERBATIM — the byte-identity anchor `n_none_in_study <= l` by construction
 makes safe (`debug_assert!(ring_depth() <= l)`). Sizing from `occupancy_max`
-alone is the wrong-but-plausible under-sizing alternative this closes — the
-filed ring-depth under-sizing defect: `occupancy_max` SUBTRACTS the seed
+alone is the wrong-but-plausible under-sizing alternative:
+`occupancy_max` SUBTRACTS the seed
 maturing at stage 0, so it under-counts the one moment
 every simultaneous pre-study seed is in flight (stage 0, before the first
 fishing) — the last seeded stage then silently delivers an earlier stage's MW,
@@ -5848,7 +6122,7 @@ The interior transition is the same-slot HOLD identity, not a Markov-1 shift. An
 in-flight, not-yet-due slot's outgoing column is pinned to its OWN incoming column,
 `slot^out − slot^in = 0`, via `DeliveryRing::emit_carry_rows` (`+1` on
 `out_col(slot, lane)`, `−1` on `in_col(slot, lane)` — the SAME slot), routed by
-`fill_anticipated_slot_definition_entries`. This REPLACES the retired Markov-1
+`fill_anticipated_slot_definition_entries`. It is never the Markov-1
 shift `slot_k^out − slot_{k+1}^in = 0` (`emit_shift_rows`, whose `−1` lands on the
 NEXT slot): a commitment does not migrate slots stage-to-stage — it is held at its
 delivery-target residue until it matures. The water travel-time ring keeps
@@ -5888,7 +6162,7 @@ directly through the generic `β·state` projection (Delivery-family right-bound
 pricing above). The surviving masking asymmetry is anticipated-vs-water, stated at
 the shared skeleton's "Masked terminal slot" contrast (an anticipated masked slot
 never held a value), not a per-slot freeze exemption here. Treating any slot as
-freeze-exempt — the retired appended-block rule — is the wrong-but-compiling
+freeze-exempt is the wrong-but-compiling
 alternative: a masked (unreachable) slot left open `(-inf, inf)` with no definition
 row is a free, undefined state column the projection still prices, an
 out-of-nowhere commitment value.
@@ -5903,17 +6177,16 @@ target `r >= t_out` in the slot's residue class (`delta = (slot_idx + k_max −
 t_out mod k_max) mod k_max`, `r = t_out + delta`), mapped to the physical
 delivery stage `m = physical_target(r)` (The ring axis subsection above)
 before dating. Three wrong-but-compiling alternatives: anchoring on the
-entering `current_stage_idx` instead of `t_out` — the RETIRED form this
-section itself described before the re-anchoring — dates the terminal pool's
+entering `current_stage_idx` instead of `t_out` dates the terminal pool's
 own maturing-residue slot onto the terminal stage's own in-study month
 instead of a full `k_max` stages past it, silently zeroing a real post-study
-delivery; `t_out + slot_idx` (the older retired shift-ring form, wrong
+delivery; `t_out + slot_idx` (the shift-ring form, wrong
 whenever `t_out mod k_max != 0`); and dating the raw ring-axis `r` directly
 instead of `physical_target(r)` — it lands on the excised fixed post-horizon
 window's stub stage whenever a plant declares one. A ring slot is live at
 the pool's stage `t` if and only if `for_each_live_commitment_slot` visits
 it: its target lands in the window `{t+1 ..= t+k_max}`, inside the delivery
-calendar, and is ready (`PointResolution::is_ready_at`). The retired
+calendar, and is ready (`PointResolution::is_ready_at`). A
 per-plant lead bound `slot_idx < k_i` is the wrong-but-compiling
 alternative — under residue keying a short-lead plant cycles through every
 residue, so a slot beyond its own lead can still be a live carry or
@@ -6003,8 +6276,8 @@ release-silent LP corruption surfacing as a false `Infeasible` or a silent
 zero-commit (the guarding `debug_assert` is compiled out of release).
 Carry-to-terminal is owned SOLELY by the ring's interior-carry rows
 (`DeliveryRing::emit_carry_rows`, routed by `fill_anticipated_slot_definition_entries`),
-never the maturity arm. The always-fish `+h_b`/`−H` coefficient shape is exactly
-the pre-migration one; only its slot addressing is modular
+never the maturity arm. The always-fish row carries `+h_b`/`−H` coefficients;
+only its slot addressing is modular
 (`ring_index(stage_idx) mod k_max`, identity for an in-study index — The ring
 axis subsection above — via `commitment_hold_in_study_offset`).
 
@@ -6249,7 +6522,7 @@ ring-carry drift at its source; the basis-factorization drift at the deposit row
 is what the seam absorbs, since exactness there is the solver's to give and it
 does not give it.
 
-A *genuine* over-commitment — past the delivery bound by more than solver noise —
+A _genuine_ over-commitment — past the delivery bound by more than solver noise —
 is NOT a runtime verdict and NOT the seam's to catch: it is rejected before the
 study runs, at `novomodelo-io` load time, by `check_committed_value_bounds`
 (`validation/semantic/thermal.rs`), which checks each committed value against the
@@ -6298,9 +6571,17 @@ a post-study target with no boundary; do not conflate them). Hard-rejecting inst
 of warning is the wrong-but-compiling alternative: it turns a legitimate
 no-boundary replay deck into a spurious setup failure. Silence is the opposite
 failure — it hides a modelling error where the user expected the commitment valued
-against a real future.
+against a real future. The same advisory also names a plant whose fixed
+post-horizon windows carry a non-zero value: with no boundary the fold has no
+target, so the value is inert where the user presumably expected it priced. An
+all-zero tiling stays silent: a zero value is provably inert, so a warning on it
+is noise.
 Read: `setup/mod.rs` (`warn_on_boundary_absent_post_study_delivery`,
 `warn_on_sub_stage_lead`). Pinned by
-`warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent` and
-`warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present`
-(`setup/tests.rs`).
+`warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent`,
+`warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present`,
+`warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary`,
+`warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary` and
+`warn_on_boundary_absent_names_dual_cause_plant_once` (`setup/tests.rs`), and
+`no_boundary_nonzero_fixed_value_leaves_solved_cost_untouched`
+(`tests/anticipated_core.rs`).

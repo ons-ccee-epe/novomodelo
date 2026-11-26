@@ -16,7 +16,7 @@
 //!
 //! A hydro unit group bounds row's `block_id` range and duplicate-row keying
 //! are covered by `semantic.5a.35` and `semantic.5a.36`; a row referencing a non-existent
-//! unit group id is still checked by `check_bounds_references` (Layer 3), not
+//! unit group id is checked by `check_bounds_references` (Layer 3), not
 //! here. Hydro unit group turbined-bound sign (`min_turbined_m3s >= 0` and
 //! `max_turbined_m3s >= 0`, the retired `semantic.5a.42`) is validated at the PARSE
 //! layer (`system/hydros.rs`'s `validate_unit_groups`, `LoadError::SchemaError`),
@@ -65,6 +65,7 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     hydro::check_evaporation_geometry_coverage(data, ctx);
     hydro::check_fpha_geometry_coverage(data, ctx);
     hydro::check_fpha_constraints(data, ctx);
+    hydro::check_tailrace_flow_effect(data, ctx);
     hydro::check_hydro_unit_groups(data, ctx);
     thermal::check_thermal_generation_bounds(data, ctx);
     thermal::check_anticipated_thermals(data, ctx);

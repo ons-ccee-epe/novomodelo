@@ -139,6 +139,7 @@ impl StudySetup {
                 resume_lower_bound_history: self.loop_params.resume_lower_bound_history.clone(),
                 n_fwd_threads: n_threads,
                 stopping_rules: self.loop_params.stopping_rules.clone(),
+                storage_grid: self.loop_params.storage_grid.clone(),
             },
             cut_management: CutManagementConfig {
                 cut_selection: self.inputs.cut_management.cut_selection.clone(),
@@ -235,6 +236,7 @@ impl StudySetup {
             contract_prices_per_stage: &self.inputs.stage_data.contract_prices_per_stage,
             contract_slots: &self.inputs.stage_data.contract_slots,
             diversion_upstream: &self.inputs.stage_data.stage_templates.diversion_upstream,
+            tailrace: &self.simulation_tailrace,
             hydro_productivities_per_stage: &self
                 .inputs
                 .stage_data

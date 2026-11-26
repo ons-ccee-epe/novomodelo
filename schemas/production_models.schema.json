@@ -69,28 +69,12 @@
           ],
           "description": "Optional volume fitting window for hyperplane computation. Absent or\nnull = the plant's storage range, `min_storage_hm3` to\n`max_storage_hm3`. `system/hydro_geometry.parquet` must cover that\nrange whether or not a window is set."
         },
-        "max_planes_per_hydro": {
-          "description": "Maximum number of planes per hydro after heuristic selection. Absent =\nalgorithm default (10).",
-          "format": "int32",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "source": {
           "description": "Hyperplane source: `\"computed\"` (fit from topology) or\n`\"precomputed\"` (from `fpha_hyperplanes.parquet`).",
           "type": "string"
         },
-        "spillage_discretization_points": {
-          "description": "Number of spillage discretization points used when computing\nhyperplanes. Absent = algorithm default (5).",
-          "format": "int32",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "spillage_fit_max_m3s": {
-          "description": "Upper end of the spillage range (m³/s) the spillage coefficient is fit\nover. Absent = twice the hydro's long-term mean inflow, or twice its\nmaximum turbined flow when it has no inflow history.",
+          "description": "Upper end (m³/s) of the tailrace lateral-flow range the `gamma_s`\ncoefficient is fitted over (the spill alone when the hydro declares no\n`tailrace_flow` in `system/hydros.json`); lateral flows above it\nextrapolate the plane linearly. Absent = twice the hydro's long-term mean\ninflow, or twice its maximum turbined flow when it has no inflow history.",
           "format": "double",
           "type": [
             "number",

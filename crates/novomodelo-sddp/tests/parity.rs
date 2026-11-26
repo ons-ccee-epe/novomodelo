@@ -779,6 +779,7 @@ mod determinism {
             StageStateConfig,
         },
     };
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_sddp::{
         LoadedPolicy, Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
         TrainingConfig,
@@ -795,7 +796,7 @@ mod determinism {
         risk_measure::RiskMeasure,
         setup::node_graph::Traversal,
         simulate,
-        simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec},
+        simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec, SimulationTailrace},
         test_support::{GeometryDims, StageContextFixture, geometry, permissive_state_boxes},
         train,
         workspace::{SolverWorkspace, WorkspaceSizing},
@@ -1260,6 +1261,7 @@ mod determinism {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(n_iterations),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -1301,6 +1303,7 @@ mod determinism {
                         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
                         study_dims: &study_dims(),
                         inflow_method: &InflowNonNegativityMethod::None,
+                        inflow_residual: InflowResidualDistribution::Normal,
                         stochastic: &fx.stochastic,
                         initial_state: &fx.initial_state,
                         inflow_scheme: SamplingScheme::InSample,
@@ -1375,6 +1378,7 @@ mod determinism {
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &fx.stochastic,
             initial_state: &fx.initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1438,6 +1442,7 @@ mod determinism {
                         contract_prices_per_stage: &vec![Vec::new(); fx.n_stages],
                         contract_slots: &[],
                         diversion_upstream: &HashMap::new(),
+                        tailrace: &SimulationTailrace::default(),
                         hydro_productivities_per_stage: &vec![vec![1.0, 1.0, 1.0]; fx.n_stages],
                         energy_conversion: &ec,
                         hydro_min_storage_hm3: &[0.0; 3],
@@ -1907,11 +1912,8 @@ mod water_travel_time_no_arc_byte_identity {
     use novomodelo_core::scenario::{InflowModel, LoadModel};
     use novomodelo_core::temporal::{BlockMode, Stage};
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
-        EntityId, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
-        HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
-        PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
+        DeficitSegment, EntityId, HydroGenerationModel, HydroPenalties, HydroStorage,
+        InitialConditions, SystemBuilder,
     };
     use novomodelo_sddp::{
         StudySetup,
@@ -2027,70 +2029,6 @@ mod water_travel_time_no_arc_byte_identity {
             })
             .collect();
 
-        let default_hydro_bounds = || HydroStageBounds {
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 500.0,
-            filling_min_rate_m3s: 0.0,
-            water_withdrawal_m3s: 0.0,
-        };
-        let default_hydro_bounds_block = || HydroBlockBounds {
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 250.0,
-            ..Default::default()
-        };
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STAGES,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_bounds_block(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 400.0,
-                    cost_per_mwh: 100.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: zero_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: EntityId(HYDRO_ID),
@@ -2102,38 +2040,40 @@ mod water_travel_time_no_arc_byte_identity {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![make_thermal(
-                EntityId(3),
-                ThermalSpec {
-                    name: "T_backup".to_string(),
-                    operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                    bus_id: EntityId(2),
-                    cost_per_mwh: 100.0,
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 400.0,
-                    anticipated_config: None,
-                    ..Default::default()
-                },
-            )])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system: valid no-arc single-block study")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![make_thermal(
+                        EntityId(3),
+                        ThermalSpec {
+                            name: "T_backup".to_string(),
+                            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+                            bus_id: EntityId(2),
+                            cost_per_mwh: 100.0,
+                            min_generation_mw: 0.0,
+                            max_generation_mw: 400.0,
+                            anticipated_config: None,
+                            ..Default::default()
+                        },
+                    )])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            0,
+            |_, _, _| {},
+        )
     }
 
     fn build_config() -> novomodelo_io::Config {
         use novomodelo_io::config::{
             Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-            InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-            RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-            TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+            InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+            PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+            StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
         };
 
         Config {
@@ -2142,6 +2082,7 @@ mod water_travel_time_no_arc_byte_identity {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -2154,7 +2095,7 @@ mod water_travel_time_no_arc_byte_identity {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -2337,14 +2278,14 @@ mod water_travel_time_gate_byte_neutrality {
     //! The second is the arrival-calendar gate: the topology sizing derived
     //! from a declared post-study calendar only diverges from the synthetic
     //! pad when the declared calendar changes the transit depth. This deck
-    //! declares its water calendar, and its legacy-input overlay does not, so
+    //! declares its water calendar, and its unmigrated-input overlay does not, so
     //! the gate is pinned by building both and comparing the state topology
     //! and the bucket masks.
 
     use std::path::Path;
 
     use novomodelo_io::config::BoundaryPolicy;
-    use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
+    use novomodelo_sddp::test_support::unmigrated_inputs::{materialize, overlay_dir};
     use novomodelo_solver::ActiveSolver;
     use tempfile::TempDir;
 
@@ -2671,13 +2612,11 @@ mod moment_matched_opening_tree {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use novomodelo_io::config::CorrelationTarget;
     use novomodelo_io::output::write_noise_openings;
     use novomodelo_io::scenarios::CorrelationOrigin;
     use novomodelo_sddp::{PrepareStochasticResult, prepare_stochastic};
     use novomodelo_stochastic::context::OpeningTree;
     use novomodelo_stochastic::provenance::ComponentProvenance;
-    use novomodelo_stochastic::tree::MomentMatching;
     use novomodelo_stochastic::{DecomposedCorrelation, EntityClass};
     use serde_json::{Value, json};
     use tempfile::TempDir;
@@ -2738,10 +2677,7 @@ mod moment_matched_opening_tree {
         });
     }
 
-    fn three_opening_d12(
-        correlation_target: &str,
-        moment_matching: &str,
-    ) -> (TempDir, PrepareStochasticResult) {
+    fn three_opening_d12() -> (TempDir, PrepareStochasticResult) {
         let case = example_copy("deterministic/d12-par-annual");
         edit_json(&case.path().join("stages.json"), |stages| {
             for stage in stages["stages"]
@@ -2751,16 +2687,8 @@ mod moment_matched_opening_tree {
                 stage["num_openings"] = json!(3);
             }
         });
-        edit_json(&case.path().join("config.json"), |config| {
-            config["estimation"]["correlation_target"] = json!(correlation_target);
-            config["training"]["scenario_source"]["openings"] = generated(moment_matching);
-        });
         let prepared = prepare_case(case.path());
         (case, prepared)
-    }
-
-    fn generated(moment_matching: &str) -> Value {
-        json!({"source": "generated", "moment_matching": moment_matching})
     }
 
     fn tree_bits(tree: &OpeningTree) -> Vec<u64> {
@@ -2788,7 +2716,6 @@ mod moment_matched_opening_tree {
     #[test]
     fn a_matched_tree_read_back_from_file_reproduces_the_generated_tree() {
         let case = example_copy("1dtoy");
-        set_openings(case.path(), &generated("per_coordinate"));
         let matched = prepare_case(case.path());
         let study_stage_ids: Vec<i32> = matched
             .system
@@ -2822,12 +2749,14 @@ mod moment_matched_opening_tree {
             "a matched tree read from file must be used as written, never matched again"
         );
 
-        set_openings(case.path(), &generated("none"));
-        let drawn = prepare_case(case.path());
-        assert_ne!(
-            tree_bits(matched_tree),
-            tree_bits(drawn.stochastic.opening_tree()),
-            "per_coordinate must change the 1dtoy tree, or the read-back comparison has no power"
+        let stage_0_mean = (0..matched_tree.n_openings(0))
+            .map(|k| matched_tree.opening(0, k)[0])
+            .sum::<f64>()
+            / matched_tree.n_openings(0) as f64;
+        assert!(
+            stage_0_mean.abs() <= 1e-13,
+            "the generated 1dtoy tree must be moment matched, or the read-back comparison has no power; \
+             stage 0 mean {stage_0_mean}"
         );
     }
 
@@ -2839,7 +2768,6 @@ mod moment_matched_opening_tree {
             ASYMMETRIC_INFLOW_CORRELATION,
         )
         .expect("correlation.json must be writable");
-        set_openings(base.path(), &generated("per_coordinate"));
 
         let base_order = hydro_ids(base.path());
         let permuted = (0..=16_u64)
@@ -2874,25 +2802,13 @@ mod moment_matched_opening_tree {
             tree_bits(matched.stochastic.opening_tree()),
             "the matched tree must not depend on entity declaration order"
         );
-
-        set_openings(base.path(), &generated("none"));
-        let drawn = prepare_case(base.path());
-        assert_ne!(
-            tree_bits(matched.stochastic.opening_tree()),
-            tree_bits(drawn.stochastic.opening_tree()),
-            "per_coordinate must change the 4ree tree, or the order comparison has no power"
-        );
     }
 
     #[test]
-    fn inflows_target_and_per_coordinate_matching_compose_through_prepare_stochastic() {
-        let (_inflows_matched_case, inflows_matched) =
-            three_opening_d12("inflows", "per_coordinate");
-        let (_residuals_matched_case, residuals_matched) =
-            three_opening_d12("residuals", "per_coordinate");
-        let (_inflows_drawn_case, inflows_drawn) = three_opening_d12("inflows", "none");
+    fn estimated_correlation_and_moment_matching_compose_through_prepare_stochastic() {
+        let (_case, prepared) = three_opening_d12();
 
-        let context = &inflows_matched.stochastic;
+        let context = &prepared.stochastic;
         let tree = context.opening_tree();
         let openings_per_stage = tree.openings_per_stage_slice();
         assert!(
@@ -2901,19 +2817,10 @@ mod moment_matched_opening_tree {
         );
         assert_eq!(context.n_hydros(), 2, "d12 must carry two hydros");
 
-        assert_eq!(
-            inflows_matched.correlation_origin,
-            CorrelationOrigin::Estimated {
-                target: CorrelationTarget::Inflows
-            }
-        );
-        assert_eq!(
-            context.provenance().opening_tree_moment_matching,
-            Some(MomentMatching::PerCoordinate)
-        );
+        assert_eq!(prepared.correlation_origin, CorrelationOrigin::Estimated);
 
         let mut variances = vec![0.0; context.n_hydros()];
-        let study_stage_ids = inflows_matched
+        let study_stage_ids = prepared
             .system
             .stages()
             .iter()
@@ -2952,24 +2859,6 @@ mod moment_matched_opening_tree {
                 );
             }
         }
-
-        let profiles = |leg: &PrepareStochasticResult| -> Vec<String> {
-            leg.system.correlation().profiles.keys().cloned().collect()
-        };
-        assert_ne!(
-            tree_bits(tree),
-            tree_bits(residuals_matched.stochastic.opening_tree()),
-            "the correlation target must change the matched tree; inflows profiles {:?}, residuals profiles {:?}",
-            profiles(&inflows_matched),
-            profiles(&residuals_matched)
-        );
-        assert_ne!(
-            tree_bits(tree),
-            tree_bits(inflows_drawn.stochastic.opening_tree()),
-            "per_coordinate must change the inflows tree; matched profiles {:?}, drawn profiles {:?}",
-            profiles(&inflows_matched),
-            profiles(&inflows_drawn)
-        );
     }
 }
 

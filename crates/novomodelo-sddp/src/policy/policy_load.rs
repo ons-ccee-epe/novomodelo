@@ -59,79 +59,30 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-/// The constant every unmarked policy checkpoint (no `cost_scale_factor`
-/// provenance) was unconditionally scaled at. A pool or checkpoint whose
-/// `cost_scale_factor` reads `None` is interpreted under this constant.
+/// Convert one pool's cut records from the scale they were written in
+/// (`source_cost_scale_factor`) into the LOADING study's scaled cost space.
 ///
-/// Reserved seam: this repo's own front ends never reach the `None`/Legacy
-/// branch — both the boundary path ([`load_boundary_cuts`]) and the [`FullFcf`]
-/// path ([`check_full_fcf_load`](crate::policy::full_fcf_load::check_full_fcf_load)) reject a pool
-/// without a factor through [`pool_cost_scale_factor`] before converting, so
-/// [`rescale_cut_records_for_load`]'s Legacy branch is reachable only by a
-/// direct library caller.
-pub const LEGACY_COST_SCALE_FACTOR: f64 = 1_000_000.0;
-
-/// Convert one pool's cut records from the scale they were written in into the
-/// LOADING study's scaled cost space.
-///
-/// - **Marked** (`source_cost_scale_factor: Some(s)`): the records hold the
-///   writing study's scaled values, at scale `s`. When `s` is bit-equal to
-///   `loading_cost_scale_factor` they are already in the loading study's units
-///   and are returned unchanged, so a same-factor reload is exact. Otherwise
-///   every value becomes `(value * s) / loading_cost_scale_factor`, evaluated
-///   left to right: `value * (s / loading)` is the wrong-but-compiling
-///   alternative, which rounds the ratio first and moves the bits of a load
-///   whose source is marked `1.0`.
-/// - **Legacy** (`None`): the records hold the writing study's internal scaled
-///   values under [`LEGACY_COST_SCALE_FACTOR`]. When `loading_cost_scale_factor
-///   == LEGACY_COST_SCALE_FACTOR` this is an exact, bit-identical no-op;
-///   otherwise every value is multiplied by
-///   `LEGACY_COST_SCALE_FACTOR / loading_cost_scale_factor`.
+/// The records hold the writing study's scaled values. When the source factor
+/// is bit-equal to `loading_cost_scale_factor` they are already in the loading
+/// study's units and are returned unchanged, so a same-factor reload is exact.
+/// Otherwise every value becomes `(value * s) / loading_cost_scale_factor`,
+/// evaluated left to right: `value * (s / loading)` is the wrong-but-compiling
+/// alternative, which rounds the ratio first and moves the bits of a load whose
+/// source is `1.0`.
 pub(crate) fn rescale_cut_records_for_load(
     records: &mut [OwnedPolicyCutRecord],
-    source_cost_scale_factor: Option<f64>,
+    source_cost_scale_factor: f64,
     loading_cost_scale_factor: f64,
 ) {
-    if let Some(source) = source_cost_scale_factor {
-        // `to_bits`, not `==`: `0.0 == -0.0` and `NaN != NaN`.
-        if source.to_bits() == loading_cost_scale_factor.to_bits() {
-            return;
-        }
-        for cut in records {
-            cut.intercept = (cut.intercept * source) / loading_cost_scale_factor;
-            for c in &mut cut.coefficients {
-                *c = (*c * source) / loading_cost_scale_factor;
-            }
-        }
+    // `to_bits`, not `==`: `0.0 == -0.0` and `NaN != NaN`.
+    if source_cost_scale_factor.to_bits() == loading_cost_scale_factor.to_bits() {
         return;
     }
-
-    if loading_cost_scale_factor == LEGACY_COST_SCALE_FACTOR {
-        return;
-    }
-    let ratio = LEGACY_COST_SCALE_FACTOR / loading_cost_scale_factor;
     for cut in records {
-        cut.intercept *= ratio;
+        cut.intercept = (cut.intercept * source_cost_scale_factor) / loading_cost_scale_factor;
         for c in &mut cut.coefficients {
-            *c *= ratio;
+            *c = (*c * source_cost_scale_factor) / loading_cost_scale_factor;
         }
-    }
-}
-
-/// [`rescale_cut_records_for_load`] applied to every pool of a checkpoint with
-/// one given source factor — the entry for a direct library caller; the load
-/// paths convert each pool by its own factor ([`pool_cost_scale_factor`]).
-pub fn rescale_checkpoint_cuts_for_load(
-    stage_cuts: &mut [StageCutsReadResult],
-    source_cost_scale_factor: Option<f64>,
-    loading_cost_scale_factor: f64,
-) {
-    for stage in stage_cuts {
-        rescale_cut_records_for_load(
-            &mut stage.cuts,
-            source_cost_scale_factor,
-            loading_cost_scale_factor,
-        );
     }
 }
 
@@ -173,7 +124,7 @@ pub(crate) fn convert_checkpoint_cuts_for_load(
 ) -> Result<(), SddpError> {
     for pool in stage_cuts {
         let source = pool_cost_scale_factor(pool)?;
-        rescale_cut_records_for_load(&mut pool.cuts, Some(source), loading_cost_scale_factor);
+        rescale_cut_records_for_load(&mut pool.cuts, source, loading_cost_scale_factor);
     }
     Ok(())
 }
@@ -624,9 +575,9 @@ fn build_basis_cache_for_nodes(
     let mut count = 0;
     let mut first: Option<((usize, u32), StoredBasisMisfit)> = None;
     for record in stage_bases {
-        // Wire boundary: the checkpoint's `stage_id` field is a legacy name for
-        // what the node-native engine writes/reads as a node position — convert
-        // to `NodePos` immediately, never carry the raw wire int past this line.
+        // Wire boundary: the checkpoint's `stage_id` field holds a node
+        // position — convert to `NodePos` immediately, never carry the raw wire
+        // int past this line.
         let node = NodePos(record.stage_id as usize);
         if node.0 >= n_nodes {
             continue;
@@ -1206,9 +1157,9 @@ fn check_topology_subset(
 /// [`StudySetup::build_terminal_fixed_post_horizon_windows`](crate::StudySetup::build_terminal_fixed_post_horizon_windows)).
 /// [`crate::policy::reconcile::build_boundary_fold`] folds their displacement
 /// value into each boundary cut's intercept on the RAW records, BEFORE
-/// `rescale_cut_records_for_load`, so the folded term rides both rescale
-/// transforms with the rest of the intercept; an empty fold leaves every
-/// intercept bit-identical.
+/// `rescale_cut_records_for_load`, so the folded term rides the rescale with
+/// the rest of the intercept; an empty fold leaves every intercept
+/// bit-identical.
 ///
 /// A superset boundary — a source pricing state this study does not model —
 /// is recorded in the returned report either way; `strict` changes only
@@ -1403,7 +1354,7 @@ pub fn load_boundary_cuts(
 
     rescale_cut_records_for_load(
         &mut records,
-        Some(source_cost_scale_factor),
+        source_cost_scale_factor,
         loading_cost_scale_factor,
     );
 
@@ -2046,7 +1997,7 @@ mod tests {
 
     // ── rescale_cut_records_for_load unit tests ──────────────────────────────
 
-    use super::{LEGACY_COST_SCALE_FACTOR, rescale_cut_records_for_load};
+    use super::rescale_cut_records_for_load;
     use novomodelo_io::OwnedPolicyCutRecord;
 
     fn owned_cut(intercept: f64, coefficients: Vec<f64>) -> OwnedPolicyCutRecord {
@@ -2060,51 +2011,7 @@ mod tests {
         }
     }
 
-    /// A legacy checkpoint (`source_cost_scale_factor: None`) loaded at the
-    /// still-default [`LEGACY_COST_SCALE_FACTOR`] is a bit-exact no-op — the
-    /// requirement that a legacy policy at the default factor never
-    /// re-baselines.
-    #[test]
-    fn legacy_no_marker_at_default_factor_is_bit_exact_noop() {
-        let mut records = vec![owned_cut(42.5, vec![1.0, -2.5, 3.75])];
-        let original = records.clone();
-
-        rescale_cut_records_for_load(&mut records, None, LEGACY_COST_SCALE_FACTOR);
-
-        assert_eq!(
-            records[0].intercept.to_bits(),
-            original[0].intercept.to_bits()
-        );
-        for (a, b) in records[0]
-            .coefficients
-            .iter()
-            .zip(&original[0].coefficients)
-        {
-            assert_eq!(
-                a.to_bits(),
-                b.to_bits(),
-                "legacy default-factor load must be bit-exact"
-            );
-        }
-    }
-
-    /// A legacy checkpoint loaded at a NON-default factor is interpreted as
-    /// scaled-at-[`LEGACY_COST_SCALE_FACTOR`] and rescaled by
-    /// `LEGACY_COST_SCALE_FACTOR / loading_cost_scale_factor`.
-    #[test]
-    fn legacy_no_marker_at_non_default_factor_rescales_by_ratio() {
-        let mut records = vec![owned_cut(10.0, vec![2.0, 4.0])];
-        let loading_factor = 2_000_000.0;
-
-        rescale_cut_records_for_load(&mut records, None, loading_factor);
-
-        let ratio = LEGACY_COST_SCALE_FACTOR / loading_factor;
-        assert!((records[0].intercept - 10.0 * ratio).abs() < 1e-9);
-        assert!((records[0].coefficients[0] - 2.0 * ratio).abs() < 1e-9);
-        assert!((records[0].coefficients[1] - 4.0 * ratio).abs() < 1e-9);
-    }
-
-    /// A marked checkpoint converts by its own factor: written at the loading
+    /// A checkpoint converts by its own factor: written at the loading
     /// factor it loads its written bits; written at another factor its values
     /// become `value * source / loading`, so the two loads differ.
     #[test]
@@ -2114,12 +2021,8 @@ mod tests {
         let mut at_the_loading_factor = vec![written.clone()];
         let mut at_another_factor = vec![written.clone()];
 
-        rescale_cut_records_for_load(
-            &mut at_the_loading_factor,
-            Some(loading_factor),
-            loading_factor,
-        );
-        rescale_cut_records_for_load(&mut at_another_factor, Some(42.0), loading_factor);
+        rescale_cut_records_for_load(&mut at_the_loading_factor, loading_factor, loading_factor);
+        rescale_cut_records_for_load(&mut at_another_factor, 42.0, loading_factor);
 
         assert_eq!(
             bits_of(&at_the_loading_factor[0]),
@@ -2151,7 +2054,7 @@ mod tests {
                 "fixture: the two evaluation orders must differ at ({source}, {loading})"
             );
             let mut records = vec![owned_cut(values[0], values[1..].to_vec())];
-            rescale_cut_records_for_load(&mut records, Some(source), loading);
+            rescale_cut_records_for_load(&mut records, source, loading);
 
             let expected: Vec<u64> = values
                 .iter()
@@ -2196,11 +2099,7 @@ mod tests {
                 last_active_iteration: r.last_active_iteration,
             })
             .collect();
-        rescale_cut_records_for_load(
-            &mut round_tripped,
-            Some(cost_scale_factor),
-            cost_scale_factor,
-        );
+        rescale_cut_records_for_load(&mut round_tripped, cost_scale_factor, cost_scale_factor);
 
         let mut expected = vec![intercept.to_bits()];
         expected.extend(coefficients.iter().map(|c| c.to_bits()));
@@ -2217,7 +2116,7 @@ mod tests {
         let intercept = 9.0_f64;
 
         let mut loaded = vec![owned_cut(intercept, original.clone())];
-        rescale_cut_records_for_load(&mut loaded, Some(s_train), s_prime);
+        rescale_cut_records_for_load(&mut loaded, s_train, s_prime);
 
         let ratio = s_train / s_prime;
         assert!((loaded[0].intercept - intercept * ratio).abs() < 1e-12);
@@ -2630,9 +2529,9 @@ mod tests {
     /// length, so a truncated descriptor can never pass the positional
     /// comparison by silently comparing fewer seasons. Called directly with
     /// a hand-built [`SeasonManifest`], not through [`load_boundary_cuts`]'s
-    /// checkpoint round trip: `novomodelo_io`'s decode-time shape validation now
+    /// checkpoint round trip: `novomodelo_io`'s decode-time shape validation
     /// rejects a truncated `orders` vector before this gate ever runs, so a
-    /// wire-sourced manifest can no longer reach this branch — this test
+    /// wire-sourced manifest never reaches this branch — this test
     /// pins the gate's own defense for a manifest constructed directly.
     #[test]
     fn check_season_compatibility_rejects_truncated_source_par_orders_for_a_hydro() {
@@ -3874,7 +3773,7 @@ mod tests {
     /// The same differing `state_dimension` (14 vs 17) still hard-rejects under
     /// `FullFcf`: `CHECK_STATE_DIMENSION` stays `true` there.
     #[test]
-    fn validate_policy_load_full_fcf_still_rejects_differing_state_dimension() {
+    fn validate_policy_load_full_fcf_rejects_differing_state_dimension() {
         let slots = storage_manifest(1, 2);
         let source = psm(14, 12, &slots);
         let current = psm(17, 12, &slots);
@@ -3968,10 +3867,10 @@ mod tests {
         );
     }
 
-    /// `validate_policy_load` itself no longer checks per-slot identity under
+    /// `validate_policy_load` itself does not check per-slot identity under
     /// `BoundaryInjection` (unlike `FullFcf`): a same-`state_dimension`
-    /// identity mismatch it would have hard-rejected now passes here, because
-    /// slot identity is reconciled separately, by `reconcile::build_rebind`,
+    /// identity mismatch passes here, because slot identity is reconciled
+    /// separately, by `reconcile::build_rebind`,
     /// in `load_boundary_cuts` — confined to that load path, not this
     /// lower-level manifest check.
     #[test]
@@ -3994,17 +3893,17 @@ mod tests {
     }
 
     /// The ring-format checkpoint consequence, pinned as a pair. A lane-era
-    /// checkpoint's state vector carried a retired trailing-lane block on top
-    /// of the anticipated ring, so its `state_dimension` is WIDER (ring
-    /// `A·k_max` plus the lane's `W`) than a current-version layout. Loaded as
-    /// `FullFcf` (resume/warm-start) it rejects at the unconditional
-    /// `state_dimension` gate — the intended clean break. The SAME slot layout
+    /// checkpoint's state vector carries a trailing-lane block on top of the
+    /// anticipated ring, so its `state_dimension` is WIDER (ring `A·k_max`
+    /// plus the lane's `W`) than the current layout. Loaded as `FullFcf`
+    /// (resume/warm-start) it rejects at the unconditional `state_dimension`
+    /// gate, by design. The SAME slot layout
     /// boundary-injected at equal width but with its slots repositioned (a
-    /// positional match would fail: the storage and ring slots no longer line
+    /// positional match would fail: the storage and ring slots do not line
     /// up) reconciles by identity (storage) and by date (each ring slot fans
     /// onto the current ring by calendar overlap of its own carried interval,
     /// which reaches past the boundary date) and loads, so boundary injection
-    /// across the version boundary is unaffected.
+    /// of a lane-era checkpoint is unaffected.
     #[test]
     fn lane_era_wider_checkpoint_rejects_full_fcf_but_boundary_injection_reconciles() {
         let first_month = encode_slot_date(fixture_priced_date(0));
@@ -4133,9 +4032,9 @@ mod tests {
 
     /// Every one of the seven `BasisStatus` variants survives the full
     /// export→disk→load path losslessly — including the CLP-only `Superbasic`
-    /// and `Fixed`, which the old `to_highs_code` path folded onto `Nonbasic`/
-    /// `Lower`. Encode via `convert_basis_store`, round-trip through the codec,
-    /// decode via `build_basis_cache_for_nodes`.
+    /// and `Fixed`, which `to_highs_code` folds onto `Nonbasic`/`Lower`. Encode
+    /// via `convert_basis_store`, round-trip through the codec, decode via
+    /// `build_basis_cache_for_nodes`.
     #[test]
     fn basis_status_round_trips_through_export_and_load_for_every_variant() {
         use novomodelo_io::{
@@ -4215,11 +4114,10 @@ mod tests {
         );
     }
 
-    /// Pre-existing-file compatibility: a checkpoint written by the pre-canonical
-    /// writer stored `HiGHS` codes (bytes `0..=4`) directly in `column_status`/
-    /// `row_status`. Those same bytes must load to exactly the statuses the old
-    /// `HiGHS`-space decode produced, since `0..=4` means the same in the canonical
-    /// and `HiGHS` code spaces.
+    /// Older-file compatibility: a checkpoint holding `HiGHS` codes (bytes
+    /// `0..=4`) in `column_status`/`row_status` loads to exactly the statuses
+    /// `from_highs_code` decodes them to, since `0..=4` means the same in the
+    /// canonical and `HiGHS` code spaces.
     #[test]
     fn pre_existing_checkpoint_bytes_load_to_highs_space_statuses() {
         use novomodelo_io::{
@@ -4229,7 +4127,7 @@ mod tests {
 
         use super::build_basis_cache_for_nodes;
 
-        // HiGHS codes 0..=4, exactly what the pre-canonical writer stored on disk;
+        // HiGHS codes 0..=4, as an older checkpoint stores them on disk;
         // three trailing Basic columns bring the basic count (4 + 1) to the 5 rows.
         let col_bytes: [u8; 8] = [0, 1, 2, 3, 4, 1, 1, 1];
         let row_bytes: [u8; 5] = [4, 3, 2, 1, 0];
@@ -4269,11 +4167,11 @@ mod tests {
             .collect();
         assert_eq!(
             recovered.basis.col_status, expected_col,
-            "old-file bytes must load to the old HiGHS-space column statuses"
+            "HiGHS-coded bytes must load to their HiGHS-space column statuses"
         );
         assert_eq!(
             recovered.basis.row_status, expected_row,
-            "old-file bytes must load to the old HiGHS-space row statuses"
+            "HiGHS-coded bytes must load to their HiGHS-space row statuses"
         );
     }
 
@@ -4412,8 +4310,8 @@ mod tests {
     }
 
     /// Chain degeneracy: `node_pools` is the identity (`node_pools[t] == t`), so
-    /// node-keyed sizing and pool-keyed slot translation reduce exactly to the
-    /// pre-branching per-stage behavior — one basis per stage, keyed by ordinal.
+    /// node-keyed sizing and pool-keyed slot translation reduce exactly to
+    /// per-stage keying — one basis per stage, keyed by ordinal.
     #[test]
     fn build_basis_cache_from_checkpoint_chain_is_identity_keyed() {
         use super::build_basis_cache_for_nodes;
@@ -5001,7 +4899,7 @@ mod tests {
         .collect();
         let converted = |records: &[OwnedPolicyCutRecord], written_at: f64, loaded_at: f64| {
             let mut records = records.to_vec();
-            rescale_cut_records_for_load(&mut records, Some(written_at), loaded_at);
+            rescale_cut_records_for_load(&mut records, written_at, loaded_at);
             records
         };
         let resume_with = |written_at: f64| {

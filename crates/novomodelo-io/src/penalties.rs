@@ -376,7 +376,7 @@ mod tests {
       }
     }"#;
 
-    // ── AC: parse valid penalties — all fields match ───────────────────────────
+    // ── parse valid penalties — all fields match ───────────────────────────────
 
     /// Given a valid `penalties.json` with 2 deficit segments and all penalty
     /// fields, `parse_penalties` returns `Ok(defaults)` with correct field mapping.
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(defaults, expected);
     }
 
-    // ── AC: negative penalty values → SchemaError ─────────────────────────────
+    // ── negative penalty values → SchemaError ─────────────────────────────────
 
     /// Given a `penalties.json` with a negative penalty value, `parse_penalties`
     /// returns `Err(LoadError::SchemaError)` with the offending field name.
@@ -554,7 +554,7 @@ mod tests {
         }
     }
 
-    // ── AC: last deficit segment not uncapped → SchemaError ───────────────────
+    // ── last deficit segment not uncapped → SchemaError ───────────────────────
 
     /// Given a `penalties.json` where the last deficit segment has
     /// `depth_mw: 200.0` (not null), `parse_penalties` returns
@@ -614,7 +614,7 @@ mod tests {
         );
     }
 
-    // ── AC: non-monotonic deficit costs → SchemaError ─────────────────────────
+    // ── non-monotonic deficit costs → SchemaError ─────────────────────────────
 
     /// Given a `penalties.json` with non-monotonically increasing deficit segment
     /// costs, `parse_penalties` returns `Err(LoadError::SchemaError)`.
@@ -662,7 +662,7 @@ mod tests {
         }
     }
 
-    // ── AC: missing required field → ParseError ───────────────────────────────
+    // ── missing required field → ParseError ───────────────────────────────────
 
     /// Given a `penalties.json` with a missing required field (`hydro` section
     /// omitted), `parse_penalties` returns `Err(LoadError::ParseError)`.
@@ -729,7 +729,7 @@ mod tests {
         }
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_penalties` returns `Err(LoadError::IoError)`.
     #[test]
@@ -905,7 +905,7 @@ mod tests {
         }
     }
 
-    // ── AC: unknown fields → ParseError ──────────────────────────────────────
+    // ── unknown fields → ParseError ──────────────────────────────────────────
 
     /// An unknown top-level field (e.g. `version`) is rejected by
     /// `deny_unknown_fields`.

@@ -12,21 +12,20 @@
 )]
 
 use novomodelo_core::{
-    EntityId, Hydro, SystemBuilder,
+    Hydro, SystemBuilder,
     scenario::{InflowModel, SamplingScheme},
     temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
 };
-use novomodelo_stochastic::tree::generate::OpeningTreeGenerationInputs;
 use novomodelo_stochastic::{
     ClassDimensions, ClassSchemes, NoisePointSpec, OpeningTreeInputs, build_stochastic_context,
-    generate_opening_tree,
     tree::qmc_sobol::{SobolPrecomputed, scrambled_sobol_point},
 };
 
 mod common;
 use common::{
-    StageSpec, correlated_correlation, default_inflow_model, deficit_bus, identity_correlation,
-    identity_correlation_model, make_stage, norm_cdf, single_block, sized_hydro,
+    InflowModelSpec, StageSpec, correlated_correlation, deficit_bus, drawn_tree,
+    identity_correlation, identity_correlation_model, make_inflow_model, make_stage, norm_cdf,
+    single_block, sized_hydro,
 };
 
 // ---------------------------------------------------------------------------
@@ -83,7 +82,11 @@ fn build_sobol_context(
     let mut inflow_models: Vec<InflowModel> = Vec::new();
     for &hid in &hydro_ids {
         for &sid in &[0_i32, 1, 2] {
-            inflow_models.push(default_inflow_model(hid, sid));
+            inflow_models.push(make_inflow_model(InflowModelSpec {
+                hydro_id: hid,
+                stage_id: sid,
+                ..Default::default()
+            }));
         }
     }
 
@@ -121,22 +124,13 @@ fn sobol_2d_star_discrepancy() {
     let n = 64_usize;
     let stages = vec![make_stage_sobol(0, 0, n)];
     let corr = identity_correlation(&[1, 2]);
-    let entity_order = vec![EntityId(1), EntityId(2)];
 
     let dims = ClassDimensions {
         n_hydros: 2,
         n_load_buses: 0,
         n_ncs: 0,
     };
-    let tree = generate_opening_tree(
-        42,
-        &stages,
-        &corr,
-        &entity_order,
-        dims,
-        &OpeningTreeGenerationInputs::default(),
-    )
-    .expect("generate_opening_tree must succeed");
+    let tree = drawn_tree(42, &stages, &corr, dims);
 
     assert_eq!(tree.n_stages(), 1);
     assert_eq!(tree.n_openings(0), n);
@@ -176,22 +170,13 @@ fn sobol_normal_statistics() {
     let dim = 1_usize;
     let stages = vec![make_stage_sobol(0, 0, n)];
     let corr = identity_correlation(&[1]);
-    let entity_order = vec![EntityId(1)];
 
     let dims = ClassDimensions {
         n_hydros: dim,
         n_load_buses: 0,
         n_ncs: 0,
     };
-    let tree = generate_opening_tree(
-        12345,
-        &stages,
-        &corr,
-        &entity_order,
-        dims,
-        &OpeningTreeGenerationInputs::default(),
-    )
-    .expect("generate_opening_tree must succeed");
+    let tree = drawn_tree(12345, &stages, &corr, dims);
 
     let values: Vec<f64> = (0..n).map(|o| tree.opening(0, o)[0]).collect();
 
@@ -218,22 +203,13 @@ fn sobol_correlation_applied() {
     let rho = 0.8_f64;
     let stages = vec![make_stage_sobol(0, 0, n)];
     let corr = correlated_correlation(&[1, 2], rho);
-    let entity_order = vec![EntityId(1), EntityId(2)];
 
     let dims = ClassDimensions {
         n_hydros: 2,
         n_load_buses: 0,
         n_ncs: 0,
     };
-    let tree = generate_opening_tree(
-        54321,
-        &stages,
-        &corr,
-        &entity_order,
-        dims,
-        &OpeningTreeGenerationInputs::default(),
-    )
-    .expect("generate_opening_tree must succeed");
+    let tree = drawn_tree(54321, &stages, &corr, dims);
 
     let pairs: Vec<(f64, f64)> = (0..n)
         .map(|o| {

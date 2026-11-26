@@ -94,54 +94,37 @@ impl StitchedSeasonMap {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, SeasonMap, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::temporal::{SeasonMap, Stage};
 
     use super::StitchedSeasonMap;
-    use crate::season_cast::{nth_previous_occurrence, season_period_window};
-    use crate::test_support::{
-        MonthlyLabels, monthly_quarterly_season_map, monthly_season_map, sparse_ring_season_map,
-        weekly_season_map,
+    use crate::season_cast::{month_exclusive_end, nth_previous_occurrence, season_period_window};
+    use novomodelo_core::test_support::{
+        MonthlyLabels, StageSpec, date, make_stage, monthly_quarterly_season_map,
+        monthly_season_map, single_block, sparse_ring_season_map, weekly_season_map,
     };
 
-    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap()
-    }
-
     fn study_stage(id: i32, start: NaiveDate, end: NaiveDate, season: Option<usize>) -> Stage {
-        Stage {
-            index: 0,
+        make_stage(StageSpec {
             id,
+            index: Some(0),
             start_date: start,
             end_date: end,
             season_id: season,
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: f64::from(u32::try_from((end - start).num_days()).unwrap()) * 24.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block(
+                "SINGLE",
+                f64::from(u32::try_from((end - start).num_days()).unwrap()) * 24.0,
+            ),
+            ..Default::default()
+        })
     }
 
     fn month_stage(id: i32, year: i32, month: u32, season: Option<usize>) -> Stage {
-        let end = if month == 12 {
-            date(year + 1, 1, 1)
-        } else {
-            date(year, month + 1, 1)
-        };
-        study_stage(id, date(year, month, 1), end, season)
+        study_stage(
+            id,
+            date(year, month, 1),
+            month_exclusive_end(year, month),
+            season,
+        )
     }
 
     fn walk_oracle(season_map: &SeasonMap, anchor: &Stage, k: usize) -> Option<usize> {

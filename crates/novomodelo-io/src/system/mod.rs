@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::test_support::make_global;
 
-    // ── AC: optional file wrapper returns empty vec for None ──────────────────
+    // ── optional file wrapper returns empty vec for None ──────────────────────
 
     #[test]
     fn test_load_lines_none_returns_empty() {

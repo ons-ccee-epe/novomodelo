@@ -11,8 +11,9 @@
 )]
 
 use super::*;
+use crate::test_support::{date, make_bus_with_deficit, penalties_all};
 use novomodelo_core::scenario::{CorrelationModel, InflowModel};
-use novomodelo_core::{EntityId, Hydro, HydroPenalties, SeasonMap, Stage, SystemBuilder};
+use novomodelo_core::{Bus, EntityId, Hydro, SeasonMap, Stage, SystemBuilder};
 use novomodelo_stochastic::PrecomputedPar;
 
 fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
@@ -22,25 +23,19 @@ fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
         .expect("valid system")
 }
 
+fn infinite_deficit_bus(id: i32, cost_per_mwh: f64) -> Bus {
+    let mut bus = make_bus_with_deficit(id, cost_per_mwh);
+    bus.name = "B1".to_string();
+    bus.deficit_segments[0].depth_mw = Some(f64::INFINITY);
+    bus.excess_cost = 0.0;
+    bus
+}
+
 #[test]
 fn test_with_scenario_models_replaces_fields() {
-    use novomodelo_core::{
-        Bus, DeficitSegment,
-        scenario::{CorrelationModel, InflowModel},
-    };
+    let bus = infinite_deficit_bus(1, 1000.0);
 
-    let bus = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-
-    let old_model = InflowModel {
+    let replaced_model = InflowModel {
         hydro_id: EntityId(1),
         stage_id: 0,
         mean_m3s: 10.0,
@@ -51,8 +46,8 @@ fn test_with_scenario_models_replaces_fields() {
     };
     let system = SystemBuilder::new()
         .buses(vec![bus])
-        .inflow_models(vec![old_model.clone(), {
-            let mut m = old_model.clone();
+        .inflow_models(vec![replaced_model.clone(), {
+            let mut m = replaced_model.clone();
             m.stage_id = 1;
             m
         }])
@@ -352,12 +347,10 @@ fn assembled_seasonal_stats_keep_the_first_row_of_each_season() {
     assert_eq!(kept, vec![(-1, 2.0), (0, 5.0)]);
 }
 
-/// Observation dates must fall within `make_two_season_stage` stages (map to seasons 0/1).
-fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years: usize) {
+fn write_inflow_history_parquet(path: &std::path::Path, rows: &[InflowHistoryRow]) {
     use arrow::array::{Date32Array, Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use chrono::NaiveDate;
     use parquet::arrow::ArrowWriter;
     use std::sync::Arc;
 
@@ -366,28 +359,10 @@ fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years
         i32::try_from((d - epoch).num_days()).expect("date in Date32 range")
     };
 
-    let (obs_s0, obs_s1) = simulate_two_season_par2(0.7, 0.15, n_years, 99);
-
-    let mut ids: Vec<i32> = Vec::with_capacity(n_years * 2);
-    let mut start_dates: Vec<i32> = Vec::with_capacity(n_years * 2);
-    let mut end_dates: Vec<i32> = Vec::with_capacity(n_years * 2);
-    let mut values: Vec<f64> = Vec::with_capacity(n_years * 2);
-
-    for y in 0..n_years {
-        let year = (1970 + y) as i32;
-        let start_s0 = NaiveDate::from_ymd_opt(year, 1, 15).unwrap();
-        ids.push(hydro_id);
-        start_dates.push(date_to_days(start_s0));
-        end_dates.push(date_to_days(start_s0.succ_opt().unwrap()));
-        // +300 shifts the ~0-mean series positive; inflows must be physically plausible.
-        values.push(obs_s0[y] + 300.0);
-
-        let start_s1 = NaiveDate::from_ymd_opt(year, 7, 15).unwrap();
-        ids.push(hydro_id);
-        start_dates.push(date_to_days(start_s1));
-        end_dates.push(date_to_days(start_s1.succ_opt().unwrap()));
-        values.push(obs_s1[y] + 300.0);
-    }
+    let ids: Vec<i32> = rows.iter().map(|r| r.hydro_id.0).collect();
+    let start_dates: Vec<i32> = rows.iter().map(|r| date_to_days(r.start_date)).collect();
+    let end_dates: Vec<i32> = rows.iter().map(|r| date_to_days(r.end_date)).collect();
+    let values: Vec<f64> = rows.iter().map(|r| r.value_m3s).collect();
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("hydro_id", DataType::Int32, false),
@@ -413,28 +388,16 @@ fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years
     writer.close().expect("close writer");
 }
 
-/// Precondition for `PartialEstimation` path: user stats loaded, no AR coefficients.
-fn build_system_with_user_stats(n_years: usize) -> System {
-    build_system_with_user_std(n_years, 10.0)
+fn single_day_row(hydro_id: EntityId, start: NaiveDate, value: f64) -> InflowHistoryRow {
+    InflowHistoryRow {
+        hydro_id,
+        start_date: start,
+        end_date: start.succ_opt().unwrap(),
+        value_m3s: value,
+    }
 }
 
-#[allow(clippy::cast_possible_wrap)]
-fn build_system_with_user_std(n_years: usize, std_m3s: f64) -> System {
-    use novomodelo_core::scenario::InflowModel;
-    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-
-    let hydro_id = EntityId(1);
-    let bus = Bus {
-        id: EntityId(10),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
-
+fn two_season_stages(n_years: usize) -> Vec<Stage> {
     let ref_year = 1970_i32;
     let mut stages = Vec::with_capacity(n_years * 2);
     for y in 0..n_years {
@@ -448,6 +411,18 @@ fn build_system_with_user_std(n_years: usize, std_m3s: f64) -> System {
             false,
         ));
     }
+    stages
+}
+
+/// Precondition for `PartialEstimation` path: user stats loaded, no AR coefficients.
+fn build_system_with_user_stats(n_years: usize) -> System {
+    build_system_with_user_std(n_years, 10.0)
+}
+
+fn build_system_with_user_std(n_years: usize, std_m3s: f64) -> System {
+    let hydro_id = EntityId(1);
+    let bus = infinite_deficit_bus(10, 3000.0);
+    let stages = two_season_stages(n_years);
 
     let inflow_models: Vec<InflowModel> = stages
         .iter()
@@ -478,11 +453,7 @@ fn setup_partial_estimation_case(case_dir: &std::path::Path, n_years: usize) {
     let scenarios = case_dir.join("scenarios");
     std::fs::create_dir_all(&scenarios).unwrap();
 
-    write_unit_test_inflow_history(
-        &scenarios.join("inflow_history.parquet"),
-        1, // hydro_id
-        n_years,
-    );
+    write_history_for_hydros(&scenarios.join("inflow_history.parquet"), &[1], n_years);
 
     std::fs::write(scenarios.join("inflow_seasonal_stats.parquet"), b"sentinel")
         .expect("write sentinel");
@@ -545,8 +516,7 @@ fn test_partial_estimation_preserves_user_stats() {
 }
 
 #[test]
-fn correlation_target_reaches_the_estimator() {
-    use crate::config::CorrelationTarget;
+fn estimated_correlation_keeps_every_history_record() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -554,30 +524,21 @@ fn correlation_target_reaches_the_estimator() {
     let case_dir = dir.path();
     setup_partial_estimation_case(case_dir, N_YEARS);
 
-    let correlation_under = |target: CorrelationTarget| {
-        let mut config = default_config();
-        config.estimation.correlation_target = target;
-        let HistoryEstimate {
-            system: updated,
-            path,
-            ..
-        } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
-            .expect("partial estimation must succeed");
-        assert_eq!(path, EstimationPath::PartialEstimation);
-        updated.correlation().clone()
-    };
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(
+        build_system_with_user_stats(N_YEARS),
+        case_dir,
+        &default_config(),
+    )
+    .expect("partial estimation must succeed");
 
+    assert_eq!(path, EstimationPath::PartialEstimation);
     assert!(
-        !correlation_under(CorrelationTarget::Residuals)
-            .profiles
-            .contains_key("season_0"),
-        "season 0 loses its first record to the lag, leaving 29 pairs"
-    );
-    assert!(
-        correlation_under(CorrelationTarget::Inflows)
-            .profiles
-            .contains_key("season_0"),
-        "inflows keep every record, 30 pairs"
+        updated.correlation().profiles.contains_key("season_0"),
+        "season 0 keeps its first record, 30 pairs"
     );
 }
 
@@ -603,8 +564,7 @@ const CORRELATION_JSON: &str = r#"{
 }"#;
 
 #[test]
-fn correlation_target_has_no_effect_when_correlation_json_is_present() {
-    use crate::config::CorrelationTarget;
+fn estimation_keeps_the_correlation_when_correlation_json_is_present() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -617,27 +577,22 @@ fn correlation_target_has_no_effect_when_correlation_json_is_present() {
     )
     .unwrap();
 
-    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
-        let system = build_system_with_user_stats(N_YEARS);
-        let input_correlation = system.correlation().clone();
-        let mut config = default_config();
-        config.estimation.correlation_target = target;
+    let system = build_system_with_user_stats(N_YEARS);
+    let input_correlation = system.correlation().clone();
 
-        let HistoryEstimate {
-            system: updated,
-            path,
-            ..
-        } = estimate_from_history(system, case_dir, &config)
-            .expect("partial estimation must succeed");
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &default_config())
+        .expect("partial estimation must succeed");
 
-        assert_eq!(path, EstimationPath::PartialEstimation);
-        assert_eq!(updated.correlation(), &input_correlation, "{target:?}");
-    }
+    assert_eq!(path, EstimationPath::PartialEstimation);
+    assert_eq!(updated.correlation(), &input_correlation);
 }
 
 #[test]
 fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
-    use crate::config::CorrelationTarget;
     use crate::{FileManifest, InputFile};
     use CorrelationOrigin::{Estimated, NotApplicable, UserFile};
 
@@ -672,15 +627,9 @@ fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
                 NotApplicable,
                 NotApplicable,
                 NotApplicable,
-                Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
-                Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
-                Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
+                Estimated,
+                Estimated,
+                Estimated,
                 NotApplicable,
             ],
         ),
@@ -695,7 +644,7 @@ fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
     for (label, manifest, system, expected) in cases {
         for (path, expected) in paths.into_iter().zip(expected) {
             assert_eq!(
-                resolve_correlation_origin(manifest, path, system, CorrelationTarget::Inflows),
+                resolve_correlation_origin(manifest, path, system),
                 expected,
                 "{label}, {path:?}"
             );
@@ -757,8 +706,7 @@ fn correlation_origin_is_user_file_when_correlation_json_is_present_on_the_deter
 }
 
 #[test]
-fn correlation_origin_is_estimated_with_the_configured_target() {
-    use crate::config::CorrelationTarget;
+fn correlation_origin_is_estimated_without_correlation_json_on_an_estimating_path() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -766,20 +714,19 @@ fn correlation_origin_is_estimated_with_the_configured_target() {
     let case_dir = dir.path();
     setup_partial_estimation_case(case_dir, N_YEARS);
 
-    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
-        let mut config = default_config();
-        config.estimation.correlation_target = target;
+    let HistoryEstimate {
+        path,
+        correlation_origin,
+        ..
+    } = estimate_from_history(
+        build_system_with_user_stats(N_YEARS),
+        case_dir,
+        &default_config(),
+    )
+    .expect("partial estimation must succeed");
 
-        let HistoryEstimate {
-            path,
-            correlation_origin,
-            ..
-        } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
-            .expect("partial estimation must succeed");
-
-        assert_eq!(path, EstimationPath::PartialEstimation);
-        assert_eq!(correlation_origin, CorrelationOrigin::Estimated { target });
-    }
+    assert_eq!(path, EstimationPath::PartialEstimation);
+    assert_eq!(correlation_origin, CorrelationOrigin::Estimated);
 }
 
 #[test]
@@ -896,23 +843,11 @@ fn test_partial_estimation_returns_report() {
 
 /// Partial-year system (seasons 8-11) with `SeasonMap` and user stats (exercises prestudy synthesis).
 fn build_partial_year_system_with_user_stats() -> System {
-    use novomodelo_core::entities::hydro::HydroGenerationModel;
-    use novomodelo_core::scenario::InflowModel;
-    use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, HorizonGraph, PolicyGraphType, SystemBuilder,
-    };
+    use novomodelo_core::{HorizonGraph, PolicyGraphType};
 
     let hydro_id = EntityId(1);
-    let bus = Bus {
-        id: EntityId(10),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let mut bus = infinite_deficit_bus(10, 3000.0);
+    bus.operational_start_date = date(2000, 1, 1);
 
     let stages = partial_year_stages(8, 4, 2000);
 
@@ -929,52 +864,14 @@ fn build_partial_year_system_with_user_stats() -> System {
         })
         .collect();
 
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: hydro_id,
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 5000.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1000.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 900.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 1000.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        },
-    };
+    let mut hydro = crate::test_support::make_hydro(hydro_id.0, None);
+    hydro.name = "H1".to_string();
+    hydro.operational_start_date = date(2000, 1, 1);
+    hydro.max_storage_hm3 = 5000.0;
+    hydro.max_turbined_m3s = 1000.0;
+    hydro.max_generation_mw = 900.0;
+    hydro.penalties = penalties_all(0.0);
+    hydro.penalties.storage_violation_below_cost = 1000.0;
     hydro.declare_mirror_unit_group(EntityId(10));
 
     let policy_graph = HorizonGraph {
@@ -1057,14 +954,13 @@ fn test_partial_estimation_partial_year_study_orders_canonically() {
 }
 
 fn default_config() -> Config {
-    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
+    use crate::config::{EstimationConfig, OrderSelectionMethod};
     let mut cfg: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();
     cfg.estimation = EstimationConfig {
         max_order: 2,
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
-        correlation_target: CorrelationTarget::Residuals,
         history_years: None,
     };
     cfg
@@ -1161,44 +1057,31 @@ fn test_estimation_report_empty_for_pacf() {
 }
 
 fn make_expansion_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
-    use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
-    Stage {
-        index,
-        id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id,
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 10,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    let mut stage = crate::test_support::make_stage(id);
+    stage.index = index;
+    stage.season_id = season_id;
+    stage.blocks = vec![Block {
+        index: 0,
+        name: "SINGLE".to_string(),
+        duration_hours: 744.0,
+    }];
+    stage.scenario_config.branching_factor = 10;
+    stage
 }
 
-#[test]
-fn seasonal_stats_to_rows_includes_prestudy_stages() {
-    let stages = vec![
+fn prestudy_expansion_stages() -> Vec<Stage> {
+    vec![
         make_expansion_stage(0, -2, Some(1)),
         make_expansion_stage(1, -1, Some(2)),
         make_expansion_stage(2, 0, Some(0)),
         make_expansion_stage(3, 1, Some(1)),
         make_expansion_stage(4, 2, Some(2)),
-    ];
+    ]
+}
+
+#[test]
+fn seasonal_stats_to_rows_includes_prestudy_stages() {
+    let stages = prestudy_expansion_stages();
 
     let h1 = EntityId(1);
     let stats = vec![
@@ -1254,13 +1137,7 @@ fn seasonal_stats_to_rows_includes_prestudy_stages() {
 
 #[test]
 fn ar_estimates_to_rows_includes_prestudy_stages() {
-    let stages = vec![
-        make_expansion_stage(0, -2, Some(1)),
-        make_expansion_stage(1, -1, Some(2)),
-        make_expansion_stage(2, 0, Some(0)),
-        make_expansion_stage(3, 1, Some(1)),
-        make_expansion_stage(4, 2, Some(2)),
-    ];
+    let stages = prestudy_expansion_stages();
 
     let h1 = EntityId(1);
     let ar_estimates = vec![
@@ -1304,13 +1181,7 @@ fn ar_estimates_to_rows_includes_prestudy_stages() {
 fn full_estimation_produces_prestudy_inflow_models() {
     use crate::scenarios::assemble_inflow_models;
 
-    let stages = vec![
-        make_expansion_stage(0, -2, Some(1)),
-        make_expansion_stage(1, -1, Some(2)),
-        make_expansion_stage(2, 0, Some(0)),
-        make_expansion_stage(3, 1, Some(1)),
-        make_expansion_stage(4, 2, Some(2)),
-    ];
+    let stages = prestudy_expansion_stages();
 
     let h1 = EntityId(1);
 
@@ -1424,11 +1295,6 @@ fn make_two_season_stage(
     year: i32,
     first_half: bool,
 ) -> Stage {
-    use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
     let (start_date, end_date) = if first_half {
         (
             NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
@@ -1441,142 +1307,18 @@ fn make_two_season_stage(
         )
     };
 
-    Stage {
-        index,
-        id,
-        start_date,
-        end_date,
-        season_id: Some(season_id),
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 4380.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
-}
-
-/// Groups AR coefficients by season (2 hydros × 2 seasons = 4 estimates).
-#[test]
-#[allow(clippy::cast_sign_loss)]
-fn test_ar_rows_to_estimates_groups_by_season() {
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
-    let make_stage = |id: i32, season_id: usize| Stage {
-        index: id as usize,
-        id,
-        start_date: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
-        end_date: chrono::NaiveDate::from_ymd_opt(1970, 7, 1).unwrap(),
-        season_id: Some(season_id),
-        blocks: vec![Block {
-            index: 0,
-            name: "T".to_string(),
-            duration_hours: 1.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-
-    let stages = vec![make_stage(0, 0), make_stage(1, 0), make_stage(2, 1)];
-
-    // AR(1) rows, sorted by (hydro_id, stage_id, lag).
-    let rows = vec![
-        InflowArCoefficientRow {
-            hydro_id: EntityId(1),
-            stage_id: 0,
-            lag: 1,
-            coefficient: 0.50,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(1),
-            stage_id: 1,
-            lag: 1,
-            coefficient: 0.50,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(1),
-            stage_id: 2,
-            lag: 1,
-            coefficient: 0.60,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(2),
-            stage_id: 0,
-            lag: 1,
-            coefficient: 0.40,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(2),
-            stage_id: 1,
-            lag: 1,
-            coefficient: 0.40,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(2),
-            stage_id: 2,
-            lag: 1,
-            coefficient: 0.35,
-        },
-    ];
-
-    let estimates = ar_rows_to_estimates(&rows, &stages);
-
-    assert_eq!(
-        estimates.len(),
-        4,
-        "expected 4 estimates (2 hydros * 2 seasons), got {}",
-        estimates.len()
-    );
-
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(1) && e.season_id == 0)
-        .expect("hydro 1, season 0 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1, "AR(1) must have 1 coefficient");
-    assert!(
-        (e.coefficients[0] - 0.50).abs() < f64::EPSILON,
-        "coeff must be 0.50, got {}",
-        e.coefficients[0]
-    );
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(1) && e.season_id == 1)
-        .expect("hydro 1, season 1 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1);
-    assert!((e.coefficients[0] - 0.60).abs() < f64::EPSILON);
-
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(2) && e.season_id == 0)
-        .expect("hydro 2, season 0 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1);
-    assert!((e.coefficients[0] - 0.40).abs() < f64::EPSILON);
-
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(2) && e.season_id == 1)
-        .expect("hydro 2, season 1 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1);
-    assert!((e.coefficients[0] - 0.35).abs() < f64::EPSILON);
+    let mut stage = crate::test_support::make_stage(id);
+    stage.index = index;
+    stage.start_date = start_date;
+    stage.end_date = end_date;
+    stage.season_id = Some(season_id);
+    stage.blocks = vec![Block {
+        index: 0,
+        name: "SINGLE".to_string(),
+        duration_hours: 4380.0,
+    }];
+    stage.state_config.storage = false;
+    stage
 }
 
 /// Writes one AR(1) lag-1 row per stage.
@@ -1632,33 +1374,9 @@ fn build_system_empty_models_with_history(
     n_years: usize,
     inflow_history: Vec<InflowHistoryRow>,
 ) -> System {
-    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-
     let hydro_id = EntityId(1);
-    let bus = Bus {
-        id: EntityId(10),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
-
-    let ref_year = 1970_i32;
-    let mut stages = Vec::with_capacity(n_years * 2);
-    for y in 0..n_years {
-        let year = ref_year + y as i32;
-        stages.push(make_two_season_stage(y * 2, (y * 2) as i32, 0, year, true));
-        stages.push(make_two_season_stage(
-            y * 2 + 1,
-            (y * 2 + 1) as i32,
-            1,
-            year,
-            false,
-        ));
-    }
+    let bus = infinite_deficit_bus(10, 3000.0);
+    let stages = two_season_stages(n_years);
 
     let hydro = make_hydro(hydro_id, EntityId(10));
 
@@ -1672,27 +1390,14 @@ fn build_system_empty_models_with_history(
 }
 
 /// Sets up UserArHistoryStats: history + AR coefficients, no seasonal stats.
-#[allow(clippy::cast_possible_wrap)]
 fn setup_user_ar_case(case_dir: &std::path::Path, n_years: usize, ar_coefficient: f64) {
     create_required_files(case_dir);
     let scenarios = case_dir.join("scenarios");
     std::fs::create_dir_all(&scenarios).unwrap();
 
-    write_unit_test_inflow_history(&scenarios.join("inflow_history.parquet"), 1, n_years);
+    write_history_for_hydros(&scenarios.join("inflow_history.parquet"), &[1], n_years);
 
-    let ref_year = 1970_i32;
-    let mut stages = Vec::with_capacity(n_years * 2);
-    for y in 0..n_years {
-        let year = ref_year + y as i32;
-        stages.push(make_two_season_stage(y * 2, (y * 2) as i32, 0, year, true));
-        stages.push(make_two_season_stage(
-            y * 2 + 1,
-            (y * 2 + 1) as i32,
-            1,
-            year,
-            false,
-        ));
-    }
+    let stages = two_season_stages(n_years);
 
     write_unit_test_ar_coefficients(
         &scenarios.join("inflow_ar_coefficients.parquet"),
@@ -1821,7 +1526,7 @@ fn history_years_limit_the_estimation_and_leave_the_system_history_whole() {
     let case_dir = dir.path();
     create_required_files(case_dir);
     let history_path = case_dir.join("scenarios/inflow_history.parquet");
-    write_unit_test_inflow_history(&history_path, 1, N_YEARS);
+    write_history_for_hydros(&history_path, &[1], N_YEARS);
     let history = crate::parse_inflow_history(&history_path).unwrap();
     let system = build_system_empty_models_with_history(N_YEARS, history.clone());
 
@@ -1898,92 +1603,27 @@ fn test_user_ar_estimation_returns_user_provided_report() {
 }
 
 fn make_hydro(hydro_id: EntityId, bus_id: EntityId) -> Hydro {
-    use novomodelo_core::entities::hydro::HydroGenerationModel;
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: hydro_id,
-        name: format!("H{}", hydro_id.0),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 5000.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1000.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 900.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 1000.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        },
-    };
+    let mut hydro = crate::test_support::make_hydro(hydro_id.0, None);
+    hydro.name = format!("H{}", hydro_id.0);
+    hydro.max_storage_hm3 = 5000.0;
+    hydro.max_turbined_m3s = 1000.0;
+    hydro.max_generation_mw = 900.0;
+    hydro.penalties = penalties_all(0.0);
+    hydro.penalties.storage_violation_below_cost = 1000.0;
     hydro.declare_mirror_unit_group(bus_id);
     hydro
 }
 
 /// Two-hydro system with selective stats (only stats_hydro_ids have inflow_models).
-#[allow(clippy::cast_possible_wrap)]
 fn build_two_hydro_system_selective_stats(
     n_years: usize,
     all_hydro_ids: &[EntityId],
     stats_hydro_ids: &[EntityId],
 ) -> System {
-    use novomodelo_core::scenario::InflowModel;
-    use novomodelo_core::{Bus, DeficitSegment, SystemBuilder};
-
     let bus_id = EntityId(10);
-    let bus = Bus {
-        id: bus_id,
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(bus_id.0, 3000.0);
 
-    let ref_year = 1970_i32;
-    let mut stages = Vec::with_capacity(n_years * 2);
-    for y in 0..n_years {
-        let year = ref_year + y as i32;
-        stages.push(make_two_season_stage(y * 2, (y * 2) as i32, 0, year, true));
-        stages.push(make_two_season_stage(
-            y * 2 + 1,
-            (y * 2 + 1) as i32,
-            1,
-            year,
-            false,
-        ));
-    }
+    let stages = two_season_stages(n_years);
 
     let inflow_models: Vec<InflowModel> = stats_hydro_ids
         .iter()
@@ -2014,65 +1654,29 @@ fn build_two_hydro_system_selective_stats(
         .expect("valid two-hydro system")
 }
 
+/// Observation dates must fall within `make_two_season_stage` stages (map to seasons 0/1).
 fn write_history_for_hydros(path: &std::path::Path, hydro_ids: &[i32], n_years: usize) {
-    use arrow::array::{Date32Array, Float64Array, Int32Array};
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
-    use chrono::NaiveDate;
-    use parquet::arrow::ArrowWriter;
-    use std::sync::Arc;
-
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    let date_to_days = |d: NaiveDate| -> i32 {
-        i32::try_from((d - epoch).num_days()).expect("date in Date32 range")
-    };
-
     let (obs_s0, obs_s1) = simulate_two_season_par2(0.7, 0.15, n_years, 99);
 
-    let mut ids: Vec<i32> = Vec::new();
-    let mut start_dates: Vec<i32> = Vec::new();
-    let mut end_dates: Vec<i32> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-
+    let mut rows = Vec::with_capacity(hydro_ids.len() * n_years * 2);
     for &hid in hydro_ids {
+        let hydro_id = EntityId(hid);
         for y in 0..n_years {
             let year = (1970 + y) as i32;
-            let start_s0 = NaiveDate::from_ymd_opt(year, 1, 15).unwrap();
-            ids.push(hid);
-            start_dates.push(date_to_days(start_s0));
-            end_dates.push(date_to_days(start_s0.succ_opt().unwrap()));
-            values.push(obs_s0[y] + 300.0);
-
-            let start_s1 = NaiveDate::from_ymd_opt(year, 7, 15).unwrap();
-            ids.push(hid);
-            start_dates.push(date_to_days(start_s1));
-            end_dates.push(date_to_days(start_s1.succ_opt().unwrap()));
-            values.push(obs_s1[y] + 300.0);
+            // +300 shifts the ~0-mean series positive; inflows must be physically plausible.
+            rows.push(single_day_row(
+                hydro_id,
+                NaiveDate::from_ymd_opt(year, 1, 15).unwrap(),
+                obs_s0[y] + 300.0,
+            ));
+            rows.push(single_day_row(
+                hydro_id,
+                NaiveDate::from_ymd_opt(year, 7, 15).unwrap(),
+                obs_s1[y] + 300.0,
+            ));
         }
     }
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("hydro_id", DataType::Int32, false),
-        Field::new("start_date", DataType::Date32, false),
-        Field::new("end_date", DataType::Date32, false),
-        Field::new("value_m3s", DataType::Float64, false),
-    ]));
-
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(ids)),
-            Arc::new(Date32Array::from(start_dates)),
-            Arc::new(Date32Array::from(end_dates)),
-            Arc::new(Float64Array::from(values)),
-        ],
-    )
-    .expect("valid batch");
-
-    let file = std::fs::File::create(path).expect("create parquet file");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter");
-    writer.write(&batch).expect("write batch");
-    writer.close().expect("close writer");
+    write_inflow_history_parquet(path, &rows);
 }
 
 /// Direction A: hydro 2 has history (so AR is estimated) but no user stats —
@@ -2256,8 +1860,6 @@ fn collect_std_ratio_warnings(
     user_stds: &[f64],
     est_stds: &[f64],
 ) -> Vec<StdRatioDivergence> {
-    use novomodelo_core::scenario::InflowModel;
-
     assert_eq!(
         user_stds.len(),
         est_stds.len(),
@@ -2362,9 +1964,7 @@ fn test_std_ratio_divergence_wraps_last_to_first() {
 }
 
 use chrono::NaiveDate;
-use novomodelo_core::temporal::{
-    Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-};
+use novomodelo_core::temporal::Block;
 
 /// 12-season monthly stages over `n_years` from year 2000; season_id cycles 0..12.
 fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
@@ -2375,28 +1975,17 @@ fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
             let y = 2000 + year as i32;
             let m = month as u32 + 1;
             let (ey, em) = if m == 12 { (y + 1, 1u32) } else { (y, m + 1) };
-            stages.push(Stage {
-                index: idx,
-                id: idx as i32,
-                start_date: NaiveDate::from_ymd_opt(y, m, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(ey, em, 1).unwrap(),
-                season_id: Some(month),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            });
+            let mut stage = crate::test_support::make_stage(idx as i32);
+            stage.index = idx;
+            stage.start_date = NaiveDate::from_ymd_opt(y, m, 1).unwrap();
+            stage.end_date = NaiveDate::from_ymd_opt(ey, em, 1).unwrap();
+            stage.season_id = Some(month);
+            stage.blocks = vec![Block {
+                index: 0,
+                name: "SINGLE".to_string(),
+                duration_hours: 744.0,
+            }];
+            stages.push(stage);
             idx += 1;
         }
     }
@@ -2429,20 +2018,9 @@ fn synthetic_monthly_obs(
 }
 
 /// Two-hydro 12-season monthly system (empty inflow_models for FullEstimation path).
-#[allow(clippy::cast_possible_wrap)]
 fn build_two_hydro_monthly_system(n_years: usize) -> System {
-    use novomodelo_core::{Bus, DeficitSegment, SystemBuilder};
     let bus_id = EntityId(10);
-    let bus = Bus {
-        id: bus_id,
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(bus_id.0, 3000.0);
     let h1 = EntityId(1);
     let h2 = EntityId(2);
     let stages = make_monthly_stages_for_annual(n_years);
@@ -2455,58 +2033,20 @@ fn build_two_hydro_monthly_system(n_years: usize) -> System {
 }
 
 fn write_monthly_inflow_history_two_hydros(path: &std::path::Path, n_years: usize) {
-    use arrow::array::{Date32Array, Float64Array, Int32Array};
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
-    use parquet::arrow::ArrowWriter;
-    use std::sync::Arc;
+    let obs_h1 = synthetic_monthly_obs(EntityId(1), n_years, 100.0, 5.0, 1.0);
+    let obs_h2 = synthetic_monthly_obs(EntityId(2), n_years, 200.0, 3.0, 0.5);
 
-    let h1 = EntityId(1);
-    let h2 = EntityId(2);
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    let date_to_days = |d: NaiveDate| -> i32 { i32::try_from((d - epoch).num_days()).unwrap() };
-
-    let obs_h1 = synthetic_monthly_obs(h1, n_years, 100.0, 5.0, 1.0);
-    let obs_h2 = synthetic_monthly_obs(h2, n_years, 200.0, 3.0, 0.5);
-
-    let mut ids: Vec<i32> = Vec::new();
-    let mut start_dates: Vec<i32> = Vec::new();
-    let mut end_dates: Vec<i32> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-
-    for &(eid, date, value) in obs_h1.iter().chain(obs_h2.iter()) {
-        ids.push(eid.0);
-        start_dates.push(date_to_days(date));
-        end_dates.push(date_to_days(date.succ_opt().unwrap()));
-        values.push(value);
-    }
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("hydro_id", DataType::Int32, false),
-        Field::new("start_date", DataType::Date32, false),
-        Field::new("end_date", DataType::Date32, false),
-        Field::new("value_m3s", DataType::Float64, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(ids)),
-            Arc::new(Date32Array::from(start_dates)),
-            Arc::new(Date32Array::from(end_dates)),
-            Arc::new(Float64Array::from(values)),
-        ],
-    )
-    .expect("valid batch");
-
-    let file = std::fs::File::create(path).expect("create parquet file");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter");
-    writer.write(&batch).expect("write batch");
-    writer.close().expect("close writer");
+    let rows: Vec<InflowHistoryRow> = obs_h1
+        .into_iter()
+        .chain(obs_h2)
+        .map(|(hydro_id, date, value)| single_day_row(hydro_id, date, value))
+        .collect();
+    write_inflow_history_parquet(path, &rows);
 }
 
 #[test]
 fn estimate_from_history_pacf_annual_populates_annual_field() {
-    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
+    use crate::config::OrderSelectionMethod;
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2520,15 +2060,8 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
 
     let system = build_two_hydro_monthly_system(N_YEARS);
 
-    let mut config: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();
-    config.estimation = EstimationConfig {
-        max_order: 2,
-        order_selection: OrderSelectionMethod::PacfAnnual,
-        min_observations_per_season: 2,
-        max_coefficient_magnitude: None,
-        correlation_target: CorrelationTarget::Residuals,
-        history_years: None,
-    };
+    let mut config = default_config();
+    config.estimation.order_selection = OrderSelectionMethod::PacfAnnual;
 
     let HistoryEstimate {
         system: updated,
@@ -2558,7 +2091,6 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
 
 #[test]
 fn estimate_from_history_pacf_classical_keeps_annual_none() {
-    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2572,15 +2104,7 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
 
     let system = build_two_hydro_monthly_system(N_YEARS);
 
-    let mut config: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();
-    config.estimation = EstimationConfig {
-        max_order: 2,
-        order_selection: OrderSelectionMethod::Pacf,
-        min_observations_per_season: 2,
-        max_coefficient_magnitude: None,
-        correlation_target: CorrelationTarget::Residuals,
-        history_years: None,
-    };
+    let config = default_config();
 
     let HistoryEstimate {
         system: updated,
@@ -2609,7 +2133,7 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
 }
 
 #[test]
-fn estimate_ar_coefficients_with_selection_classical_path_unchanged() {
+fn estimate_ar_coefficients_with_selection_classical_path_uses_pacf_without_annual() {
     let h1 = EntityId(1);
     let h2 = EntityId(2);
     let n_years = 30;
@@ -2681,28 +2205,17 @@ fn partial_year_stages(first_season: usize, n: usize, start_year: i32) -> Vec<St
             } else {
                 (start_year, m + 1)
             };
-            Stage {
-                index: k,
-                id: i32::try_from(k).unwrap(),
-                start_date: NaiveDate::from_ymd_opt(start_year, m, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(ey, em, 1).unwrap(),
-                season_id: Some(season),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            }
+            let mut stage = crate::test_support::make_stage(i32::try_from(k).unwrap());
+            stage.index = k;
+            stage.start_date = NaiveDate::from_ymd_opt(start_year, m, 1).unwrap();
+            stage.end_date = NaiveDate::from_ymd_opt(ey, em, 1).unwrap();
+            stage.season_id = Some(season);
+            stage.blocks = vec![Block {
+                index: 0,
+                name: "SINGLE".to_string(),
+                duration_hours: 744.0,
+            }];
+            stage
         })
         .collect()
 }
@@ -2846,22 +2359,25 @@ fn resolve_model_stage_seasons_recovers_synthesized_prestudy_gap_seasons() {
 }
 
 fn dated_stage(id: i32, start_date: NaiveDate, end_date: NaiveDate, season: usize) -> Stage {
-    novomodelo_core::test_support::make_stage(novomodelo_core::test_support::StageSpec {
-        id,
-        start_date,
-        end_date,
-        season_id: Some(season),
-        ..Default::default()
-    })
+    let mut stage = crate::test_support::make_stage(id);
+    stage.index = usize::try_from(id.max(0)).unwrap_or(0);
+    stage.start_date = start_date;
+    stage.end_date = end_date;
+    stage.season_id = Some(season);
+    stage.blocks = vec![Block {
+        index: 0,
+        name: "B0".to_string(),
+        duration_hours: 744.0,
+    }];
+    stage
 }
 
 #[test]
 fn lag_seasons_agree_across_the_calendar_walk_estimation_and_precompute_on_a_sparse_custom_map() {
-    use novomodelo_core::test_support::{date, f64_bits_eq};
-    use novomodelo_stochastic::season_cast::StitchedSeasonMap;
-    use novomodelo_stochastic::test_support::{
-        InflowModelSpec, make_inflow_model, sparse_ring_season_map,
+    use novomodelo_core::test_support::{
+        InflowModelSpec, f64_bits_eq, make_inflow_model, sparse_ring_season_map,
     };
+    use novomodelo_stochastic::season_cast::StitchedSeasonMap;
 
     let ring = sparse_ring_season_map();
     let stages = vec![
@@ -2912,8 +2428,7 @@ fn lag_seasons_agree_across_the_calendar_walk_estimation_and_precompute_on_a_spa
 
 #[test]
 fn pre_study_lags_fold_iso_week_53_on_a_weekly_map() {
-    use novomodelo_core::test_support::date;
-    use novomodelo_stochastic::test_support::weekly_season_map;
+    use novomodelo_core::test_support::weekly_season_map;
 
     let weekly = weekly_season_map();
     let stages = vec![
@@ -2939,8 +2454,6 @@ fn pre_study_lags_fold_iso_week_53_on_a_weekly_map() {
 
 #[test]
 fn every_synthesized_lag_stage_carries_statistics_when_two_lags_share_a_season() {
-    use novomodelo_core::test_support::date;
-
     let prestudy = vec![
         dated_stage(-1, date(2020, 12, 4), date(2021, 1, 4), 51),
         dated_stage(-2, date(2020, 11, 4), date(2020, 12, 4), 51),
@@ -3106,21 +2619,10 @@ fn build_monthly_system_with_conditioning(
     n_years: usize,
     recent_observations: Vec<novomodelo_core::RecentObservation>,
 ) -> System {
-    use novomodelo_core::{
-        Bus, DeficitSegment, HorizonGraph, InitialConditions, PolicyGraphType, SystemBuilder,
-    };
+    use novomodelo_core::{HorizonGraph, InitialConditions, PolicyGraphType, SystemBuilder};
 
     let bus_id = EntityId(10);
-    let bus = Bus {
-        id: bus_id,
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(bus_id.0, 3000.0);
     let h1 = EntityId(1);
     let stages = make_monthly_stages_for_annual(n_years);
     let policy_graph = HorizonGraph {
@@ -3147,58 +2649,15 @@ fn build_monthly_system_with_conditioning(
 }
 
 fn write_full_month_history_one_hydro(path: &std::path::Path, hydro_id: EntityId, n_years: usize) {
-    use arrow::array::{Date32Array, Float64Array, Int32Array};
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
-    use parquet::arrow::ArrowWriter;
-    use std::sync::Arc;
-
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    let date_to_days = |d: NaiveDate| -> i32 { i32::try_from((d - epoch).num_days()).unwrap() };
-
-    let mut ids: Vec<i32> = Vec::new();
-    let mut start_dates: Vec<i32> = Vec::new();
-    let mut end_dates: Vec<i32> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-
+    let mut rows = Vec::with_capacity(n_years * 12);
     for year in 0..n_years {
         for month in 1..=12u32 {
             let y = 2000 + i32::try_from(year).unwrap();
-            let start = NaiveDate::from_ymd_opt(y, month, 1).unwrap();
-            let end = if month == 12 {
-                NaiveDate::from_ymd_opt(y + 1, 1, 1).unwrap()
-            } else {
-                NaiveDate::from_ymd_opt(y, month + 1, 1).unwrap()
-            };
             let value = 100.0 + f64::from(month) * 5.0 + f64::from(u32::try_from(year).unwrap());
-            ids.push(hydro_id.0);
-            start_dates.push(date_to_days(start));
-            end_dates.push(date_to_days(end));
-            values.push(value);
+            rows.push(full_month_row(hydro_id, y, month, value));
         }
     }
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("hydro_id", DataType::Int32, false),
-        Field::new("start_date", DataType::Date32, false),
-        Field::new("end_date", DataType::Date32, false),
-        Field::new("value_m3s", DataType::Float64, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(ids)),
-            Arc::new(Date32Array::from(start_dates)),
-            Arc::new(Date32Array::from(end_dates)),
-            Arc::new(Float64Array::from(values)),
-        ],
-    )
-    .expect("valid batch");
-
-    let file = std::fs::File::create(path).expect("create parquet file");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter");
-    writer.write(&batch).expect("write batch");
-    writer.close().expect("close writer");
+    write_inflow_history_parquet(path, &rows);
 }
 
 /// Owner gate: recent_observations must not affect fitted statistics (grep-verified: estimation.rs never reads it).

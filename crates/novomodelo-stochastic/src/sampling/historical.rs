@@ -496,7 +496,7 @@ pub fn standardize_historical_windows(
 /// | ID  | Kind    | Description                                                   |
 /// |-----|---------|---------------------------------------------------------------|
 /// | V2.5 | Error  | At least one window must be discovered when `user_pool` is `None`. |
-/// | V2.3 | Error  | No eta value may be `NEG_INFINITY` or NaN; the refusal names the window year, the stage id and the hydro id. |
+/// | V2.3 | Error  | Every eta value is finite; the refusal names the window year, the stage id and the hydro id. |
 /// | V2.6 | Warning| `library.n_windows() < forward_passes` — log a warning.      |
 /// | V2.2 | Assert | Window contiguity — `debug_assert` only (construction invariant). |
 /// | V2.4 | Assert | User pool validity — `debug_assert` only (construction invariant). |
@@ -576,21 +576,18 @@ pub fn validate_historical_library(
         hydro_ids.len(),
     );
 
-    // V2.3 / V2.8 — no eta may be NEG_INFINITY (the sigma=0 non-matching-observation
-    // sentinel from standardize_historical_windows) or NaN.
     for w in 0..library.n_windows() {
         for (t, stage) in stages.iter().enumerate().take(library.n_stages()) {
             let eta = library.eta_slice(w, t);
             for (h, &value) in eta.iter().enumerate() {
-                if value == f64::NEG_INFINITY || value.is_nan() {
+                if !value.is_finite() {
                     let year = library.window_year(w);
                     let stage_id = stage.id;
                     let hydro_id = hydro_ids[h];
                     return Err(StochasticError::InsufficientData {
                         context: format!(
-                            "V2.3: historical library contains non-finite eta (NEG_INFINITY or NaN) \
-                             at window year {year}, stage id {stage_id}, hydro id {hydro_id} — sigma=0 with \
-                             non-matching historical observation or numerical failure",
+                            "V2.3: historical library contains non-finite eta {value} at window \
+                             year {year}, stage id {stage_id}, hydro id {hydro_id}",
                         ),
                     });
                 }
@@ -700,13 +697,13 @@ mod tests {
 
     use chrono::{Datelike, Months, NaiveDate, TimeDelta, Weekday};
     use novomodelo_core::{
-        EntityId, Hydro,
+        EntityId,
         scenario::{InflowHistoryRow, InflowModel},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, SeasonCycleType, SeasonDefinition,
-            StageLagTransition, StageRiskConfig, StageStateConfig,
+        temporal::{SeasonCycleType, SeasonDefinition, StageLagTransition},
+        test_support::{
+            MonthlyLabels, StageSpec, date, monthly_season_map, quarterly_season_map, single_block,
+            weekly_season_map,
         },
-        test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
     };
 
     use super::{
@@ -719,36 +716,21 @@ mod tests {
         precompute::PrecomputedPar,
         precompute_stage_lag_transitions,
     };
-    use crate::test_support::{
-        MonthlyLabels, monthly_season_map, quarterly_season_map, weekly_season_map,
-    };
+    use crate::test_support::unmirrored_hydro;
 
     /// `season_id` is 0-based (0=Jan .. 11=Dec).
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn make_monthly_stage(index: usize, season_id: usize) -> Stage {
         let month = (season_id as u32) + 1;
-        Stage {
-            index,
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: index as i32,
+            index: Some(index),
             start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
             end_date: NaiveDate::from_ymd_opt(2024, month, 28).unwrap(),
             season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("SINGLE", 720.0),
+            ..Default::default()
+        })
     }
 
     /// `month0` is 0-based (0=Jan, 11=Dec), matching the `season_id` that
@@ -1109,9 +1091,8 @@ mod tests {
         assert!((e11[1] - (-0.5)).abs() < 1e-10, "w=1,t=1,h=1: {}", e11[1]);
     }
 
-    /// sigma=0 with an observation that matches the deterministic value.
     #[test]
-    fn test_sigma_zero_returns_zero_eta() {
+    fn sigma_zero_gives_zero_eta_for_an_observation_away_from_the_mean() {
         let hydro = EntityId(1);
         let stages = vec![make_monthly_stage(0, 0)];
         let models = vec![InflowModel {
@@ -1125,7 +1106,7 @@ mod tests {
         }];
         let par = PrecomputedPar::build(&models, &stages, &[hydro], None).unwrap();
 
-        let history = vec![make_row(hydro, 2000, 0, 50.0)];
+        let history = vec![make_row(hydro, 2000, 0, 80.0)];
 
         let mut lib = HistoricalScenarioLibrary::new(1, 1, 1, 0, vec![2000]);
         let hydro_ids = [hydro];
@@ -1148,10 +1129,9 @@ mod tests {
         );
 
         let eta = lib.eta_slice(0, 0)[0];
-        assert!(
-            eta == 0.0,
-            "sigma=0 with obs matching deterministic value must give eta=0.0, got {eta}"
-        );
+        assert_eq!(eta.to_bits(), 0.0_f64.to_bits(), "got {eta}");
+        validate_historical_library(&structure, &lib, 0, None, 1)
+            .expect("a sigma=0 cell must not refuse the library");
     }
 
     // -----------------------------------------------------------------------
@@ -1163,28 +1143,13 @@ mod tests {
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn make_validate_stage(index: usize, season_id: Option<usize>) -> Stage {
-        Stage {
-            index,
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: index as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
+            index: Some(index),
             season_id,
-            blocks: vec![Block {
-                index: 0,
-                name: "B".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("B", 720.0),
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -1211,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn test_neg_infinity_eta_fails_v2_3() {
+    fn test_infinite_eta_fails_v2_3() {
         let n_windows = 5;
         let n_stages = 12;
         let n_hydros = 3;
@@ -1237,8 +1202,8 @@ mod tests {
                     "expected message to contain 'V2.3', got: {context}"
                 );
                 assert!(
-                    context.contains("NEG_INFINITY"),
-                    "expected message to contain 'NEG_INFINITY', got: {context}"
+                    context.contains("non-finite eta -inf"),
+                    "expected message to name the value, got: {context}"
                 );
             }
             other => panic!("expected Err(InsufficientData), got: {other:?}"),
@@ -1252,9 +1217,10 @@ mod tests {
         lib.eta_slice_mut(2, 5)[1] = f64::NEG_INFINITY;
         let stages: Vec<Stage> = (101_i32..)
             .zip(0..n_stages)
-            .map(|(id, i)| Stage {
-                id,
-                ..make_validate_stage(i, Some(i % 12))
+            .map(|(id, i)| {
+                let mut stage = make_validate_stage(i, Some(i % 12));
+                stage.id = id;
+                stage
             })
             .collect();
         let hydro_ids: Vec<EntityId> = (11..=13).map(EntityId).collect();
@@ -1264,9 +1230,8 @@ mod tests {
         match result {
             Err(StochasticError::InsufficientData { context }) => assert_eq!(
                 context,
-                "V2.3: historical library contains non-finite eta (NEG_INFINITY or NaN) \
-                 at window year 1992, stage id 106, hydro id 12 — sigma=0 with \
-                 non-matching historical observation or numerical failure"
+                "V2.3: historical library contains non-finite eta -inf at window year 1992, \
+                 stage id 106, hydro id 12"
             ),
             other => panic!("expected Err(InsufficientData), got: {other:?}"),
         }
@@ -1414,9 +1379,9 @@ mod tests {
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn make_quarterly_stage(index: usize, season_id: usize) -> Stage {
         let month = (season_id as u32) * 3 + 1;
-        Stage {
-            index,
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: index as i32,
+            index: Some(index),
             start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
             end_date: NaiveDate::from_ymd_opt(
                 2024,
@@ -1425,22 +1390,9 @@ mod tests {
             )
             .unwrap(),
             season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 2160.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("SINGLE", 2160.0),
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -1534,7 +1486,7 @@ mod tests {
     /// value depends on whether the ring fired.
     ///
     /// Oracle: ring average = (130+140+150)/3 = 140.0. The negative control
-    /// hand-computes stage 4's eta under the old primary-only advance (stage
+    /// hand-computes stage 4's eta under a primary-only advance (stage
     /// 3's own raw value 500.0 shifted into the lag instead of the ring
     /// average) and asserts it differs from the kernel-routed result.
     #[test]
@@ -1650,8 +1602,8 @@ mod tests {
             "eta[stage=4] = {eta_4}, expected {expected_eta_4} (ring average lag = {ring_average})"
         );
 
-        // Negative control: the old primary-only advance would have shifted
-        // stage 3's own raw value (500.0), not the ring average, into the lag.
+        // Negative control: a primary-only advance would shift stage 3's own
+        // raw value (500.0), not the ring average, into the lag.
         let naive_lag = raw_values[3];
         let naive_eta_4 = (raw_values[4] - det_base - psi * naive_lag) / sigma;
         assert!(
@@ -1685,7 +1637,7 @@ mod tests {
     }
 
     #[test]
-    fn test_standardize_none_season_map_backward_compat() {
+    fn test_standardize_none_season_map_uses_calendar_month_seasons() {
         let hydro = EntityId(1);
         let stages = vec![make_monthly_stage(0, 0)];
         let models = vec![InflowModel {
@@ -1723,10 +1675,10 @@ mod tests {
         );
 
         let eta = lib.eta_slice(0, 0)[0];
-        let expected = (110.0 - 90.0) / 10.0; // = 2.0
+        let expected = (110.0 - 90.0) / 10.0;
         assert!(
             (eta - expected).abs() < 1e-10,
-            "None season_map backward compat: expected eta={expected}, got {eta}"
+            "None season_map uses month0() seasons: expected eta={expected}, got {eta}"
         );
     }
 
@@ -1844,19 +1796,6 @@ mod tests {
     // the forward pass, so z == v.
     // -----------------------------------------------------------------------
 
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            operational_start_date: date(2020, 1, 1),
-            mirror_unit_group: MirrorUnitGroup::None,
-            ..Default::default()
-        })
-    }
-
     /// With no conditioning, the derived lag seed carries exactly the same
     /// values an explicit literal seed would hold, so threading it
     /// through the per-(stage, hydro) `solve_par_noise` calls reproduces the
@@ -1868,7 +1807,7 @@ mod tests {
         let h1 = EntityId(1);
         let h2 = EntityId(2);
         let hydro_ids = vec![h1, h2];
-        let hydros = vec![make_hydro(1), make_hydro(2)];
+        let hydros = vec![unmirrored_hydro(1), unmirrored_hydro(2)];
         let season_map = monthly_season_map(MonthlyLabels::ZeroBased);
 
         // Two monthly study stages (Jan, Feb) so lag lookups resolve through
@@ -2034,7 +1973,7 @@ mod tests {
     fn historical_replay_round_trip_exact_mid_coarse_period() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
         let season_map = monthly_season_map(MonthlyLabels::ZeroBased);
 
         // Stage 0 starts April 11: the in-progress occurrence [April 1,

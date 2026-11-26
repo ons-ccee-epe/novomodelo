@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use novomodelo_core::commissioning::{
     IncomingStorageFloor, commissioning_active, hard_storage_floor, incoming_storage_floor,
 };
-use novomodelo_core::{EntityId, Hydro, ResolvedBounds};
+use novomodelo_core::{EntityId, Hydro, ResolvedBounds, TailraceFlow};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::{envelope_tolerance, range_covers};
@@ -81,8 +81,8 @@ pub(super) fn check_cascade_acyclic(data: &ParsedData, ctx: &mut ValidationConte
     }
 }
 
-/// Rules 2-5: `min <= max` for a hydro's storage, turbined, outflow (when
-/// `Some`), and generation bounds.
+/// Rules 2-5 and 68: `min <= max` for a hydro's storage, turbined, outflow (when
+/// `Some`), generation, and spillage (when both `Some`) bounds.
 pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext) {
     for hydro in &data.hydros {
         let entity_str = format!("Hydro {}", hydro.id.0);
@@ -121,6 +121,20 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
                 format!(
                     "{entity_str}: min_outflow_m3s ({}) > max_outflow_m3s ({}); outflow bounds are inconsistent",
                     hydro.min_outflow_m3s, max_outflow
+                ),
+            );
+        }
+
+        if let (Some(min_spillage), Some(max_spillage)) =
+            (hydro.min_spillage_m3s, hydro.max_spillage_m3s)
+            && min_spillage > max_spillage
+        {
+            ctx.emit(
+                &rules::SEMANTIC_HYDRO_SPILLAGE_BOUNDS_INVERTED,
+                "system/hydros.json",
+                Some(&entity_str),
+                format!(
+                    "{entity_str}: min_spillage_m3s ({min_spillage}) > max_spillage_m3s ({max_spillage}); spillage bounds are inconsistent"
                 ),
             );
         }
@@ -925,6 +939,41 @@ pub(super) fn check_fpha_constraints(data: &ParsedData, ctx: &mut ValidationCont
     }
 }
 
+/// Rule 68 (warning): a non-default `tailrace_flow` on a hydro that selects
+/// FPHA at no study stage.
+pub(super) fn check_tailrace_flow_effect(data: &ParsedData, ctx: &mut ValidationContext) {
+    for hydro in &data.hydros {
+        if hydro.tailrace_flow == TailraceFlow::default() {
+            continue;
+        }
+        let uses_fpha = data
+            .production_models
+            .iter()
+            .find(|config| config.hydro_id == hydro.id)
+            .is_some_and(|config| {
+                data.stages
+                    .stages
+                    .iter()
+                    .filter(|stage| stage.id >= 0)
+                    .any(|stage| config.uses_fpha_at(stage))
+            });
+        if uses_fpha {
+            continue;
+        }
+        let entity = format!("Hydro {} (id={})", hydro.name, hydro.id.0);
+        ctx.emit(
+            &rules::SEMANTIC_TAILRACE_FLOW_NO_EFFECT,
+            "system/hydros.json",
+            Some(&entity),
+            format!(
+                "{entity}: tailrace_flow has no effect because the hydro uses FPHA at no \
+                 study stage; select FPHA in extensions/production_models.json or remove \
+                 tailrace_flow"
+            ),
+        );
+    }
+}
+
 /// Rules 39-41, 44: unit group `id` uniqueness within its own plant (rule 39,
 /// ids are plant-scoped — a `HashSet` rebuilt per hydro, never hoisted above
 /// the loop); per-group turbined/generation bound consistency (rule 40); the
@@ -1081,11 +1130,11 @@ pub(super) fn check_hydro_unit_groups(data: &ParsedData, ctx: &mut ValidationCon
 )]
 mod tests {
     use super::super::validate_semantic_hydro_thermal;
+    use super::check_hydro_bounds;
     use crate::FphaHyperplaneRow;
     use crate::constraints::HydroBoundsRow;
     use crate::test_support::*;
     use crate::validation::{ErrorKind, ValidationContext, ValidationEntry};
-    use chrono::NaiveDate;
     use novomodelo_core::DiversionChannel;
 
     // ── Cascade acyclicity tests ───────────────────────────────────────────────
@@ -1313,6 +1362,63 @@ mod tests {
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
         assert!(ctx.has_errors());
+    }
+
+    // ── Hydro spillage bounds tests ───────────────────────────────────────────
+
+    fn spillage_bounds_errors(spillage_bounds: &[(Option<f64>, Option<f64>)]) -> ValidationContext {
+        let hydros = spillage_bounds
+            .iter()
+            .zip(1..)
+            .map(|(&(min, max), id)| {
+                let mut hydro = make_hydro(id, None);
+                hydro.min_spillage_m3s = min;
+                hydro.max_spillage_m3s = max;
+                hydro
+            })
+            .collect();
+        let data = make_data(hydros, vec![], vec![], make_stages(vec![0]), vec![], vec![]);
+        let mut ctx = ValidationContext::new();
+        check_hydro_bounds(&data, &mut ctx);
+        ctx
+    }
+
+    #[test]
+    fn test_hydro_spillage_min_greater_than_max() {
+        let ctx = spillage_bounds_errors(&[(Some(10.0), Some(5.0))]);
+        let errors = ctx.errors();
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(
+            crate::validation::rules::SEMANTIC_HYDRO_SPILLAGE_BOUNDS_INVERTED.id,
+            "semantic.5a.69"
+        );
+        assert_eq!(errors[0].kind, ErrorKind::InvalidValue);
+        assert!(
+            errors[0]
+                .message
+                .contains("min_spillage_m3s (10) > max_spillage_m3s (5)"),
+            "got: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn test_hydro_spillage_one_sided_or_equal_no_error() {
+        let ctx = spillage_bounds_errors(&[
+            (Some(10.0), None),
+            (None, Some(5.0)),
+            (Some(5.0), Some(5.0)),
+        ]);
+        assert!(!ctx.has_errors(), "got: {:?}", ctx.errors());
+    }
+
+    #[test]
+    fn test_hydro_spillage_inversion_reports_every_hydro() {
+        let ctx = spillage_bounds_errors(&[(Some(10.0), Some(5.0)), (Some(8.0), Some(2.0))]);
+        let errors = ctx.errors();
+        assert_eq!(errors.len(), 2, "got: {errors:?}");
+        assert_eq!(errors[0].entity.as_deref(), Some("Hydro 1"));
+        assert_eq!(errors[1].entity.as_deref(), Some("Hydro 2"));
     }
 
     // ── Diversion requires channel tests ──────────────────────────────────────
@@ -1600,57 +1706,38 @@ mod tests {
 
     // ── Commissioning hygiene: ordering parity + applied-window silence ────────
 
-    use novomodelo_core::entities::{
-        ContractType, EnergyContract, NonControllableSource, PumpingStation,
-    };
-    use novomodelo_core::{EntityId, Line, Thermal};
+    use novomodelo_core::entities::{EnergyContract, NonControllableSource, PumpingStation};
+    use novomodelo_core::{EntityId, Line};
 
     /// Build a `PumpingStation` with the given entry/exit commissioning window.
     fn make_pumping_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> PumpingStation {
-        PumpingStation {
-            id: EntityId::from(id),
-            name: format!("Pump_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            source_hydro_id: EntityId::from(1),
-            destination_hydro_id: EntityId::from(2),
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 100.0,
-        }
+        let mut station = make_pumping_station(id, 1, 1, 2);
+        station.name = format!("Pump_{id}");
+        station.entry_stage_id = entry;
+        station.exit_stage_id = exit;
+        station
     }
 
     /// Build a `NonControllableSource` with the given entry/exit window.
     fn make_ncs_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> NonControllableSource {
-        NonControllableSource {
-            id: EntityId::from(id),
-            name: format!("NCS_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            max_generation_mw: 300.0,
-            allow_curtailment: true,
-            curtailment_cost: 0.01,
-        }
+        let mut ncs = make_ncs(id, 1);
+        ncs.name = format!("NCS_{id}");
+        ncs.entry_stage_id = entry;
+        ncs.exit_stage_id = exit;
+        ncs.max_generation_mw = 300.0;
+        ncs.curtailment_cost = 0.01;
+        ncs
     }
 
     /// Build an `EnergyContract` with the given entry/exit window.
     fn make_contract_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> EnergyContract {
-        EnergyContract {
-            id: EntityId::from(id),
-            name: format!("Contract_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            contract_type: ContractType::Import,
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            price_per_mwh: 200.0,
-            min_mw: 0.0,
-            max_mw: 1000.0,
-        }
+        let mut contract = make_contract(id, 1);
+        contract.name = format!("Contract_{id}");
+        contract.entry_stage_id = entry;
+        contract.exit_stage_id = exit;
+        contract.price_per_mwh = 200.0;
+        contract.max_mw = 1000.0;
+        contract
     }
 
     /// A pumping station with entry >= exit produces an InvalidValue error citing
@@ -1843,19 +1930,12 @@ mod tests {
 
     /// Build a windowed `Line` (entry < exit) for the commissioning tests.
     fn make_windowed_line(id: i32, entry: Option<i32>, exit: Option<i32>) -> Line {
-        Line {
-            id: EntityId::from(id),
-            name: format!("Line_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId::from(1),
-            target_bus_id: EntityId::from(2),
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            direct_capacity_mw: 100.0,
-            reverse_capacity_mw: 100.0,
-            losses_percent: 0.0,
-            exchange_cost: 0.01,
-        }
+        let mut line = make_line(id, 1, 2);
+        line.name = format!("Line_{id}");
+        line.entry_stage_id = entry;
+        line.exit_stage_id = exit;
+        line.exchange_cost = 0.01;
+        line
     }
 
     /// A windowed thermal, line, NCS, and pumping station each have their
@@ -1863,11 +1943,9 @@ mod tests {
     /// `ModelQuality` warning.
     #[test]
     fn test_applied_window_entities_emit_no_warning() {
-        let thermal = Thermal {
-            entry_stage_id: Some(1),
-            exit_stage_id: Some(2),
-            ..make_thermal(1, 0.0, 100.0)
-        };
+        let mut thermal = make_thermal(1, 0.0, 100.0);
+        thermal.entry_stage_id = Some(1);
+        thermal.exit_stage_id = Some(2);
         let line = make_windowed_line(1, Some(1), Some(2));
         let mut data = make_data(
             vec![make_hydro(1, None), make_hydro(2, None)],
@@ -2473,7 +2551,7 @@ mod tests {
     /// A `height_m` decrease beyond the tolerance (an order of magnitude
     /// larger) is still rejected — the tolerance must have power.
     #[test]
-    fn test_geometry_height_beyond_tolerance_still_errors() {
+    fn test_geometry_height_beyond_tolerance_errors() {
         let geometry = vec![
             make_geom_row(2, 10.0, 100.0, 1.0),
             // Decrease of 1e-6, an order of magnitude above the 1e-7 tolerance.
@@ -2532,7 +2610,7 @@ mod tests {
     /// An `area_km2` decrease beyond the tolerance (an order of magnitude
     /// larger) is still rejected — the tolerance must have power.
     #[test]
-    fn test_geometry_area_beyond_tolerance_still_errors() {
+    fn test_geometry_area_beyond_tolerance_errors() {
         let geometry = vec![
             make_geom_row(2, 10.0, 100.0, 1.0),
             // Decrease of 1e-8, an order of magnitude above the 1e-9 floor tolerance.
@@ -2781,11 +2859,9 @@ mod tests {
         );
     }
 
-    // ── Acceptance criteria tests ─────────────────────────────────────────────
-
-    /// AC 1: Valid data produces no errors.
+    /// Valid data produces no errors.
     #[test]
-    fn test_ac1_valid_data_no_errors() {
+    fn test_valid_data_no_errors() {
         let geometry = vec![
             make_geom_row(1, 10.0, 100.0, 1.0),
             make_geom_row(1, 20.0, 110.0, 2.0),
@@ -2809,10 +2885,10 @@ mod tests {
         );
     }
 
-    /// AC 2: Hydro id=5 with inverted storage bounds produces exactly 1 InvalidValue
+    /// Hydro id=5 with inverted storage bounds produces exactly 1 InvalidValue
     /// entry whose message contains "Hydro 5" and "storage".
     #[test]
-    fn test_ac2_hydro_storage_bounds_error() {
+    fn test_hydro_storage_bounds_error() {
         let mut hydro = make_hydro(5, None);
         hydro.min_storage_hm3 = 200.0;
         hydro.max_storage_hm3 = 100.0;
@@ -2838,9 +2914,9 @@ mod tests {
         assert!(msg.contains("storage"), "message must contain 'storage'");
     }
 
-    /// AC 3: Cycle A->B->C->A produces at least 1 CycleDetected error.
+    /// Cycle A->B->C->A produces at least 1 CycleDetected error.
     #[test]
-    fn test_ac3_cycle_detected() {
+    fn test_cycle_detected() {
         let hydros = vec![
             make_hydro(1, Some(2)),
             make_hydro(2, Some(3)),
@@ -2857,10 +2933,10 @@ mod tests {
         );
     }
 
-    /// AC 4: Non-monotonic volume for hydro id=3 produces BusinessRuleViolation
+    /// Non-monotonic volume for hydro id=3 produces BusinessRuleViolation
     /// with "Hydro 3" and "volume" in the message.
     #[test]
-    fn test_ac4_geometry_non_monotonic_volume_error() {
+    fn test_geometry_non_monotonic_volume_error() {
         // Use equal volumes (10.0, 20.0, 20.0) to trigger the strict-increase check.
         let geometry = vec![
             make_geom_row(3, 10.0, 100.0, 1.0),
@@ -2889,9 +2965,9 @@ mod tests {
         assert!(msg.contains("volume"), "must contain 'volume': {msg}");
     }
 
-    /// AC 5: Empty geometry and FPHA produce no errors from rules 8-12.
+    /// Empty geometry and FPHA produce no errors from rules 8-12.
     #[test]
-    fn test_ac5_empty_geometry_and_fpha_no_false_positives() {
+    fn test_empty_geometry_and_fpha_no_false_positives() {
         let data = make_data(
             vec![make_hydro(1, None)],
             vec![],
@@ -3734,6 +3810,7 @@ mod tests {
     use crate::{
         FphaColumnLayout, HydroGeometryRow, ProductionModelConfig, SelectionMode, StageRange,
     };
+    use novomodelo_core::TailraceFlow;
     use novomodelo_core::entities::HydroGenerationModel;
 
     fn validate_fpha_geometry_coverage(
@@ -3771,8 +3848,6 @@ mod tests {
                         source: source.into(),
                         volume_discretization_points: None,
                         turbine_discretization_points: None,
-                        spillage_discretization_points: None,
-                        max_planes_per_hydro: None,
                         fitting_window: None,
                         spillage_fit_max_m3s: None,
                         turbined_fit_max_m3s: None,
@@ -3896,5 +3971,85 @@ mod tests {
             entities,
             vec![Some("Hydro Hydro 1 (id=1)"), Some("Hydro Hydro 2 (id=2)")]
         );
+    }
+
+    fn constant_productivity_config(hydro_id: i32) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(hydro_id),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                }],
+            },
+        }
+    }
+
+    fn tailrace_flow_effect_warnings(
+        tailrace_flow: TailraceFlow,
+        production_models: Vec<ProductionModelConfig>,
+    ) -> Vec<ValidationEntry> {
+        let mut hydro = make_hydro(1, None);
+        hydro.tailrace_flow = tailrace_flow;
+        let mut data = make_data(
+            vec![hydro],
+            vec![],
+            vec![],
+            make_stages(vec![0]),
+            vec![],
+            vec![],
+        );
+        data.production_models = production_models;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.warnings()
+            .into_iter()
+            .filter(|e| e.message.contains("tailrace_flow has no effect"))
+            .cloned()
+            .collect()
+    }
+
+    fn declared_tailrace_flow() -> TailraceFlow {
+        TailraceFlow {
+            own_outflow_factor: 0.5,
+            ..TailraceFlow::default()
+        }
+    }
+
+    #[test]
+    fn tailrace_flow_effect_warns_without_any_fpha_stage() {
+        let entries = tailrace_flow_effect_warnings(declared_tailrace_flow(), vec![]);
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        assert_eq!(entries[0].kind, ErrorKind::ModelQuality);
+        assert_eq!(entries[0].file.to_string_lossy(), "system/hydros.json");
+        assert_eq!(entries[0].entity.as_deref(), Some("Hydro Hydro 1 (id=1)"));
+    }
+
+    #[test]
+    fn tailrace_flow_effect_warns_for_constant_productivity_config() {
+        let entries = tailrace_flow_effect_warnings(
+            declared_tailrace_flow(),
+            vec![constant_productivity_config(1)],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+    }
+
+    #[test]
+    fn tailrace_flow_effect_is_silent_when_fpha_applies() {
+        let entries = tailrace_flow_effect_warnings(
+            declared_tailrace_flow(),
+            vec![fpha_config(1, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn tailrace_flow_effect_is_silent_for_the_default_declaration() {
+        let entries = tailrace_flow_effect_warnings(TailraceFlow::default(), vec![]);
+        assert!(entries.is_empty(), "got: {entries:?}");
     }
 }

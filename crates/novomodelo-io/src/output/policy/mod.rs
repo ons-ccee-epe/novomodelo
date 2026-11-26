@@ -271,9 +271,7 @@ mod tests {
     }
 
     /// Build a minimal [`CheckpointManifest`] for use in artifact tests.
-    /// `state_dimension` is retained for call-site clarity; it now lives per-pool
-    /// on the payloads, not in the manifest core.
-    fn make_metadata(num_stages: u32, _state_dimension: u32) -> CheckpointManifest {
+    fn make_metadata(num_stages: u32) -> CheckpointManifest {
         CheckpointManifest {
             software_version: "0.0.1".to_string(),
             created_at: "2026-03-08T00:00:00Z".to_string(),
@@ -344,7 +342,7 @@ mod tests {
             make_basis_record(1),
             make_basis_record(2),
         ];
-        let metadata = make_metadata(3, 3);
+        let metadata = make_metadata(3);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts, &basis_records, &metadata, &[])
             .expect("write_policy_checkpoint must succeed");
@@ -379,7 +377,7 @@ mod tests {
         let c0 = [1.0_f64, 2.0, 3.0];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 3)];
-        let metadata = make_metadata(1, 3);
+        let metadata = make_metadata(1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &metadata, &[])
             .expect("write_policy_checkpoint must succeed");
@@ -413,7 +411,7 @@ mod tests {
             make_stage_cuts_payload(1, &cuts_s1, 3),
             make_stage_cuts_payload(2, &cuts_s2, 3),
         ];
-        let metadata = make_metadata(3, 3);
+        let metadata = make_metadata(3);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &metadata, &[])
             .expect("write_policy_checkpoint must succeed");
@@ -439,7 +437,7 @@ mod tests {
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 2)];
         let basis_records = [make_basis_record(0)];
-        let metadata = make_metadata(1, 2);
+        let metadata = make_metadata(1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts, &basis_records, &metadata, &[])
             .expect("write_policy_checkpoint must succeed");
@@ -462,7 +460,7 @@ mod tests {
         let c0 = [1.0_f64, 2.0];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 2)];
-        let metadata = make_metadata(1, 2);
+        let metadata = make_metadata(1);
 
         let result = write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &metadata, &[]);
 
@@ -524,7 +522,7 @@ mod tests {
         let c0 = [1.0_f64];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 1)];
-        let metadata = make_metadata(1, 1);
+        let metadata = make_metadata(1);
 
         let result = write_policy_checkpoint(&readonly_target, &stage_cuts, &[], &metadata, &[]);
 
@@ -584,7 +582,7 @@ mod tests {
             }],
         };
         let stage_bases = [basis_records_0, basis_records_1, basis_records_59];
-        let metadata = make_metadata(3, 2);
+        let metadata = make_metadata(3);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts, &stage_bases, &metadata, &[])
             .expect("write_policy_checkpoint must succeed");
@@ -1025,7 +1023,7 @@ mod tests {
             make_stage_cuts_payload(1, &cuts_s1, 3),
         ];
         let basis_records = [make_basis_record(0), make_basis_record(1)];
-        let metadata = make_metadata(2, 3);
+        let metadata = make_metadata(2);
 
         write_policy_checkpoint(
             tmp.path(),
@@ -1089,7 +1087,7 @@ mod tests {
         let c0 = [1.0_f64];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts_payloads = [make_stage_cuts_payload(0, &cuts_s0, 1)];
-        let metadata = make_metadata(1, 1);
+        let metadata = make_metadata(1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_payloads, &[], &metadata, &[])
             .expect("write must succeed");
@@ -1110,7 +1108,7 @@ mod tests {
         let c0 = [1.0_f64];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts_payloads = [make_stage_cuts_payload(0, &cuts_s0, 1)];
-        let metadata = make_metadata(1, 1);
+        let metadata = make_metadata(1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_payloads, &[], &metadata, &[])
             .expect("write must succeed");
@@ -1134,7 +1132,7 @@ mod tests {
         let cuts_a = [piece_a];
         let stage_cuts_a = [make_stage_cuts_payload(0, &cuts_a, 3)];
         let basis_a = [make_basis_record(0)];
-        let metadata_a = make_metadata(1, 3);
+        let metadata_a = make_metadata(1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_a, &basis_a, &metadata_a, &[])
             .expect("write of checkpoint A must succeed");
@@ -1147,7 +1145,7 @@ mod tests {
         let cuts_b = [piece_b];
         let stage_cuts_b = [make_stage_cuts_payload(0, &cuts_b, 3)];
         let basis_b = [make_basis_record(0)];
-        let metadata_b = make_metadata(1, 3);
+        let metadata_b = make_metadata(1);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_b, &basis_b, &metadata_b, &[])
             .expect("rewrite with checkpoint B must succeed");
@@ -1208,7 +1206,7 @@ mod tests {
             make_stage_cuts_payload(1, &cuts_a, 3),
         ];
         let basis_a = [make_basis_record(0), make_basis_record(1)];
-        let mut metadata_a = make_metadata(2, 3);
+        let mut metadata_a = make_metadata(2);
         metadata_a.producer.total_visited_states = 1;
         let states_a = [StageStatesPayload {
             stage_id: 0,
@@ -1227,14 +1225,8 @@ mod tests {
         let cuts_b = [make_cut_record(0, 5, &b0)];
         let stage_cuts_b = [make_stage_cuts_payload(0, &cuts_b, 3)];
         let basis_b = [make_basis_record(0)];
-        write_policy_checkpoint(
-            tmp.path(),
-            &stage_cuts_b,
-            &basis_b,
-            &make_metadata(1, 3),
-            &[],
-        )
-        .expect("rewrite with checkpoint B must succeed");
+        write_policy_checkpoint(tmp.path(), &stage_cuts_b, &basis_b, &make_metadata(1), &[])
+            .expect("rewrite with checkpoint B must succeed");
 
         assert_no_tmp_files_under(tmp.path());
         assert!(
@@ -1283,7 +1275,7 @@ mod tests {
             slots: &[0],
         };
         let metadata_with_states = |total_visited_states: u64| {
-            let mut metadata = make_metadata(1, 3);
+            let mut metadata = make_metadata(1);
             metadata.producer.total_visited_states = total_visited_states;
             metadata
         };
@@ -1350,8 +1342,7 @@ mod tests {
     #[test]
     fn read_policy_checkpoint_missing_manifest_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
-        // A pre-manifest.bin artifact carries no manifest.bin — the clean-break
-        // reader errors instead of falling back to any legacy carrier.
+        // The reader has no fallback carrier for an artifact without manifest.bin.
         let result = read_policy_checkpoint(tmp.path());
         assert!(result.is_err(), "missing manifest.bin must return an error");
         assert!(
@@ -1375,7 +1366,7 @@ mod tests {
             make_stage_cuts_payload(0, &cuts0, 2),
             make_stage_cuts_payload(1, &cuts1, 2),
         ];
-        let metadata = make_metadata(3, 2);
+        let metadata = make_metadata(3);
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_payloads, &[], &metadata, &[])
             .expect("write must succeed");
@@ -1401,7 +1392,7 @@ mod tests {
     fn read_policy_checkpoint_metadata_field_by_field() {
         let tmp = tempfile::tempdir().unwrap();
 
-        let mut meta_in = make_metadata(4, 8);
+        let mut meta_in = make_metadata(4);
         meta_in.created_at = "2026-01-01T00:00:00Z".to_string();
         meta_in.producer.completed_iterations = 77;
         meta_in.producer.final_lower_bound = 12345.678;
@@ -1483,7 +1474,7 @@ mod tests {
             },
         ];
 
-        let mut metadata = make_metadata(3, 2);
+        let mut metadata = make_metadata(3);
         metadata.producer.warm_start_counts = vec![10, 8, 6];
 
         write_policy_checkpoint(tmp.path(), &stage_cuts_payloads, &[], &metadata, &[])
@@ -1509,10 +1500,10 @@ mod tests {
         let c0 = [1.0_f64];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 1)];
-        write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &make_metadata(1, 1), &[])
+        write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &make_metadata(1), &[])
             .expect("write must succeed");
 
-        let mut stale = make_metadata(1, 1);
+        let mut stale = make_metadata(1);
         stale.format_version = FORMAT_VERSION + 1;
         std::fs::write(
             tmp.path().join("manifest.bin"),
@@ -1539,10 +1530,10 @@ mod tests {
         let c0 = [1.0_f64];
         let cuts_s0 = [make_cut_record(0, 1, &c0)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts_s0, 1)];
-        write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &make_metadata(1, 1), &[])
+        write_policy_checkpoint(tmp.path(), &stage_cuts, &[], &make_metadata(1), &[])
             .expect("write must succeed");
 
-        let mut older = make_metadata(1, 1);
+        let mut older = make_metadata(1);
         older.format_version = FORMAT_VERSION - 1;
         std::fs::write(
             tmp.path().join("manifest.bin"),
@@ -1563,11 +1554,10 @@ mod tests {
         );
     }
 
-    /// The positional `stage_NNN` filename convention is gone: no
-    /// `format!("stage_{...}.bin", ...)` writer literal survives, and the reader
-    /// derives identity from inside each buffer via `read_sorted_bin_files`, not
-    /// from a filename. A surviving positional reader is the exact path that
-    /// would read a 0.13 file as pool 0.
+    /// `checkpoint.rs` holds no `format!("stage_{...}.bin", ...)` writer literal,
+    /// and the reader derives identity from inside each buffer via
+    /// `read_sorted_bin_files`, not from a filename: a positional reader would
+    /// read a 0.13 file as pool 0.
     #[test]
     fn no_stage_positional_filename_convention_remains() {
         let checkpoint_src = include_str!("checkpoint.rs");
@@ -1617,7 +1607,7 @@ mod tests {
                 probability: 1.0 / f64::from(k),
             })
             .collect();
-        let mut metadata = make_metadata(2, 1);
+        let mut metadata = make_metadata(2);
         metadata.graph_manifest = GraphManifest {
             n_pools: 2,
             nodes,
@@ -1675,7 +1665,7 @@ mod tests {
         let coefficients = [1.0_f64];
         let cuts = [make_cut_record(0, 1, &coefficients)];
         let stage_cuts = [make_stage_cuts_payload(0, &cuts, 1)];
-        let mut metadata = make_metadata(1, 1);
+        let mut metadata = make_metadata(1);
         metadata.producer.completed_iterations = completed_iterations;
         write_policy_checkpoint(dir, &stage_cuts, &[make_basis_record(0)], &metadata, &[])
     }
@@ -2410,7 +2400,7 @@ mod tests {
                 entity_manifest: &manifest,
                 slots: &self.states_slots,
             }];
-            let mut metadata = make_metadata(1, 3);
+            let mut metadata = make_metadata(1);
             metadata.producer.total_visited_states = self.total_visited_states;
             metadata.producer.activity_counters = self.activity_counters;
             f(&stage_cuts, &bases, &metadata, &states)
@@ -2628,7 +2618,7 @@ mod tests {
 
     #[test]
     fn two_payloads_of_one_kind_with_one_id_are_refused() {
-        let metadata = make_metadata(1, 3);
+        let metadata = make_metadata(1);
         let pool = || StageCutsPayload {
             stage_id: 2,
             ..stage_cuts_payload_defaults()
@@ -2783,7 +2773,7 @@ mod tests {
             assert!(bound >= built, "states bound {bound} below built {built}");
         }
 
-        let mut metadata = make_metadata(4, 3);
+        let mut metadata = make_metadata(4);
         metadata.software = Some("novomodelo".to_string());
         metadata.producer.training_block_mode_per_stage = vec!["chronological".to_string(); 400];
         metadata.producer.lower_bound_history = vec![1.0; 500];

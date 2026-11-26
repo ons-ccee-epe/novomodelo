@@ -91,18 +91,14 @@ mod anticipated_5stage_k2_smoke {
         StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::SolverStatsDelta;
     use novomodelo_solver::ActiveSolver;
@@ -277,97 +273,6 @@ mod anticipated_5stage_k2_smoke {
 
         let k_max: usize = 2;
 
-        fn default_hydro_bounds() -> HydroStageBounds {
-            HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            }
-        }
-
-        fn default_hydro_block_bounds() -> HydroBlockBounds {
-            HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            }
-        }
-
-        fn default_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            }
-        }
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 2,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 100.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: EntityId(3),
@@ -384,18 +289,31 @@ mod anticipated_5stage_k2_smoke {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal_ant, thermal_backup])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system: valid")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal_ant.clone(), thermal_backup.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            k_max,
+            |_, bounds, penalties| {
+                for s in 0..n_stages {
+                    penalties
+                        .hydro_penalties_mut(0, s)
+                        .storage_violation_below_cost = 500.0;
+                }
+                for s in 0..n_stages + k_max {
+                    bounds.thermal_block_base_mut(0, s).cost_per_mwh = 0.0;
+                    bounds.thermal_block_base_mut(1, s).cost_per_mwh = 0.0;
+                    bounds.thermal_block_base_mut(1, s).max_generation_mw = 100.0;
+                }
+            },
+        )
     }
 
     // ---------------------------------------------------------------------------
@@ -409,6 +327,7 @@ mod anticipated_5stage_k2_smoke {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -421,7 +340,7 @@ mod anticipated_5stage_k2_smoke {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -551,18 +470,14 @@ mod anticipated_two_plants_smoke {
         StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -760,110 +675,6 @@ mod anticipated_two_plants_smoke {
 
         let k_max: usize = 4;
 
-        fn default_hydro_bounds() -> HydroStageBounds {
-            HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            }
-        }
-
-        fn default_hydro_block_bounds() -> HydroBlockBounds {
-            HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            }
-        }
-
-        fn default_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            }
-        }
-
-        let mut bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 3,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 100.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        for (t_idx, thermal) in [&thermal_ant_k2, &thermal_backup, &thermal_ant_k4]
-            .into_iter()
-            .enumerate()
-        {
-            for stage_idx in 0..n_stages {
-                *bounds.thermal_block_base_mut(t_idx, stage_idx) = ThermalBlockBounds {
-                    min_generation_mw: thermal.min_generation_mw,
-                    max_generation_mw: thermal.max_generation_mw,
-                    cost_per_mwh: thermal.cost_per_mwh,
-                };
-            }
-        }
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         // Seed lengths force locked deliveries: plant 0 at stages 0..=1, plant 1 at
         // stages 0..=3 — sunk, so the lower bound prices only the residual load.
         let initial_conditions = InitialConditions {
@@ -886,18 +697,37 @@ mod anticipated_two_plants_smoke {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal_ant_k2, thermal_backup, thermal_ant_k4])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system_two_anticipated: valid")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![
+                        thermal_ant_k2.clone(),
+                        thermal_backup.clone(),
+                        thermal_ant_k4.clone(),
+                    ])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            k_max,
+            |_, bounds, penalties| {
+                for s in 0..n_stages {
+                    penalties
+                        .hydro_penalties_mut(0, s)
+                        .storage_violation_below_cost = 500.0;
+                }
+                for s in n_stages..n_stages + k_max {
+                    for t in 0..3 {
+                        bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                    }
+                    bounds.thermal_block_base_mut(1, s).max_generation_mw = 100.0;
+                    bounds.thermal_block_base_mut(2, s).max_generation_mw = 100.0;
+                }
+            },
+        )
     }
 
     // ---------------------------------------------------------------------------
@@ -911,6 +741,7 @@ mod anticipated_two_plants_smoke {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -923,7 +754,7 @@ mod anticipated_two_plants_smoke {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -1065,17 +896,13 @@ mod anticipated_simulation_ring_buffer {
         StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -1257,110 +1084,6 @@ mod anticipated_simulation_ring_buffer {
             })
             .collect();
 
-        fn default_hydro_bounds() -> HydroStageBounds {
-            HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 1.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            }
-        }
-
-        fn default_hydro_block_bounds() -> HydroBlockBounds {
-            HydroBlockBounds {
-                max_turbined_m3s: 1.0,
-                max_generation_mw: 1.0,
-                ..Default::default()
-            }
-        }
-
-        fn default_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            }
-        }
-
-        let mut bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 2,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: k,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 200.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-        // ResolvedBounds::new applies one default to ALL thermals; without these
-        // per-thermal overrides the cheap anticipated (index 0) and expensive backup
-        // (index 1) are indistinguishable and decision_at(t) collapses to zero,
-        // neutering the regression. The override must span the padding region
-        // `[n_stages, n_stages + k_max)` too — `fill_anticipated_columns` reads the
-        // delivery-stage axis there, so the decision column needs its cost out to K.
-        let thermal_axis = n_stages + k;
-        for s in 0..thermal_axis {
-            bounds.thermal_block_base_mut(0, s).cost_per_mwh = 10.0;
-            bounds.thermal_block_base_mut(0, s).max_generation_mw = 100.0;
-            bounds.thermal_block_base_mut(1, s).cost_per_mwh = 5000.0;
-            bounds.thermal_block_base_mut(1, s).max_generation_mw = 200.0;
-        }
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: EntityId(3),
@@ -1377,18 +1100,30 @@ mod anticipated_simulation_ring_buffer {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal_ant, thermal_backup])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system: valid")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal_ant.clone(), thermal_backup.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            k,
+            |_, bounds, penalties| {
+                for s in 0..n_stages {
+                    penalties
+                        .hydro_penalties_mut(0, s)
+                        .storage_violation_below_cost = 500.0;
+                }
+                for s in 0..n_stages + k {
+                    bounds.thermal_block_base_mut(0, s).max_generation_mw = 100.0;
+                    bounds.thermal_block_base_mut(1, s).max_generation_mw = 200.0;
+                }
+            },
+        )
     }
 
     // ---------------------------------------------------------------------------
@@ -1402,6 +1137,7 @@ mod anticipated_simulation_ring_buffer {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -1416,7 +1152,7 @@ mod anticipated_simulation_ring_buffer {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -1657,12 +1393,8 @@ mod anticipated_generic_constraint_e2e {
 
     use chrono::NaiveDate;
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression,
-        ContractBlockBounds, EntityId, GenericConstraint, HydroBlockBounds, HydroPenalties,
-        HydroStageBounds, InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm,
-        NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
-        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, VariableRef,
+        ConstraintExpression, EntityId, GenericConstraint, InitialConditions, LinearTerm,
+        ResolvedGenericConstraintBounds, SystemBuilder, VariableRef,
         entities::{bus::DeficitSegment, thermal::AnticipatedConfig},
         scenario::LoadModel,
         temporal::{
@@ -1672,9 +1404,9 @@ mod anticipated_generic_constraint_e2e {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -1705,7 +1437,7 @@ mod anticipated_generic_constraint_e2e {
     const CONSTRAINT_BOUND_MW: f64 = 20.0;
 
     const ANT_THERMAL_ID: EntityId = EntityId(2);
-    /// Non-anticipated — the AC rejection target.
+    /// Non-anticipated, so the validator rejects an `anticipated_decision` reference to it.
     const BACKUP_THERMAL_ID: EntityId = EntityId(3);
     const BUS_ID: EntityId = EntityId(1);
 
@@ -1806,99 +1538,6 @@ mod anticipated_generic_constraint_e2e {
             })
             .collect();
 
-        let mut bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 0,
-                n_thermals: 2,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STAGES,
-                k_max: K_MAX,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 0.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds::default(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        // SystemBuilder sorts thermals by EntityId ascending, so thermal_idx 0 = id=2
-        // (anticipated) and thermal_idx 1 = id=3 (backup); these indices feed
-        // thermal_block_base_mut below. The thermal stage axis runs N_STAGES + K_MAX to
-        // cover delivery-stage lookups in fill_anticipated_columns.
-        let thermal_axis = N_STAGES + K_MAX;
-        for s in 0..thermal_axis {
-            *bounds.thermal_block_base_mut(0, s) = ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: ANT_MAX_MW,
-                cost_per_mwh: ANT_COST,
-            };
-            *bounds.thermal_block_base_mut(1, s) = ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: BACKUP_MAX_MW,
-                cost_per_mwh: BACKUP_COST,
-            };
-        }
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 0,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![],
             filling_storage: vec![],
@@ -1912,22 +1551,26 @@ mod anticipated_generic_constraint_e2e {
             past_defluences: vec![],
         };
 
-        let mut builder = SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal_ant, thermal_backup])
-            .stages(stages)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions);
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                let mut builder = SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal_ant.clone(), thermal_backup.clone()])
+                    .stages(stages.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone());
 
-        if !generic_constraints.is_empty() {
-            builder = builder
-                .generic_constraints(generic_constraints)
-                .resolved_generic_bounds(generic_bounds);
-        }
+                if !generic_constraints.is_empty() {
+                    builder = builder
+                        .generic_constraints(generic_constraints.clone())
+                        .resolved_generic_bounds(generic_bounds.clone());
+                }
 
-        builder.build().expect("build_system: valid")
+                builder
+            },
+            K_MAX,
+            |_, _, _| {},
+        )
     }
 
     // ---------------------------------------------------------------------------
@@ -1942,6 +1585,7 @@ mod anticipated_generic_constraint_e2e {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -1954,7 +1598,7 @@ mod anticipated_generic_constraint_e2e {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -2412,7 +2056,6 @@ mod d37_anticipated_commissioning_simulation {
     use std::sync::mpsc;
 
     use novomodelo_core::scenario::ScenarioSource;
-    use novomodelo_io::Config;
     use novomodelo_io::config::SimulationConfig;
     use novomodelo_sddp::simulation::SimulationThermalResult;
     use novomodelo_sddp::{
@@ -2432,7 +2075,7 @@ mod d37_anticipated_commissioning_simulation {
             .join("examples/deterministic/d37-anticipated-commissioning")
     }
 
-    fn build_setup(case_dir: &Path) -> (StudySetup, Config) {
+    fn build_setup(case_dir: &Path) -> StudySetup {
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
         // The shipped case disables simulation (parity trains only); enable one
@@ -2460,9 +2103,8 @@ mod d37_anticipated_commissioning_simulation {
         let hydro_models = prepare_hydro_models(&system, case_dir, false)
             .expect("prepare_hydro_models must succeed");
 
-        let setup = StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
-            .expect("StudySetup::new");
-        (setup, config)
+        StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
+            .expect("StudySetup::new")
     }
 
     const T1_ID: i32 = 1;
@@ -2483,7 +2125,7 @@ mod d37_anticipated_commissioning_simulation {
     #[test]
     fn anticipated_commissioning_window_gates_simulation_output() {
         let dir = case_dir();
-        let (mut setup, _config) = build_setup(&dir);
+        let mut setup = build_setup(&dir);
 
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
@@ -2611,7 +2253,7 @@ mod d37_anticipated_commissioning_simulation {
     #[test]
     fn anticipated_commissioning_warm_start_zero_basis_rejections() {
         let dir = case_dir();
-        let (mut setup, _config) = build_setup(&dir);
+        let mut setup = build_setup(&dir);
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
 
@@ -2670,18 +2312,14 @@ mod anticipated_commitment_at_cap {
         StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -2849,93 +2487,6 @@ mod anticipated_commitment_at_cap {
             })
             .collect();
 
-        fn default_hydro_bounds() -> HydroStageBounds {
-            HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            }
-        }
-
-        fn default_hydro_block_bounds() -> HydroBlockBounds {
-            HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            }
-        }
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 2,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 2,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: CAP_MW,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 1000.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: EntityId(3),
@@ -2955,18 +2506,31 @@ mod anticipated_commitment_at_cap {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal_ant, thermal_backup])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system: valid")
+        let k_max = 2;
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal_ant.clone(), thermal_backup.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            k_max,
+            |_, bounds, penalties| {
+                for s in 0..n_stages {
+                    penalties
+                        .hydro_penalties_mut(0, s)
+                        .storage_violation_below_cost = 500.0;
+                }
+                for s in 0..n_stages + k_max {
+                    bounds.thermal_block_base_mut(0, s).cost_per_mwh = 0.0;
+                    bounds.thermal_block_base_mut(1, s).cost_per_mwh = 0.0;
+                }
+            },
+        )
     }
 
     fn build_config() -> Config {
@@ -2976,6 +2540,7 @@ mod anticipated_commitment_at_cap {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -2988,7 +2553,7 @@ mod anticipated_commitment_at_cap {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -3058,22 +2623,19 @@ mod faithful_resolution {
         StageStateConfig,
     };
     use novomodelo_core::{
-        AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
-        ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
-        InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
-        PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
-        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        WaterBucketStages,
+        AnticipatedCommitmentHistory, EntityId, InitialConditions, PostStudyStage, PostStudyStages,
+        SystemBuilder, WaterBucketStages,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection,
-        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
-        UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        SimulationSelection, StoppingRuleConfig, TrainingConfig, TrainingSelection,
+        TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_io::{ENTITY_SLOT_DATE_SENTINEL, StateFamily, decode_slot_date};
     use novomodelo_sddp::study_horizon_end;
+    use novomodelo_sddp::test_support::ymd;
 
     use super::common::build_setup_in_code;
     use super::common::builders::{
@@ -3086,19 +2648,15 @@ mod faithful_resolution {
     const LEAD_STAGES: u32 = 7;
     const N_POST_STUDY_STAGES: usize = 7;
 
-    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(year, month, day).expect("hardcoded fixture date is valid")
-    }
-
     /// Study-stage boundaries (five dates for four stages): three operative
     /// weeks (168 h each) then one month (648 h) — the reference-deck shape.
     fn study_boundaries() -> [NaiveDate; N_STUDY_STAGES + 1] {
         [
-            date(2026, 3, 14),
-            date(2026, 3, 21),
-            date(2026, 3, 28),
-            date(2026, 4, 4),
-            date(2026, 5, 1),
+            ymd(2026, 3, 14),
+            ymd(2026, 3, 21),
+            ymd(2026, 3, 28),
+            ymd(2026, 4, 4),
+            ymd(2026, 5, 1),
         ]
     }
     const STUDY_DURATION_HOURS: [f64; N_STUDY_STAGES] = [168.0, 168.0, 168.0, 648.0];
@@ -3155,7 +2713,7 @@ mod faithful_resolution {
             .iter()
             .zip(POST_STUDY_DURATION_HOURS)
             .map(|(&(y, m, d), duration_hours)| PostStudyStage {
-                start_date: date(y, m, d),
+                start_date: ymd(y, m, d),
                 duration_hours,
             })
             .collect();
@@ -3171,7 +2729,7 @@ mod faithful_resolution {
             BUS_ID,
             BusSpec {
                 name: "B1".to_string(),
-                operational_start_date: date(2026, 3, 14),
+                operational_start_date: ymd(2026, 3, 14),
                 deficit_segments: vec![DeficitSegment {
                     depth_mw: None,
                     cost_per_mwh: 100_000.0,
@@ -3186,7 +2744,7 @@ mod faithful_resolution {
             ANTICIPATED_ID,
             ThermalSpec {
                 name: "T_ant".to_string(),
-                operational_start_date: date(2026, 3, 14),
+                operational_start_date: ymd(2026, 3, 14),
                 bus_id: BUS_ID,
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
@@ -3208,97 +2766,6 @@ mod faithful_resolution {
                 std_mw: 0.0,
             })
             .collect()
-    }
-
-    /// Thermal bounds/cost over the full delivery axis (`n_stages + lead`), the
-    /// same extended stride `fill_anticipated_columns` reads a delivery-anchored
-    /// decision's bounds from.
-    fn bounds() -> ResolvedBounds {
-        let k_max = LEAD_STAGES as usize;
-        let mut b = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 0,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STUDY_STAGES,
-                k_max,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 0.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds::default(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-        for s in 0..(N_STUDY_STAGES + k_max) {
-            *b.thermal_block_base_mut(0, s) = ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 500.0,
-                cost_per_mwh: 10.0,
-            };
-        }
-        b
-    }
-
-    fn penalties() -> ResolvedPenalties {
-        ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 0,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STUDY_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        )
     }
 
     /// One `past_anticipated_commitments` window per class-2 (in-study,
@@ -3329,8 +2796,8 @@ mod faithful_resolution {
                 let (ny, nm, nd) = POST_STUDY_STARTS[i + 1];
                 AnticipatedCommitmentHistory {
                     thermal_id: ANTICIPATED_ID,
-                    start_date: date(y, m, d),
-                    end_date: date(ny, nm, nd),
+                    start_date: ymd(y, m, d),
+                    end_date: ymd(ny, nm, nd),
                     value_mw: CLASS4_SEEDS_MW[i],
                 }
             })
@@ -3340,23 +2807,25 @@ mod faithful_resolution {
     fn build_system() -> novomodelo_core::System {
         let mut past_anticipated_commitments = class2_seed_windows();
         past_anticipated_commitments.extend(class4_seed_windows());
-        SystemBuilder::new()
-            .buses(vec![bus()])
-            .thermals(vec![anticipated_thermal()])
-            .stages(study_stages())
-            .load_models(load_models())
-            .bounds(bounds())
-            .penalties(penalties())
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments,
-                recent_observations: vec![],
-                past_defluences: vec![],
-            })
-            .post_study_stages(Some(post_study_stages()))
-            .build()
-            .expect("build_system: valid system")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus()])
+                    .thermals(vec![anticipated_thermal()])
+                    .stages(study_stages())
+                    .load_models(load_models())
+                    .initial_conditions(InitialConditions {
+                        storage: vec![],
+                        filling_storage: vec![],
+                        past_anticipated_commitments: past_anticipated_commitments.clone(),
+                        recent_observations: vec![],
+                        past_defluences: vec![],
+                    })
+                    .post_study_stages(Some(post_study_stages()))
+            },
+            LEAD_STAGES as usize,
+            |_, _, _| {},
+        )
     }
 
     fn build_config() -> Config {
@@ -3366,6 +2835,7 @@ mod faithful_resolution {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -3377,7 +2847,7 @@ mod faithful_resolution {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -3397,10 +2867,10 @@ mod faithful_resolution {
     /// start date.
     fn expected_class3_intervals() -> [(NaiveDate, NaiveDate); 4] {
         [
-            (date(2026, 5, 16), date(2026, 5, 23)),
-            (date(2026, 5, 23), date(2026, 5, 30)),
-            (date(2026, 5, 30), date(2026, 6, 6)),
-            (date(2026, 6, 6), date(2026, 6, 30)),
+            (ymd(2026, 5, 16), ymd(2026, 5, 23)),
+            (ymd(2026, 5, 23), ymd(2026, 5, 30)),
+            (ymd(2026, 5, 30), ymd(2026, 6, 6)),
+            (ymd(2026, 6, 6), ymd(2026, 6, 30)),
         ]
     }
 

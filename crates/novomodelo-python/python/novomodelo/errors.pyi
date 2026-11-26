@@ -1,9 +1,9 @@
 """Type stubs for the `novomodelo.errors` exception hierarchy.
 
-Every leaf subclasses both `NovomodeloError` and the matching builtin, so existing
-`except OSError` / `except ValueError` / `except RuntimeError` code keeps
-catching while new code can catch the typed class or the common `NovomodeloError`
-base. The qualified name of every class is `novomodelo.errors.<Name>`.
+Every leaf subclasses both `NovomodeloError` and the matching builtin, so a leaf
+is caught by `except OSError` / `except ValueError` / `except RuntimeError` as
+well as by its typed class or the common `NovomodeloError` base. The qualified
+name of every class is `novomodelo.errors.<Name>`.
 """
 
 class NovomodeloError(Exception):

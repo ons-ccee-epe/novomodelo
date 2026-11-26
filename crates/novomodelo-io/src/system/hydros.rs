@@ -21,6 +21,7 @@
 //!     ],
 //!     "reservoir": { "min_storage_hm3": 5733.0, "max_storage_hm3": 22950.0 },
 //!     "outflow": { "min_outflow_m3s": 0.0, "max_outflow_m3s": null },
+//!     "spillage": { "max_spillage_m3s": 500.0 },
 //!     "generation": {
 //!       "model": "constant_productivity",
 //!       "min_turbined_m3s": 0.0, "max_turbined_m3s": 1692.0,
@@ -41,7 +42,8 @@
 //!
 //! 1. No two hydros share the same `id`.
 //! 2. `min_storage_hm3 >= 0`, `max_storage_hm3 >= 0`, `min_storage_hm3 <= max_storage_hm3`.
-//! 3. `min_outflow_m3s >= 0`; `diversion.max_flow_m3s >= 0` when present.
+//! 3. `min_outflow_m3s >= 0`; `diversion.max_flow_m3s >= 0` when present;
+//!    `spillage.min_spillage_m3s >= 0` and `spillage.max_spillage_m3s >= 0` when present.
 //! 4. `min_turbined_m3s >= 0`, `max_turbined_m3s >= 0`, `min_turbined_m3s <= max_turbined_m3s`.
 //! 5. `min_generation_mw <= max_generation_mw`.
 //! 6. Evaporation array, if present, must have exactly 12 elements.
@@ -57,7 +59,8 @@ use novomodelo_core::{
     EntityId,
     entities::{
         DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
-        HydroGenerationModel, HydroUnitGroup, TailraceModel, TailracePoint,
+        HydroGenerationModel, HydroUnitGroup, TailraceFlow, TailraceFlowInfluence, TailraceModel,
+        TailracePoint,
     },
     penalty::{GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_hydro_penalties},
 };
@@ -110,6 +113,9 @@ pub(crate) struct RawHydro {
     reservoir: RawReservoir,
     /// Total outflow bounds.
     outflow: RawOutflow,
+    /// Spillage bounds. Absent or null = unbounded.
+    #[serde(default)]
+    spillage: Option<RawSpillage>,
     /// Generation model configuration (tagged union on `model` field).
     generation: RawGeneration,
     /// Tailrace elevation model. Absent or null = no tailrace.
@@ -127,6 +133,10 @@ pub(crate) struct RawHydro {
     /// Diversion channel configuration. Absent or null = no diversion channel.
     #[serde(default)]
     diversion: Option<RawDiversionChannel>,
+    /// Flow that drives the tailrace level. Absent or null = the plant's own
+    /// total outflow, no influences.
+    #[serde(default)]
+    tailrace_flow: Option<RawTailraceFlow>,
     /// Reservoir filling configuration. Absent or null = no filling operation.
     #[serde(default)]
     filling: Option<RawFillingConfig>,
@@ -176,6 +186,22 @@ pub(crate) struct RawOutflow {
     min_outflow_m3s: f64,
     /// Maximum total outflow (m³/s). `null` = no upper bound.
     max_outflow_m3s: Option<f64>,
+}
+
+/// The `spillage` sub-object.
+///
+/// A `null` or omitted key leaves that side unbounded. Spillage values in
+/// `constraints/hydro_bounds.parquet` replace these per stage or block.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawSpillage {
+    /// Minimum spillage (m³/s).
+    #[serde(default)]
+    min_spillage_m3s: Option<f64>,
+    /// Maximum spillage (m³/s).
+    #[serde(default)]
+    max_spillage_m3s: Option<f64>,
 }
 
 /// The `generation` sub-object.
@@ -333,6 +359,40 @@ pub(crate) struct RawDiversionChannel {
     max_flow_m3s: Option<f64>,
 }
 
+/// The `tailrace_flow` sub-object: the flow (m³/s) whose value sets the
+/// tailrace level, `own_outflow_factor · own outflow + Σ factor · outflow of
+/// each listed hydro + Σ factor · incremental inflow of each listed hydro`.
+/// Factors are non-negative dimensionless weights and need not sum to 1.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawTailraceFlow {
+    /// Weight on this plant's own turbined plus spilled outflow (m³/s).
+    /// Absent or null = 1.0.
+    #[serde(default)]
+    own_outflow_factor: Option<f64>,
+    /// Other hydros whose total outflow (m³/s) adds to this plant's tailrace
+    /// flow. Absent = none. May not name the declaring hydro: its own outflow
+    /// is weighted by `own_outflow_factor` alone.
+    #[serde(default)]
+    outflow_influences: Vec<RawTailraceFlowInfluence>,
+    /// Hydros whose incremental inflow (m³/s) adds to this plant's tailrace
+    /// flow. Absent = none. May name the declaring hydro.
+    #[serde(default)]
+    incremental_inflow_influences: Vec<RawTailraceFlowInfluence>,
+}
+
+/// One weighted entry of a `tailrace_flow` influence list.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawTailraceFlowInfluence {
+    /// Identifier of the influencing hydro plant; at most once per list.
+    hydro_id: i32,
+    /// Non-negative dimensionless weight on that plant's flow.
+    factor: f64,
+}
+
 /// The `filling` sub-object.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -440,6 +500,7 @@ pub(crate) struct RawHydroPenaltyOverrides {
 /// | `min_storage_hm3 < 0` or `max_storage_hm3 < 0`    | [`LoadError::SchemaError`] |
 /// | `min_storage_hm3 > max_storage_hm3`                | [`LoadError::SchemaError`] |
 /// | `min_outflow_m3s < 0`                              | [`LoadError::SchemaError`] |
+/// | `spillage.min_spillage_m3s < 0` or `spillage.max_spillage_m3s < 0` | [`LoadError::SchemaError`] |
 /// | `diversion.max_flow_m3s < 0`                       | [`LoadError::SchemaError`] |
 /// | `min_turbined_m3s < 0` or `max_turbined_m3s < 0`  | [`LoadError::SchemaError`] |
 /// | `max_turbined_m3s < min_turbined_m3s`              | [`LoadError::SchemaError`] |
@@ -493,7 +554,9 @@ fn validate_raw_hydros(raw: &RawHydroFile, path: &Path) -> Result<(), LoadError>
     for (i, hydro) in raw.hydros.iter().enumerate() {
         validate_reservoir(&hydro.reservoir, i, path)?;
         validate_outflow(&hydro.outflow, i, path)?;
+        validate_spillage(hydro.spillage.as_ref(), i, path)?;
         validate_diversion(hydro.diversion.as_ref(), i, path)?;
+        validate_tailrace_flow(hydro.tailrace_flow.as_ref(), hydro.id, i, path)?;
         validate_generation(&hydro.generation, i, path)?;
         if let Some(evap) = &hydro.evaporation {
             validate_evaporation(
@@ -619,6 +682,31 @@ fn validate_outflow(
     Ok(())
 }
 
+fn validate_spillage(
+    spillage: Option<&RawSpillage>,
+    hydro_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    let Some(spillage) = spillage else {
+        return Ok(());
+    };
+    for (key, value) in [
+        ("min_spillage_m3s", spillage.min_spillage_m3s),
+        ("max_spillage_m3s", spillage.max_spillage_m3s),
+    ] {
+        if let Some(value) = value
+            && value < 0.0
+        {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: format!("hydros[{hydro_index}].spillage.{key}"),
+                message: format!("{key} must be >= 0, got {value}"),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_diversion(
     diversion: Option<&RawDiversionChannel>,
     hydro_index: usize,
@@ -632,6 +720,68 @@ fn validate_diversion(
             field: format!("hydros[{hydro_index}].diversion.max_flow_m3s"),
             message: format!("max_flow_m3s must be >= 0, got {max_flow}"),
         });
+    }
+    Ok(())
+}
+
+fn validate_tailrace_flow(
+    flow: Option<&RawTailraceFlow>,
+    hydro_id: i32,
+    hydro_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    let Some(flow) = flow else {
+        return Ok(());
+    };
+    let prefix = format!("hydros[{hydro_index}].tailrace_flow");
+    let schema_error = |field: String, message: String| LoadError::SchemaError {
+        path: path.to_path_buf(),
+        field,
+        message,
+    };
+    if let Some(own) = flow.own_outflow_factor
+        && (!own.is_finite() || own < 0.0)
+    {
+        return Err(schema_error(
+            format!("{prefix}.own_outflow_factor"),
+            format!("own_outflow_factor must be finite and >= 0, got {own}"),
+        ));
+    }
+    for (list_name, list) in [
+        ("outflow_influences", &flow.outflow_influences),
+        (
+            "incremental_inflow_influences",
+            &flow.incremental_inflow_influences,
+        ),
+    ] {
+        let mut seen: HashSet<i32> = HashSet::new();
+        for (j, influence) in list.iter().enumerate() {
+            let entry = format!("{prefix}.{list_name}[{j}]");
+            if !influence.factor.is_finite() || influence.factor < 0.0 {
+                return Err(schema_error(
+                    format!("{entry}.factor"),
+                    format!("factor must be finite and >= 0, got {}", influence.factor),
+                ));
+            }
+            if !seen.insert(influence.hydro_id) {
+                return Err(schema_error(
+                    format!("{entry}.hydro_id"),
+                    format!(
+                        "hydro {} is listed more than once in {list_name}",
+                        influence.hydro_id
+                    ),
+                ));
+            }
+            if list_name == "outflow_influences" && influence.hydro_id == hydro_id {
+                return Err(schema_error(
+                    format!("{entry}.hydro_id"),
+                    format!(
+                        "hydro {hydro_id} lists itself in outflow_influences; a hydro's own \
+                         outflow is set by own_outflow_factor, not by listing itself"
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -796,6 +946,10 @@ fn convert_hydros(
                 max_flow_m3s: d.max_flow_m3s,
             });
 
+            let tailrace_flow = raw_hydro
+                .tailrace_flow
+                .map_or_else(TailraceFlow::default, convert_tailrace_flow);
+
             let filling = raw_hydro.filling.map(|f| FillingConfig {
                 start_stage_id: f.start_stage_id,
                 filling_min_rate_m3s: f.filling_min_rate_m3s,
@@ -832,6 +986,8 @@ fn convert_hydros(
                 max_storage_hm3: raw_hydro.reservoir.max_storage_hm3,
                 min_outflow_m3s: raw_hydro.outflow.min_outflow_m3s,
                 max_outflow_m3s: raw_hydro.outflow.max_outflow_m3s,
+                min_spillage_m3s: raw_hydro.spillage.as_ref().and_then(|s| s.min_spillage_m3s),
+                max_spillage_m3s: raw_hydro.spillage.as_ref().and_then(|s| s.max_spillage_m3s),
                 generation_model,
                 min_turbined_m3s,
                 max_turbined_m3s,
@@ -848,8 +1004,10 @@ fn convert_hydros(
                 diversion,
                 filling,
                 penalties,
+                tailrace_flow,
             };
             hydro.sort_unit_groups();
+            hydro.tailrace_flow.sort_influences();
             Ok(hydro)
         })
         .collect::<Result<_, LoadError>>()?;
@@ -888,6 +1046,22 @@ fn convert_tailrace(raw: RawTailrace) -> TailraceModel {
                 })
                 .collect(),
         },
+    }
+}
+
+fn convert_tailrace_flow(raw: RawTailraceFlow) -> TailraceFlow {
+    let convert_list = |list: Vec<RawTailraceFlowInfluence>| {
+        list.into_iter()
+            .map(|i| TailraceFlowInfluence {
+                hydro_id: EntityId(i.hydro_id),
+                factor: i.factor,
+            })
+            .collect()
+    };
+    TailraceFlow {
+        own_outflow_factor: raw.own_outflow_factor.unwrap_or(1.0),
+        outflow_influences: convert_list(raw.outflow_influences),
+        incremental_inflow_influences: convert_list(raw.incremental_inflow_influences),
     }
 }
 
@@ -1020,7 +1194,7 @@ mod tests {
       ]
     }"#;
 
-    // ── AC: parse valid hydros — full and minimal ──────────────────────────────
+    // ── parse valid hydros — full and minimal ──────────────────────────────────
 
     /// Given a valid `hydros.json` with 2 hydros (one full, one minimal), `parse_hydros`
     /// returns `Ok(vec)` sorted by `id`; the full hydro has all optional fields mapped.
@@ -1097,7 +1271,7 @@ mod tests {
         assert!((h1.penalties.spillage_cost - 0.01).abs() < f64::EPSILON);
     }
 
-    // ── AC: FPHA generation model ──────────────────────────────────────────────
+    // ── FPHA generation model ──────────────────────────────────────────────────
 
     /// Given a hydro with `generation.model: "fpha"`, the resulting `Hydro` has
     /// `generation_model: HydroGenerationModel::Fpha` (no `productivity_mw_per_m3s`).
@@ -1135,7 +1309,7 @@ mod tests {
     }
 
     #[test]
-    fn test_retired_linearized_head_generation_model_is_rejected() {
+    fn test_linearized_head_generation_model_is_rejected() {
         let json = r#"{
           "hydros": [{
             "id": 0, "name": "LH Plant",
@@ -1166,7 +1340,7 @@ mod tests {
         );
     }
 
-    // ── AC: tailrace piecewise variant ────────────────────────────────────────
+    // ── tailrace piecewise variant ────────────────────────────────────────────
 
     /// Tailrace with `"type": "piecewise"` is parsed correctly.
     #[test]
@@ -1212,7 +1386,7 @@ mod tests {
         );
     }
 
-    // ── AC: hydraulic losses constant variant ─────────────────────────────────
+    // ── hydraulic losses constant variant ─────────────────────────────────────
 
     /// Hydraulic losses with `"type": "constant"` is parsed correctly.
     #[test]
@@ -1252,7 +1426,7 @@ mod tests {
         );
     }
 
-    // ── AC: entity-level penalty partial override ─────────────────────────────
+    // ── entity-level penalty partial override ─────────────────────────────────
 
     /// Entity-level penalty partial override: overridden fields use entity value,
     /// non-overridden fields use global default.
@@ -1444,7 +1618,7 @@ mod tests {
         );
     }
 
-    // ── AC: entity-level penalty all-default (no penalties block) ─────────────
+    // ── entity-level penalty all-default (no penalties block) ─────────────────
 
     /// No `penalties` block in JSON → all hydro penalties use global defaults.
     #[test]
@@ -1507,7 +1681,7 @@ mod tests {
         );
     }
 
-    // ── AC: filling config with absent filling_min_rate_m3s ───────────────────
+    // ── filling config with absent filling_min_rate_m3s ───────────────────────
 
     /// Filling config with no `filling_min_rate_m3s` field defaults to 0.0 (passive filling).
     #[test]
@@ -1547,7 +1721,7 @@ mod tests {
         ));
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `hydros.json` with duplicate `id` values, `parse_hydros` returns
     /// `Err(LoadError::SchemaError)` with field containing `"hydros[N].id"` and
@@ -1585,7 +1759,7 @@ mod tests {
         }
     }
 
-    // ── AC: reservoir validation ───────────────────────────────────────────────
+    // ── reservoir validation ───────────────────────────────────────────────────
 
     /// `min_storage_hm3 > max_storage_hm3` → `SchemaError` with field containing
     /// `"reservoir"` and message containing `"min_storage_hm3"`.
@@ -1675,7 +1849,7 @@ mod tests {
         );
     }
 
-    // ── AC: generation bound validation ───────────────────────────────────────
+    // ── generation bound validation ───────────────────────────────────────────
 
     /// `max_generation_mw < min_generation_mw` → `SchemaError`.
     #[test]
@@ -1764,6 +1938,106 @@ mod tests {
         );
     }
 
+    /// One hydro per entry, ids `0..`; each entry is the raw `"spillage": ...,`
+    /// member (trailing comma included) or an empty string for an absent key.
+    fn parse_with_spillage(spillage_members: &[&str]) -> Result<Vec<Hydro>, LoadError> {
+        let hydros = spillage_members
+            .iter()
+            .enumerate()
+            .map(|(id, spillage)| {
+                format!(
+                    r#"{{
+            "id": {id}, "name": "H{id}",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": {{ "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 }},
+            "outflow": {{ "min_outflow_m3s": 0.0, "max_outflow_m3s": null }},
+            {spillage}
+            "generation": {{
+              "model": "constant_productivity",
+              "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0, "max_generation_mw": 250.0
+            }},
+            "unit_groups": [
+              {{ "id": 0, "name": "G", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }}
+            ]
+          }}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let f = write_json(&format!(r#"{{ "hydros": [{hydros}] }}"#));
+        parse_hydros(f.path(), &make_global())
+    }
+
+    #[test]
+    fn spillage_absent_null_and_empty_are_unbounded() {
+        let hydros =
+            parse_with_spillage(&["", r#""spillage": null,"#, r#""spillage": {},"#]).unwrap();
+        assert_eq!(hydros.len(), 3);
+        for hydro in &hydros {
+            assert_eq!(hydro.min_spillage_m3s, None);
+            assert_eq!(hydro.max_spillage_m3s, None);
+        }
+    }
+
+    #[test]
+    fn spillage_values_are_copied() {
+        let hydros = parse_with_spillage(&[
+            r#""spillage": { "min_spillage_m3s": 2.0, "max_spillage_m3s": 500.0 },"#,
+            r#""spillage": { "max_spillage_m3s": 500.0 },"#,
+            r#""spillage": { "min_spillage_m3s": 2.0, "max_spillage_m3s": null },"#,
+            r#""spillage": { "min_spillage_m3s": 0.0, "max_spillage_m3s": 0.0 },"#,
+        ])
+        .unwrap();
+        let bounds: Vec<_> = hydros
+            .iter()
+            .map(|h| (h.min_spillage_m3s, h.max_spillage_m3s))
+            .collect();
+        assert_eq!(
+            bounds,
+            [
+                (Some(2.0), Some(500.0)),
+                (None, Some(500.0)),
+                (Some(2.0), None),
+                (Some(0.0), Some(0.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn negative_max_spillage_is_schema_error() {
+        let err =
+            parse_with_spillage(&[r#""spillage": { "max_spillage_m3s": -1.0 },"#]).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, .. }
+                if field == "hydros[0].spillage.max_spillage_m3s"),
+            "expected SchemaError for negative max_spillage_m3s, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn negative_min_spillage_is_schema_error() {
+        let err =
+            parse_with_spillage(&[r#""spillage": { "min_spillage_m3s": -1.0 },"#]).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, .. }
+                if field == "hydros[0].spillage.min_spillage_m3s"),
+            "expected SchemaError for negative min_spillage_m3s, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_spillage_key_is_refused() {
+        let err = parse_with_spillage(&[r#""spillage": { "max_spill": 1.0 },"#]).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
+        );
+    }
+
     fn parse_with_diversion(diversion: &str) -> Result<Vec<Hydro>, LoadError> {
         let json = format!(
             r#"{{
@@ -1819,7 +2093,160 @@ mod tests {
         );
     }
 
-    // ── AC: evaporation array length validation ────────────────────────────────
+    fn hydro_with_tailrace_flow(id: i32, tailrace_flow: &str) -> String {
+        format!(
+            r#"{{
+            "id": {id}, "name": "H{id}",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": {{ "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 }},
+            "outflow": {{ "min_outflow_m3s": 0.0, "max_outflow_m3s": null }},
+            "generation": {{
+              "model": "constant_productivity",
+              "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0, "max_generation_mw": 250.0
+            }},
+            "unit_groups": [
+              {{ "id": 0, "name": "G", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }}
+            ]{tailrace_flow}
+          }}"#
+        )
+    }
+
+    fn parse_tailrace_flow_hydros(entries: &[String]) -> Result<Vec<Hydro>, LoadError> {
+        let json = format!(r#"{{ "hydros": [{}] }}"#, entries.join(","));
+        let f = write_json(&json);
+        parse_hydros(f.path(), &make_global())
+    }
+
+    fn parse_single_tailrace_flow(tailrace_flow: &str) -> Result<Vec<Hydro>, LoadError> {
+        parse_tailrace_flow_hydros(&[hydro_with_tailrace_flow(
+            10,
+            &format!(r#", "tailrace_flow": {tailrace_flow}"#),
+        )])
+    }
+
+    #[test]
+    fn tailrace_flow_parses_and_sorts_influences() {
+        let hydros = parse_single_tailrace_flow(
+            r#"{
+              "own_outflow_factor": 1.03,
+              "outflow_influences": [
+                { "hydro_id": 30, "factor": 0.25 },
+                { "hydro_id": 20, "factor": 1.17 }
+              ],
+              "incremental_inflow_influences": [{ "hydro_id": 40, "factor": 0.07 }]
+            }"#,
+        )
+        .unwrap();
+        let flow = &hydros[0].tailrace_flow;
+        assert_eq!(flow.own_outflow_factor.to_bits(), 1.03_f64.to_bits());
+        let outflow: Vec<(i32, u64)> = flow
+            .outflow_influences
+            .iter()
+            .map(|i| (i.hydro_id.0, i.factor.to_bits()))
+            .collect();
+        assert_eq!(
+            outflow,
+            vec![(20, 1.17_f64.to_bits()), (30, 0.25_f64.to_bits())]
+        );
+        let incremental: Vec<(i32, u64)> = flow
+            .incremental_inflow_influences
+            .iter()
+            .map(|i| (i.hydro_id.0, i.factor.to_bits()))
+            .collect();
+        assert_eq!(incremental, vec![(40, 0.07_f64.to_bits())]);
+    }
+
+    #[test]
+    fn tailrace_flow_absent_is_the_inert_default() {
+        let absent = parse_tailrace_flow_hydros(&[hydro_with_tailrace_flow(10, "")]).unwrap();
+        assert_eq!(absent[0].tailrace_flow, TailraceFlow::default());
+        let empty = parse_single_tailrace_flow("{}").unwrap();
+        assert_eq!(empty[0].tailrace_flow, TailraceFlow::default());
+    }
+
+    #[test]
+    fn tailrace_flow_refuses_self_outflow_duplicate_and_bad_factors() {
+        for (flow, expected_field) in [
+            (
+                r#"{ "outflow_influences": [{ "hydro_id": 10, "factor": 1.0 }] }"#,
+                "hydros[0].tailrace_flow.outflow_influences[0].hydro_id",
+            ),
+            (
+                r#"{ "incremental_inflow_influences": [
+                    { "hydro_id": 20, "factor": 1.0 }, { "hydro_id": 20, "factor": 0.5 }
+                ] }"#,
+                "hydros[0].tailrace_flow.incremental_inflow_influences[1].hydro_id",
+            ),
+            (
+                r#"{ "outflow_influences": [{ "hydro_id": 20, "factor": -0.1 }] }"#,
+                "hydros[0].tailrace_flow.outflow_influences[0].factor",
+            ),
+            (
+                r#"{ "own_outflow_factor": -1.0 }"#,
+                "hydros[0].tailrace_flow.own_outflow_factor",
+            ),
+        ] {
+            let err = parse_single_tailrace_flow(flow).unwrap_err();
+            assert!(
+                matches!(&err, LoadError::SchemaError { field, .. } if field == expected_field),
+                "tailrace_flow = {flow}: got {err:?}"
+            );
+        }
+
+        let err = parse_single_tailrace_flow(r#"{ "factor_turbined": 1.0 }"#).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::ParseError { .. }),
+            "expected ParseError for an unknown tailrace_flow key, got: {err:?}"
+        );
+        assert!(err.to_string().contains("factor_turbined"), "got: {err}");
+
+        parse_single_tailrace_flow(
+            r#"{
+              "own_outflow_factor": 0.0,
+              "outflow_influences": [{ "hydro_id": 20, "factor": 0.0 }],
+              "incremental_inflow_influences": [{ "hydro_id": 30, "factor": 0.0 }]
+            }"#,
+        )
+        .unwrap();
+
+        parse_tailrace_flow_hydros(&[
+            hydro_with_tailrace_flow(
+                10,
+                r#", "tailrace_flow": { "outflow_influences": [{ "hydro_id": 20, "factor": 1.0 }] }"#,
+            ),
+            hydro_with_tailrace_flow(
+                20,
+                r#", "tailrace_flow": { "outflow_influences": [{ "hydro_id": 10, "factor": 1.0 }] }"#,
+            ),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn tailrace_flow_accepts_a_self_incremental_inflow_influence() {
+        let hydros = parse_single_tailrace_flow(
+            r#"{ "incremental_inflow_influences": [
+                { "hydro_id": 10, "factor": 0.07 }, { "hydro_id": 20, "factor": 0.5 }
+            ] }"#,
+        )
+        .unwrap();
+        let incremental: Vec<(i32, u64)> = hydros[0]
+            .tailrace_flow
+            .incremental_inflow_influences
+            .iter()
+            .map(|i| (i.hydro_id.0, i.factor.to_bits()))
+            .collect();
+        assert_eq!(
+            incremental,
+            vec![(10, 0.07_f64.to_bits()), (20, 0.5_f64.to_bits())]
+        );
+    }
+
+    // ── evaporation array length validation ────────────────────────────────────
 
     /// Evaporation array with wrong element count → `SchemaError`.
     #[test]
@@ -1857,7 +2284,7 @@ mod tests {
         }
     }
 
-    // ── AC: unknown generation model → SchemaError ────────────────────────────
+    // ── unknown generation model → SchemaError ────────────────────────────────
 
     /// Unknown `generation.model` value → `SchemaError`.
     #[test]
@@ -1885,7 +2312,7 @@ mod tests {
         );
     }
 
-    // ── AC: travel_time_hours (cascade arc) ───────────────────────────────────
+    // ── travel_time_hours (cascade arc) ───────────────────────────────────────
 
     /// Given a hydro with `"travel_time_hours": 360.0`, `parse_hydros` returns a
     /// `Hydro` with `travel_time_hours == Some(360.0)`.
@@ -1919,7 +2346,7 @@ mod tests {
     }
 
     /// Given a hydro with no `travel_time_hours` key, `parse_hydros` returns a
-    /// `Hydro` with `travel_time_hours == None` (backward compatible).
+    /// `Hydro` with `travel_time_hours == None`.
     #[test]
     fn test_travel_time_hours_absent_is_none() {
         let json = format!(r#"{{ "hydros": [{MINIMAL_HYDRO_JSON}] }}"#);
@@ -1930,7 +2357,7 @@ mod tests {
         assert_eq!(hydros[0].travel_time_hours, None);
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given hydros in reverse ID order in JSON, `parse_hydros` returns a
     /// `Vec<Hydro>` sorted by ascending `id`.
@@ -1988,7 +2415,7 @@ mod tests {
         assert_eq!(hydros1[1].id, EntityId(1));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_hydros` returns `Err(LoadError::IoError)`.
     #[test]
@@ -2004,7 +2431,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_hydros` returns `Err(LoadError::ParseError)`.
     #[test]
@@ -2061,7 +2488,7 @@ mod tests {
         );
     }
 
-    // ── AC: evaporation reference_volumes_hm3 ─────────────────────────────────
+    // ── evaporation reference_volumes_hm3 ─────────────────────────────────────
 
     /// Helper: reservoir with min=1000 hm³, max=20000 hm³ and evaporation coefficients.
     const HYDRO_WITH_EVAP_BASE: &str = r#"{
@@ -2129,7 +2556,7 @@ mod tests {
 
     /// Given a `hydros.json` where the evaporation block has no
     /// `reference_volumes_hm3` key, the returned `Hydro` has
-    /// `evaporation_reference_volumes_hm3 == None` (backward compatible).
+    /// `evaporation_reference_volumes_hm3 == None`.
     #[test]
     fn test_evaporation_reference_volumes_absent_is_none() {
         let json = r#"{
@@ -2325,7 +2752,7 @@ mod tests {
     // ── Additional edge case: no evaporation block → reference volumes also None ─
 
     /// When the entire `evaporation` block is absent, both evaporation fields are
-    /// `None` (backward compatible).
+    /// `None`.
     #[test]
     fn test_no_evaporation_block_both_fields_none() {
         let json = format!(r#"{{ "hydros": [{HYDRO_WITH_EVAP_BASE}] }}"#);
@@ -2337,21 +2764,18 @@ mod tests {
         assert!(hydros[0].evaporation_reference_volumes_hm3.is_none());
     }
 
-    // ── AC: legacy productivity_mw_per_m3s is rejected ───────────────────────
+    // ── inline productivity_mw_per_m3s is rejected ───────────────────────────
 
-    /// Given a `hydros.json` whose `generation` block contains the legacy
+    /// Given a `hydros.json` whose `generation` block contains a
     /// `productivity_mw_per_m3s` field, `parse_hydros` returns an `Err` whose
-    /// message contains the substring `"productivity_mw_per_m3s"`.
-    ///
-    /// This guards against silent acceptance of stale case files: the field is
-    /// no longer a member of any `RawGeneration` variant, and
-    /// `#[serde(deny_unknown_fields)]` ensures the presence of the legacy key
-    /// surfaces as a hard parse error rather than being silently ignored.
+    /// message contains the substring `"productivity_mw_per_m3s"`: no
+    /// `RawGeneration` variant has the field, and `#[serde(deny_unknown_fields)]`
+    /// makes it a hard parse error rather than a silently ignored key.
     #[test]
-    fn hydros_json_rejects_legacy_inline_productivity() {
+    fn hydros_json_rejects_inline_productivity() {
         let json = r#"{
           "hydros": [{
-            "id": 0, "name": "LegacyPlant",
+            "id": 0, "name": "Plant",
             "operational_start_date": "2024-01-01",
             "downstream_id": null,
             "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 },
@@ -2376,19 +2800,20 @@ mod tests {
         );
     }
 
-    // ── AC: legacy plant-level bus_id is rejected ────────────────────────────
+    // ── a plant-level bus_id is rejected ─────────────────────────────────────
 
-    /// Given a `hydros.json` whose hydro still carries the removed plant-level
-    /// `"bus_id"` key, `parse_hydros` returns `Err(LoadError::ParseError)` — serde's
+    /// Given a `hydros.json` whose hydro carries a plant-level `"bus_id"` key,
+    /// `parse_hydros` returns `Err(LoadError::ParseError)` — serde's
     /// `deny_unknown_fields` message is "unknown field", which does not match
     /// `parse_hydros`'s "unknown variant" / "missing field" reclassification, so it
     /// falls through to `LoadError::parse` rather than `LoadError::SchemaError`.
-    /// The message names `bus_id`; `unit_groups[].bus_id` is the replacement.
+    /// The message names `bus_id`; the bus is declared per unit group
+    /// (`unit_groups[].bus_id`).
     #[test]
-    fn test_legacy_plant_bus_id_is_rejected() {
+    fn test_plant_level_bus_id_is_rejected() {
         let json = r#"{
           "hydros": [{
-            "id": 0, "name": "Legacy", "bus_id": 0,
+            "id": 0, "name": "Plant", "bus_id": 0,
             "operational_start_date": "2024-01-01",
             "downstream_id": null,
             "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 },
@@ -2399,7 +2824,7 @@ mod tests {
               "min_generation_mw": 0.0, "max_generation_mw": 250.0
             },
             "unit_groups": [
-              { "id": 0, "name": "Legacy", "bus_id": 0,
+              { "id": 0, "name": "G0", "bus_id": 0,
                 "min_generation_mw": 0.0, "max_generation_mw": 250.0,
                 "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }
             ]
@@ -2410,7 +2835,7 @@ mod tests {
         let err = parse_hydros(f.path(), &global).unwrap_err();
         assert!(
             matches!(err, LoadError::ParseError { .. }),
-            "expected ParseError for a deck still carrying plant-level bus_id, got: {err:?}"
+            "expected ParseError for a plant-level bus_id, got: {err:?}"
         );
         let msg = err.to_string();
         assert!(
@@ -2451,7 +2876,7 @@ mod tests {
         );
     }
 
-    // ── AC: unit_groups — absent, null, empty-array rejection ─────────────────
+    // ── unit_groups — absent, null, empty-array rejection ─────────────────────
 
     /// Given two hydros declaring no `unit_groups` key, `parse_hydros` rejects
     /// the first one with a `SchemaError` naming `hydros[0].unit_groups`.

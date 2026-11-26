@@ -16,12 +16,14 @@ boundary keeps the terminal bucket slots live. The boundary policy is not
 committed, so never run the deck in place: `source_policy` does not exist in the
 tree.
 
-## `legacy_inputs/`
+## `unmigrated_inputs/`
 
 One overlay per committed deck whose post-study input was migrated to
 `thermal_stages`/`water_bucket_stages`: the files the deck had before
 migration, plus `absent.json`, the files it did not have.
-`novomodelo_sddp::test_support::legacy_inputs::materialize` applies an overlay to a
+`novomodelo_sddp::test_support::unmigrated_inputs::materialize` applies an overlay to a
 deck copy. `scripts/migrate/test_in_repo_migration.py` migrates every overlay and
-compares the result with the committed deck, and the legacy-vs-migrated tests
-run a deck from its overlay.
+compares the result with the committed deck. `tests/parity.rs` runs a deck from an
+overlay that only removes `post_study_stages.json`; an overlay that writes a
+`stages` file is read by the migration test alone, because the loader refuses
+that key.

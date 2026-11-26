@@ -18,7 +18,6 @@ use super::envelope_tolerance;
 use super::post_study_calendar::build_post_study_calendar;
 use super::travel_time::study_stage_durations;
 use crate::StageIdResolver;
-use crate::post_study_stages::PostStudyFormat;
 use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 13: `min_generation_mw <= max_generation_mw` for a thermal.
@@ -1094,9 +1093,9 @@ pub(super) fn warn_thermal_generation_on_anticipated_thermal(
 /// - **Rule 1 (missing bound cell)** — every post-study stage index `j` an
 ///   anticipated thermal's extended lead reaches (from an in-study,
 ///   commissioning-active decision, resolved by `classify_deliveries`) has a
-///   `PostStudyThermalBound(thermal_id, j)`. A missing cell is the sole surface's
-///   analogue of the retired lane subsystem's silent `[0, 0]` degradation
-///   (finiteness / `min_mw <= max_mw` remain the reader's parse-layer contract).
+///   `PostStudyThermalBound(thermal_id, j)`. A missing cell is rejected, never read
+///   as a silent `[0, 0]` bound (finiteness / `min_mw <= max_mw` remain the reader's
+///   parse-layer contract).
 /// - **V2 (fixed post-horizon tiling)** — every post-study stage index in the
 ///   plant's `fixed_post_study` class (deliveries decided at a pre-study
 ///   stage) is tiled by `initial_conditions.past_anticipated_commitments` at
@@ -1144,12 +1143,8 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         .rfind(|s| s.id >= 0)
         .map(|s| s.end_date);
 
-    let calendar_key = match data.post_study_format {
-        Some(PostStudyFormat::Current { .. }) => "thermal_stages",
-        _ => "stages",
-    };
     let (calendar_stages, well_formed) =
-        build_post_study_calendar(&post_study.thermal_stages, calendar_key, study_end, ctx);
+        build_post_study_calendar(&post_study.thermal_stages, "thermal_stages", study_end, ctx);
     if !well_formed || calendar_stages.is_empty() {
         return;
     }
@@ -1388,12 +1383,11 @@ mod tests {
         entry_stage_id: Option<i32>,
         exit_stage_id: Option<i32>,
     ) -> Thermal {
-        Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(lead_stages)),
-            entry_stage_id,
-            exit_stage_id,
-            ..make_thermal(id, 0.0, 500.0)
-        }
+        let mut thermal = make_thermal(id, 0.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(lead_stages));
+        thermal.entry_stage_id = entry_stage_id;
+        thermal.exit_stage_id = exit_stage_id;
+        thermal
     }
 
     /// Build a `LeadTime`-configured thermal.
@@ -1403,12 +1397,11 @@ mod tests {
         entry_stage_id: Option<i32>,
         exit_stage_id: Option<i32>,
     ) -> Thermal {
-        Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadTime(lead_time_hours)),
-            entry_stage_id,
-            exit_stage_id,
-            ..make_thermal(id, 0.0, 500.0)
-        }
+        let mut thermal = make_thermal(id, 0.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadTime(lead_time_hours));
+        thermal.entry_stage_id = entry_stage_id;
+        thermal.exit_stage_id = exit_stage_id;
+        thermal
     }
 
     /// Anchor of every anticipated-thermal test calendar; stage 0 starts here.
@@ -1583,7 +1576,7 @@ mod tests {
         data
     }
 
-    // ── AC-1: valid anticipated thermal — no errors ──────────────────────────
+    // ── valid anticipated thermal — no errors ────────────────────────────────
 
     /// Given a valid anticipated thermal (lead_stages=2, n_stages=5, no entry/exit,
     /// two all-zero commitment windows tiling stages 0..2), semantic validation
@@ -1623,7 +1616,7 @@ mod tests {
             !ctx.errors()
                 .iter()
                 .any(|e| e.kind == ErrorKind::NotImplemented),
-            "LeadTime must no longer be rejected as NotImplemented, got: {:?}",
+            "LeadTime must not be rejected as NotImplemented, got: {:?}",
             ctx.errors()
         );
         assert!(
@@ -1657,7 +1650,7 @@ mod tests {
         );
     }
 
-    // ── AC-2: missing history entry ───────────────────────────────────────────
+    // ── missing history entry ─────────────────────────────────────────────────
 
     /// Given an anticipated thermal with no matching entry in
     /// past_anticipated_commitments, a `BusinessRuleViolation` names the
@@ -1699,7 +1692,7 @@ mod tests {
         );
     }
 
-    // ── AC-3: history entry for non-anticipated thermal ───────────────────────
+    // ── history entry for non-anticipated thermal ─────────────────────────────
 
     /// Given a history entry whose thermal_id references a thermal with
     /// anticipated_config == None, a `BusinessRuleViolation` names "not an
@@ -1728,7 +1721,7 @@ mod tests {
         );
     }
 
-    // ── AC-4: windows beyond the lead horizon (over-coverage) ────────────────
+    // ── windows beyond the lead horizon (over-coverage) ──────────────────────
 
     /// Given lead_stages=2 but three tiling windows (covering stages 0..3), the
     /// window on stage 2 lies beyond the leading K=2 delivery horizon and is
@@ -1760,7 +1753,7 @@ mod tests {
         );
     }
 
-    // ── AC-5: gap in the lead horizon (under-coverage) ───────────────────────
+    // ── gap in the lead horizon (under-coverage) ─────────────────────────────
 
     /// Given lead_stages=2 but only one tiling window (covering stage 0), study
     /// stage 1 is uncovered and rejected with a named under-coverage error.
@@ -1854,7 +1847,7 @@ mod tests {
         );
         assert!(
             !msg.contains("past the pre-study delivery horizon"),
-            "the retired horizon phrasing must not appear, got: {msg}"
+            "the 'past the pre-study delivery horizon' phrasing must not appear, got: {msg}"
         );
         assert!(
             !msg.contains("extend past the horizon"),
@@ -1862,12 +1855,11 @@ mod tests {
         );
     }
 
-    /// The gap-error path is untouched by the over-coverage message rewrite:
-    /// given `k_i == 3` and windows tiling only study stages `0` and `1`,
+    /// Given `k_i == 3` and windows tiling only study stages `0` and `1`,
     /// `check_anticipated_thermals` emits the gap error naming uncovered study
-    /// stage id `2`, byte-identical to its pre-existing text.
+    /// stage id `2`, its full text pinned.
     #[test]
-    fn commitment_coverage_gap_message_is_unchanged() {
+    fn commitment_coverage_gap_message_pins_its_full_text() {
         let thermal = make_anticipated_thermal(1, 3, None, None);
         let data = make_data_anticipated(vec![thermal], 5, commitments(1, &[0.0, 0.0]));
         let mut ctx = ValidationContext::new();
@@ -1895,7 +1887,7 @@ mod tests {
         );
     }
 
-    // ── AC-6: lead_stages exceeds study horizon ───────────────────────────────
+    // ── lead_stages exceeds study horizon ─────────────────────────────────────
 
     /// Given lead_stages=10 and n_stages=5, a `BusinessRuleViolation` names
     /// "lead_stages exceeds study horizon".
@@ -1922,7 +1914,7 @@ mod tests {
 
     // ── Boundary: lead_stages == n_stages is accepted (strict-greater check) ──
 
-    /// Boundary case for AC-6: lead_stages == n_stages must NOT error.
+    /// Boundary case of the horizon check: lead_stages == n_stages must NOT error.
     /// The horizon check is `lead_stages > n_stages` (strict). A plant whose
     /// first delivery lands on the final study stage is a valid configuration.
     #[test]
@@ -2044,7 +2036,7 @@ mod tests {
     /// scoped to a study that declares a reachable post-study stage, never a
     /// blanket relaxation of the cap.
     #[test]
-    fn test_lead_time_exceeding_horizon_without_post_study_still_rejected() {
+    fn test_lead_time_exceeding_horizon_without_post_study_rejected() {
         let thermal = make_lead_time_anticipated_thermal(1, 3000.0, None, None);
         let durations = [168.0, 168.0, 168.0, 168.0, 720.0, 720.0];
         let data = make_data_anticipated_with_durations(vec![thermal], &durations, vec![]);
@@ -2071,7 +2063,7 @@ mod tests {
 
     /// Given a `LeadTime` lead whose reach is entirely class-4 (empty
     /// `carried`, non-empty `fixed_post_study` — the full-anticipation regime),
-    /// when `check_anticipated_thermals` runs, then the widened
+    /// when `check_anticipated_thermals` runs, then the
     /// `reaches_post_study` predicate exempts it from the lead-horizon cap: no
     /// "lead_time exceeds study horizon" error is emitted. A single 720h study
     /// stage with `LeadTime(2000)` decides its only post-study stage pre-study.
@@ -2100,10 +2092,10 @@ mod tests {
 
     /// Given a `LeadTime` lead exceeding the study horizon with NO post-study
     /// stages declared at all, when `check_anticipated_thermals` runs, then the
-    /// lead-horizon cap still rejects it — the pre-existing guard for a plant
-    /// that genuinely can never deliver.
+    /// lead-horizon cap still rejects it — the guard for a plant that can never
+    /// deliver.
     #[test]
-    fn lead_exceeding_the_horizon_without_post_study_stages_is_still_rejected() {
+    fn lead_exceeding_the_horizon_without_post_study_stages_is_rejected() {
         let thermal = make_lead_time_anticipated_thermal(1, 2000.0, None, None);
         let durations = [720.0];
         let data = make_data_anticipated_with_durations(vec![thermal], &durations, vec![]);
@@ -2156,7 +2148,7 @@ mod tests {
         );
     }
 
-    // ── AC: the widened `LeadStages` guard matches `LeadTime` (full anticipation) ──
+    // ── The `LeadStages` horizon guard matches `LeadTime` (full anticipation) ──
 
     /// Given a `LeadStages(7)` thermal on a uniform 4×720h study horizon
     /// (`n_stages = 4`) whose extended lead reaches only post-study stages —
@@ -2164,9 +2156,8 @@ mod tests {
     /// `past_anticipated_commitments`) and one study-decided (`carried`,
     /// bound by a declared `PostStudyThermalBound`) —
     /// `validate_semantic_hydro_thermal` returns no errors: the `lead_stages`
-    /// guard now shares the `lead_time` guard's `reaches_post_study`
-    /// exemption instead of unconditionally rejecting `lead_stages >
-    /// n_stages`.
+    /// guard shares the `lead_time` guard's `reaches_post_study` exemption
+    /// rather than rejecting every `lead_stages > n_stages`.
     #[test]
     fn full_anticipation_lead_stages_reaching_only_post_study_stages_validates() {
         let thermal = make_anticipated_thermal(1, 7, None, None);
@@ -2193,12 +2184,12 @@ mod tests {
     /// Given a `LeadStages(5)` thermal on the same 4×720h study horizon whose
     /// extended lead exceeds `n_stages` but reaches a `carried` (study-decided)
     /// post-study stage with no declared `PostStudyThermalBound` cell, the
-    /// widened guard does not reject it (the plant IS reachable), but
+    /// horizon guard does not reject it (the plant IS reachable), but
     /// `check_post_study_stages`'s Rule 1 still reports the missing bound cell:
-    /// the guard widening exempts a reachable plant from the horizon cap
-    /// without masking the genuine missing-bound defect.
+    /// exempting a reachable plant from the horizon cap does not mask the
+    /// missing-bound defect.
     #[test]
-    fn lead_stages_short_lead_reaching_carried_stage_without_bound_still_rejected() {
+    fn lead_stages_short_lead_reaching_carried_stage_without_bound_rejected() {
         let thermal = make_anticipated_thermal(1, 5, None, None);
         let study_durations = [720.0; 4];
         let post_durations = [720.0, 720.0];
@@ -2233,7 +2224,7 @@ mod tests {
     /// `LeadStages(7)` and the equivalent `LeadTime(5040.0)` (`7 × 720h`) on the
     /// identical uniform 4×720h study + 4×720h post-study calendar resolve to
     /// the same delivery classification and both validate with no errors: the
-    /// two lead modes hit the widened horizon guard identically (AC4).
+    /// two lead modes hit the horizon guard identically.
     #[test]
     fn lead_stages_and_lead_time_resolve_the_horizon_guard_identically() {
         let study_durations = [720.0; 4];
@@ -2600,9 +2591,9 @@ mod tests {
         );
     }
 
-    /// V2 passing fixture — the retired no-carrier reject's positive inverse: a
-    /// `LeadTime` lead so long its FIRST post-study delivery is decided at a
-    /// pre-study stage loads cleanly once a commitment window tiles that stage.
+    /// V2 passing fixture: a `LeadTime` lead so long its FIRST post-study delivery
+    /// is decided at a pre-study stage loads cleanly once a commitment window tiles
+    /// that stage.
     /// `[720,720|720,720]` with `LeadTime(2500)` decides post-study stage 0
     /// pre-study; the third window (reusing `commitments_on` over a 3-stage
     /// duration list) lands exactly on post-study stage 0's dates.
@@ -2659,10 +2650,10 @@ mod tests {
         );
     }
 
-    /// Invariant (a) is retained: a post-study calendar whose first stage does not
-    /// start at the study horizon end is still rejected.
+    /// Invariant (a): a post-study calendar whose first stage does not start at the
+    /// study horizon end is rejected.
     #[test]
-    fn test_post_study_calendar_anchor_still_enforced() {
+    fn test_post_study_calendar_anchor_enforced() {
         let thermal = make_lead_time_anticipated_thermal(1, 3000.0, None, None);
         let durations = [168.0, 168.0, 168.0, 168.0, 720.0, 720.0];
         let mut post_study = post_study_from(&durations, &[1440.0], &[(1, 0, 0.0, 500.0)]);
@@ -2860,7 +2851,7 @@ mod tests {
         );
     }
 
-    // ── AC-7: entry_stage_id window on an anticipated thermal is ACCEPTED ─────
+    // ── entry_stage_id window on an anticipated thermal is ACCEPTED ───────────
 
     /// An anticipated thermal that sets `entry_stage_id` is accepted: the window
     /// composes with the K-stage delivery lookahead via the shifted decision gate.
@@ -2885,7 +2876,7 @@ mod tests {
         );
     }
 
-    // ── AC-8: exit_stage_id window on an anticipated thermal is ACCEPTED ──────
+    // ── exit_stage_id window on an anticipated thermal is ACCEPTED ────────────
 
     /// An anticipated thermal that sets `exit_stage_id` is accepted. With all-zero
     /// seeds the seed-vs-window rule does not fire.
@@ -2972,11 +2963,9 @@ mod tests {
     /// is emitted.
     #[test]
     fn test_window_on_plain_thermal_accepted() {
-        let thermal = Thermal {
-            entry_stage_id: Some(1),
-            exit_stage_id: Some(2),
-            ..make_thermal(1, 0.0, 100.0)
-        };
+        let mut thermal = make_thermal(1, 0.0, 100.0);
+        thermal.entry_stage_id = Some(1);
+        thermal.exit_stage_id = Some(2);
         let data = make_data(
             vec![],
             vec![thermal],
@@ -3018,7 +3007,7 @@ mod tests {
         );
     }
 
-    // ── AC-9: a window value above bounds → bounds error, in-bounds window passes ─
+    // ── a window value above bounds → bounds error, in-bounds window passes ───────
 
     /// Given windows `[600.0, 200.0]` against a plant with max_generation_mw =
     /// 500.0, the validator emits exactly one bounds-violation error for the
@@ -3073,7 +3062,7 @@ mod tests {
         );
     }
 
-    // ── AC-10: a window value below min_gen → bounds error for that window ────
+    // ── a window value below min_gen → bounds error for that window ───────────
 
     /// Given windows `[200.0, 50.0]` against a plant with min_generation_mw =
     /// 100.0 and max_generation_mw = 500.0, the validator emits exactly one
@@ -3082,10 +3071,8 @@ mod tests {
     #[test]
     fn test_committed_value_below_min_gen_bounds_error() {
         // Build a thermal with min_mw=100.0.
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            ..make_thermal(5, 100.0, 500.0)
-        };
+        let mut thermal = make_thermal(5, 100.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(2));
         let data = make_data_anticipated(vec![thermal], 5, commitments(5, &[200.0, 50.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3114,16 +3101,14 @@ mod tests {
         );
     }
 
-    // ── AC-11: all values zero — passes (within [min_gen, max_gen]) ──────────
+    // ── all values zero — passes (within [min_gen, max_gen]) ─────────────────
 
     /// Given all-zero window values and min_gen = 0.0, no bounds error is
     /// emitted (0.0 is within [0.0, 400.0]).
     #[test]
     fn test_committed_values_all_zero_ok() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
-            ..make_thermal(7, 0.0, 400.0)
-        };
+        let mut thermal = make_thermal(7, 0.0, 400.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(3));
         let data = make_data_anticipated(vec![thermal], 5, commitments(7, &[0.0, 0.0, 0.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3134,16 +3119,14 @@ mod tests {
         );
     }
 
-    // ── AC-12: boundary — value == min_gen (0.0) is accepted ─────────────────
+    // ── boundary — value == min_gen (0.0) is accepted ────────────────────────
 
     /// Given a single window value == 0.0 and min_gen == 0.0, no bounds error is
     /// emitted (the minimum is inclusive).
     #[test]
     fn test_committed_value_zero_accepted() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(9, 0.0, 400.0)
-        };
+        let mut thermal = make_thermal(9, 0.0, 400.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let data = make_data_anticipated(vec![thermal], 5, commitments(9, &[0.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3154,17 +3137,15 @@ mod tests {
         );
     }
 
-    // ── AC-13: single value above max_generation_mw → bounds error ───────────
+    // ── single value above max_generation_mw → bounds error ──────────────────
 
     /// Given a single window value 400.0 against max_generation_mw = 350.0, the
     /// validator emits exactly one bounds-violation error because
     /// 400.0 > 350.0 is outside [100.0, 350.0].
     #[test]
     fn test_committed_value_above_max_bounds_error() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(11, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(11, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let data = make_data_anticipated(vec![thermal], 5, commitments(11, &[400.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3198,10 +3179,8 @@ mod tests {
     /// some upstream pipeline may drift a hair past a bound it was meant to sit on).
     #[test]
     fn test_committed_value_within_tolerance_above_max_accepted() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(13, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(13, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         // 1e-8 above max_generation_mw: an order of magnitude below the 3.5e-7 tolerance.
         let data = make_data_anticipated(vec![thermal], 5, commitments(13, &[350.0 + 1e-8]));
         let mut ctx = ValidationContext::new();
@@ -3218,10 +3197,8 @@ mod tests {
     /// relative-with-floor tolerance — must not be rejected.
     #[test]
     fn test_committed_value_within_tolerance_below_min_accepted() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(14, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(14, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         // 1e-8 below min_generation_mw: an order of magnitude below the 1e-7 tolerance.
         let data = make_data_anticipated(vec![thermal], 5, commitments(14, &[100.0 - 1e-8]));
         let mut ctx = ValidationContext::new();
@@ -3238,11 +3215,9 @@ mod tests {
     /// magnitude larger than the tolerance) is still rejected — the tolerance
     /// must have power, not just admit a hairline drift.
     #[test]
-    fn test_committed_value_beyond_tolerance_above_max_still_rejected() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(15, 100.0, 350.0)
-        };
+    fn test_committed_value_beyond_tolerance_above_max_rejected() {
+        let mut thermal = make_thermal(15, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         // 3.5e-6 above max_generation_mw: an order of magnitude above the 3.5e-7 tolerance.
         let data = make_data_anticipated(vec![thermal], 5, commitments(15, &[350.0 + 3.5e-6]));
         let mut ctx = ValidationContext::new();
@@ -3275,10 +3250,8 @@ mod tests {
     /// date: it is rejected exactly as an in-study window would be.
     #[test]
     fn committed_value_bounds_reject_an_out_of_envelope_post_horizon_window() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(21, 0.0, 200.0)
-        };
+        let mut thermal = make_thermal(21, 0.0, 200.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut records = commitments(21, &[0.0]);
         records.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(21),
@@ -3314,10 +3287,8 @@ mod tests {
     /// `[0.0, 200.0]`: no envelope error is emitted.
     #[test]
     fn committed_value_bounds_accept_an_in_envelope_post_horizon_window() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(22, 0.0, 200.0)
-        };
+        let mut thermal = make_thermal(22, 0.0, 200.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut records = commitments(22, &[0.0]);
         records.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(22),
@@ -3342,10 +3313,8 @@ mod tests {
     /// mistaken for a missing declaration.
     #[test]
     fn committed_value_bounds_accept_an_explicit_zero_at_the_lower_bound() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(23, 0.0, 200.0)
-        };
+        let mut thermal = make_thermal(23, 0.0, 200.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut records = commitments(23, &[100.0]);
         records.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(23),
@@ -3504,9 +3473,7 @@ mod tests {
 
     /// With no per-stage `thermal_bounds` override, the resolved box at every
     /// in-study stage equals the plant's static bounds exactly: an
-    /// over-commitment message names the same numbers the static bound would
-    /// have, proving the rewrite is byte-identical to the static bound for an
-    /// unaffected study.
+    /// over-commitment message names exactly the static bound's numbers.
     #[test]
     fn delivery_box_no_override_matches_static_bounds() {
         let thermal = make_anticipated_thermal(35, 1, None, None); // min=0.0, max=500.0
@@ -3533,17 +3500,15 @@ mod tests {
         );
     }
 
-    // ── AC-14: non-zero in-bounds window value K=1 — accepted ────────────────
+    // ── non-zero in-bounds window value K=1 — accepted ───────────────────────
 
     /// K=1 case: a single window value 204.5647 against `max_generation_mw =
     /// 350.0`. The value lies within [0.0, 350.0], so the bounds check passes
     /// and the validator emits no errors.
     #[test]
     fn test_nonzero_value_in_bounds_accepted_k1() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(2, 0.0, 350.0)
-        };
+        let mut thermal = make_thermal(2, 0.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let data = make_data_anticipated(vec![thermal], 5, commitments(2, &[204.5647]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3572,15 +3537,12 @@ mod tests {
         );
     }
 
-    /// Regression lock: `check_committed_value_bounds` must not emit any
-    /// `SemanticAmbiguity` warning for an in-bounds non-zero seed — guards against
-    /// reintroducing a same-dispatch-as-zero-seed warning.
+    /// `check_committed_value_bounds` must not emit any `SemanticAmbiguity`
+    /// warning for an in-bounds non-zero seed.
     #[test]
     fn test_nonzero_in_bounds_seed_emits_no_semantic_ambiguity_warning() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            ..make_thermal(3, 0.0, 350.0)
-        };
+        let mut thermal = make_thermal(3, 0.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(2));
         let data = make_data_anticipated(vec![thermal], 5, commitments(3, &[100.0, 200.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3755,15 +3717,10 @@ mod tests {
     /// new validator.
     #[test]
     fn test_anticipated_decision_on_anticipated_thermal_ok() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
-            entities::AnticipatedConfig,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            ..make_thermal(3, 0.0, 500.0)
-        };
+        let mut thermal = make_thermal(3, 0.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(2));
         let constraint = GenericConstraint {
             id: EntityId::from(10),
             name: "valid_anticipated_constraint".to_string(),
@@ -3808,15 +3765,10 @@ mod tests {
     /// the constraint and the thermal ID with a hint to use `anticipated_decision`.
     #[test]
     fn test_thermal_generation_on_anticipated_thermal_warns() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
-            entities::AnticipatedConfig,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(5, 0.0, 300.0)
-        };
+        let mut thermal = make_thermal(5, 0.0, 300.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let constraint = GenericConstraint {
             id: EntityId::from(20),
             name: "ambiguous_constraint".to_string(),

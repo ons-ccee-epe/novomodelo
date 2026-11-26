@@ -484,10 +484,7 @@ mod cut_subgradient_parity {
 
     use chrono::NaiveDate;
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
-        EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
-        LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
+        DeficitSegment, EntityId, HydroPenalties, SystemBuilder,
         entities::hydro::HydroGenerationModel,
         scenario::{InflowModel, LoadModel},
         temporal::{
@@ -639,95 +636,18 @@ mod cut_subgradient_parity {
             std_mw: 0.0,
         }];
 
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 1,
-                k_max: 0,
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
             },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 200.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 50.0,
-                    max_generation_mw: 100.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: 1,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 5000.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 1000.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .build()
-            .expect("fpha_evap_system: valid")
+            0,
+            |_, _, _| {},
+        )
     }
 
     fn fpha_production() -> ProductionModelSet {
@@ -918,7 +838,7 @@ mod basis_reconstruct_churn {
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 3 });
+        config.training.selection = Some(TrainingSelection::sampled(3));
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
@@ -1050,7 +970,7 @@ mod basis_reconstruct_churn {
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]);
 
@@ -1131,7 +1051,7 @@ mod basis_reconstruct_churn {
         // Two IterationLimit rules in "any" mode: limit 2 sizes the FCF pool to
         // (2+1) × forward_passes slots/stage (capacity headroom); limit 1 fires first
         // and stops after iteration 1.
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules = Some(vec![
             StoppingRuleConfig::IterationLimit { limit: 2 },
             StoppingRuleConfig::IterationLimit { limit: 1 },
@@ -1307,7 +1227,7 @@ mod basis_reconstruct_churn {
 
         // 2 iterations so iter 2's forward pass captures a basis with non-empty
         // cut_row_slots into basis_cache for the simulation warm-start.
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 2 }]);
 
@@ -1473,9 +1393,7 @@ mod selection_in_a_training_run {
             .join("examples/1dtoy");
         let mut config =
             novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
-        config.training.selection = Some(TrainingSelection::Sampled {
-            forward_passes: FORWARD_PASSES,
-        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iterations,
         }]);
@@ -2277,7 +2195,7 @@ mod selection_in_a_training_run {
         };
         let lp_solves = |forward: f64, backward: f64| {
             let mut setup = super::common::fresh_setup_with_openings(&case_dir, 5, |config| {
-                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 4 });
+                config.training.selection = Some(TrainingSelection::sampled(4));
                 config.training.stopping_rules =
                     Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                 config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
@@ -2770,7 +2688,7 @@ mod trial_state_store {
         selection: Option<SelectionMethod>,
     ) -> impl FnOnce(&mut Config) {
         move |config| {
-            config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+            config.training.selection = Some(TrainingSelection::sampled(forward_passes));
             config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
                 limit: ITERATIONS,
             }]);
@@ -4103,19 +4021,15 @@ mod range_warm_start_determinism {
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression,
-        ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
-        HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, LinearTerm,
-        NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
-        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, VariableRef,
+        ConstraintExpression, DeficitSegment, EntityId, GenericConstraint, LinearTerm,
+        ResolvedGenericConstraintBounds, SystemBuilder, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
-        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-        TrainingSolverConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        ParallelismConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     };
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
     use novomodelo_io::test_support::producer_block_defaults;
@@ -4292,6 +4206,10 @@ mod range_warm_start_determinism {
     /// A 2-stage, 1-bus, 1-thermal, 0-hydro system: bus deficit cost 1000/MWh,
     /// thermal T0 [0, 30] MW at 50/MWh, demand 20 MW (`std = 0`) both stages.
     /// Economics mirror `examples/deterministic/d13-generic-constraint`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn build_system(
         constraints: Vec<GenericConstraint>,
         bounds: ResolvedGenericConstraintBounds,
@@ -4375,96 +4293,23 @@ mod range_warm_start_determinism {
             })
             .collect();
 
-        let resolved_bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 0,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 2,
-                k_max: 0,
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal.clone()])
+                    .stages(stages.clone())
+                    .load_models(load_models.clone())
+                    .generic_constraints(constraints.clone())
+                    .resolved_generic_bounds(bounds.clone())
             },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 0.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 0.0,
-                    max_generation_mw: 0.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 30.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+            0,
+            |_, b, _| {
+                for stage in 0..2 {
+                    b.thermal_block_base_mut(0, stage).cost_per_mwh = 0.0;
+                }
             },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 0,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: 2,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal])
-            .stages(stages)
-            .load_models(load_models)
-            .bounds(resolved_bounds)
-            .penalties(penalties)
-            .generic_constraints(constraints)
-            .resolved_generic_bounds(bounds)
-            .build()
-            .expect("build_system: valid")
+        )
     }
 
     fn build_config(limit: u32) -> Config {
@@ -4474,6 +4319,7 @@ mod range_warm_start_determinism {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -4485,7 +4331,7 @@ mod range_warm_start_determinism {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: novomodelo_io::config::UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -5288,9 +5134,7 @@ mod simulation_cut_set {
             .join("examples/deterministic/d03-two-hydro-cascade");
         let mut config =
             novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
-        config.training.selection = Some(TrainingSelection::Sampled {
-            forward_passes: FORWARD_PASSES,
-        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: ITERATIONS,
         }]);
@@ -5480,7 +5324,8 @@ mod solve_cache_equivalence {
 
     use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
     use novomodelo_io::config::{
-        BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+        BackwardScheduler, InflowResidualDistribution, SelectionMethod, StoppingRuleConfig,
+        TrainingSelection,
     };
     use novomodelo_sddp::test_support::decks::committed_decks;
     use novomodelo_sddp::test_support::template_structure::state_lag_dims;
@@ -5521,11 +5366,25 @@ mod solve_cache_equivalence {
             openings,
             ..FphaLagOptions::default()
         });
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.selection = Some(TrainingSelection::sampled(forward_passes));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iterations,
         }]);
         config.training.cut_selection.selection = selection;
+        build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    fn lognormal_lag_study() -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: WORLD_OPENINGS,
+            ..FphaLagOptions::default()
+        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        config.training.cut_selection.selection = None;
+        config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
         build_setup_in_code_with_models(system, &config, hydro_models)
     }
 
@@ -5663,6 +5522,22 @@ mod solve_cache_equivalence {
                 bypassed.1.slab_misses > 0,
                 "{label}: the bypass recomputed no bracket"
             );
+        }
+    }
+
+    #[test]
+    fn lognormal_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) =
+                train_cached_and_bypassed(lognormal_lag_study, &StubComm, backward_scheduler);
+            let label = format!("lognormal {backward_scheduler:?}");
+
+            assert!(
+                stores_a_lag_cut(&cached.0),
+                "{label}: no stored cut has a nonzero lag coefficient"
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+            assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
         }
     }
 
@@ -5866,6 +5741,110 @@ mod solve_cache_equivalence {
         assert!(
             powered_decks > 0,
             "no deck stored a lag cut and recomputed a bracket under the bypass"
+        );
+    }
+}
+
+mod first_iteration_trial_storage {
+    use novomodelo_core::System;
+    use novomodelo_io::config::{
+        FirstIterationTrialStorage, InflowNonNegativityMethod as CfgInflowMethod,
+        StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::setup::NodePos;
+
+    use super::common::in_code_studies::{
+        chronological_noise_hydro_models, chronological_noise_study, negative_draw_water_value_spec,
+    };
+    use super::common::{
+        build_setup_in_code_with_models, stored_trial_states, train_storing_trial_states,
+    };
+
+    const FORWARD_PASSES: usize = 4;
+    const N_HYDROS: usize = 2;
+
+    fn study() -> (System, novomodelo_io::Config) {
+        chronological_noise_study(&negative_draw_water_value_spec(CfgInflowMethod::Truncation))
+    }
+
+    /// The root stage's trial states of every iteration, in slot order.
+    fn root_trial_states(
+        first_iteration_trial_storage: FirstIterationTrialStorage,
+        iterations: u32,
+    ) -> Vec<Vec<f64>> {
+        let spec = negative_draw_water_value_spec(CfgInflowMethod::Truncation);
+        let (system, mut config) = chronological_noise_study(&spec);
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: u32::try_from(FORWARD_PASSES).expect("forward passes fit u32"),
+            first_iteration_trial_storage,
+        });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iterations,
+        }]);
+        let hydro_models = chronological_noise_hydro_models(&spec, &system);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+        train_storing_trial_states("storage grid study", &mut setup);
+        stored_trial_states(&setup, NodePos(0))
+    }
+
+    /// derived: pass `k` of `N` holds `min + (k / N) * (max - min)` of each hydro.
+    fn grid_storage(pass: usize) -> Vec<f64> {
+        let (system, _) = study();
+        let share = [0.25, 0.5, 0.75, 1.0][pass];
+        system
+            .hydros()
+            .iter()
+            .map(|h| h.min_storage_hm3 + share * (h.max_storage_hm3 - h.min_storage_hm3))
+            .collect()
+    }
+
+    #[test]
+    fn the_first_backward_pass_visits_the_even_storage_grid() {
+        let states = root_trial_states(FirstIterationTrialStorage::StorageGrid, 1);
+
+        assert_eq!(states.len(), FORWARD_PASSES);
+        for (pass, state) in states.iter().enumerate() {
+            assert_eq!(state[..N_HYDROS], grid_storage(pass)[..], "pass {pass}");
+        }
+    }
+
+    #[test]
+    fn without_the_option_the_first_backward_pass_visits_the_forward_storage() {
+        let states = root_trial_states(FirstIterationTrialStorage::Forward, 1);
+
+        assert!(
+            (0..FORWARD_PASSES).any(|pass| states[pass][..N_HYDROS] != grid_storage(pass)[..]),
+            "the forward path must differ from the grid for the grid test to have power"
+        );
+    }
+
+    #[test]
+    fn the_grid_keeps_the_inflow_lags_of_the_forward_path() {
+        let on_grid = root_trial_states(FirstIterationTrialStorage::StorageGrid, 1);
+        let forward = root_trial_states(FirstIterationTrialStorage::Forward, 1);
+
+        assert!(
+            on_grid[0].len() > N_HYDROS,
+            "the study must carry inflow lags"
+        );
+        for (pass, (grid_state, forward_state)) in on_grid.iter().zip(&forward).enumerate() {
+            assert_eq!(
+                grid_state[N_HYDROS..],
+                forward_state[N_HYDROS..],
+                "pass {pass}"
+            );
+        }
+    }
+
+    #[test]
+    fn iterations_after_the_first_visit_the_forward_storage() {
+        let states = root_trial_states(FirstIterationTrialStorage::StorageGrid, 2);
+
+        assert_eq!(states.len(), 2 * FORWARD_PASSES);
+        assert!(
+            (0..FORWARD_PASSES)
+                .any(|pass| states[FORWARD_PASSES + pass][..N_HYDROS] != grid_storage(pass)[..]),
+            "iteration 2 must leave the grid"
         );
     }
 }

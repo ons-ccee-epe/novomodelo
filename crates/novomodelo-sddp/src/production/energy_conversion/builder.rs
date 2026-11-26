@@ -389,60 +389,25 @@ mod tests {
     use super::*;
     use crate::hydro_models::{ProductionModelSet, ResolvedProductionModel};
     use crate::test_support;
-
-    fn penalties_zero() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
+    use crate::test_support::builders::HydroSpec;
 
     fn make_hydro(id: i32, downstream: Option<i32>) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: downstream.map(EntityId::from),
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: penalties_zero(),
-        };
-        hydro.declare_mirror_unit_group(EntityId::from(1));
-        hydro
+        crate::test_support::builders::make_hydro(
+            EntityId::from(id),
+            HydroSpec {
+                name: format!("Hydro {id}"),
+                bus_id: EntityId::from(1),
+                downstream_id: downstream.map(EntityId::from),
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 50.0,
+                max_generation_mw: 45.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        )
     }
 
     /// Resolver returning, for every `(hydro, stage)`, the absolute hm³ for the
@@ -1695,7 +1660,7 @@ mod tests {
     /// productivity of 0.9, every stage receives 0.9. Regression for the
     /// JSON-only path.
     #[test]
-    fn test_non_fpha_json_only_path_unchanged() {
+    fn test_non_fpha_json_only_path_uses_json_productivity_at_every_stage() {
         let n_stages = 2;
         let hydros = vec![make_hydro_with(
             1,

@@ -126,7 +126,7 @@ mod tests {
         assert_stats_nan_mean, assert_stats_negative_std, make_stats_batch, write_parquet,
     };
 
-    // ── AC: valid file with 4 rows, verify sort order and field values ───────
+    // ── valid file with 4 rows, verify sort order and field values ───────────
 
     #[test]
     fn test_valid_4_rows_sorted_by_ncs_stage() {
@@ -135,7 +135,7 @@ mod tests {
         });
     }
 
-    // ── AC: std = 0.0 (deterministic) is accepted ───────────────────────────
+    // ── std = 0.0 (deterministic) is accepted ───────────────────────────────
 
     #[test]
     fn test_zero_std_is_accepted() {
@@ -147,21 +147,21 @@ mod tests {
         assert!(rows[0].std.abs() < f64::EPSILON);
     }
 
-    // ── AC: std negative -> SchemaError ─────────────────────────────────────
+    // ── std negative -> SchemaError ─────────────────────────────────────────
 
     #[test]
     fn test_negative_std() {
         assert_stats_negative_std(parse_ncs_stats, "ncs_id", "mean", "std");
     }
 
-    // ── AC: mean NaN -> SchemaError ──────────────────────────────────────────
+    // ── mean NaN -> SchemaError ──────────────────────────────────────────────
 
     #[test]
     fn test_nan_mean() {
         assert_stats_nan_mean(parse_ncs_stats, "ncs_id", "mean", "std");
     }
 
-    // ── AC: mean > 1.0 -> SchemaError ───────────────────────────────────────
+    // ── mean > 1.0 -> SchemaError ───────────────────────────────────────────
 
     #[test]
     fn test_mean_out_of_range() {
@@ -184,21 +184,21 @@ mod tests {
         }
     }
 
-    // ── AC: missing required column -> SchemaError ──────────────────────────
+    // ── missing required column -> SchemaError ──────────────────────────────
 
     #[test]
     fn test_missing_mean_column() {
         assert_stats_missing_column(parse_ncs_stats, "ncs_id", "mean", "std");
     }
 
-    // ── AC: empty file -> Ok(vec![]) ────────────────────────────────────────
+    // ── empty file -> Ok(vec![]) ────────────────────────────────────────────
 
     #[test]
     fn test_empty_parquet_returns_empty_vec() {
         assert_stats_empty_file(parse_ncs_stats, "ncs_id", "mean", "std");
     }
 
-    // ── AC: declaration-order invariance ────────────────────────────────────
+    // ── declaration-order invariance ────────────────────────────────────────
 
     #[test]
     fn test_declaration_order_invariance() {

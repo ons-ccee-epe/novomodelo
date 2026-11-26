@@ -6,10 +6,36 @@ use std::collections::{BTreeMap, HashMap};
 use novomodelo_core::EntityId;
 use novomodelo_core::scenario::LoadModel;
 
-use crate::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
+use crate::indexer::{EntityPositions, HydroCellIndex, HydroSys, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 use crate::time_value::TimeValue;
+
+/// One hydro's tailrace-flow terms with every influencing plant resolved to its
+/// [`HydroSys`] index, each list in ascending hydro-id order (not index order:
+/// hydros are indexed by start date first); all factors are dimensionless weights.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResolvedTailraceLateral {
+    /// Weight on the hydro's own turbined plus spilled outflow.
+    pub(crate) own_outflow_factor: f64,
+    /// Plants whose outflow adds to the tailrace flow.
+    pub(crate) outflow: Vec<(HydroSys, f64)>,
+    /// Plants whose incremental inflow adds to the tailrace flow.
+    pub(crate) incremental_inflow: Vec<(HydroSys, f64)>,
+}
+
+#[cfg(test)]
+impl ResolvedTailraceLateral {
+    /// The hydro's own outflow at weight `1.0`, no influences. Not `Default`:
+    /// a derived default weighs the own outflow `0.0`.
+    pub(crate) fn undeclared() -> Self {
+        Self {
+            own_outflow_factor: 1.0,
+            outflow: Vec::new(),
+            incremental_inflow: Vec::new(),
+        }
+    }
+}
 
 /// Resolved study inputs [`build_stage_templates`](super::build_stage_templates)
 /// consumes by value; every field is the single derivation of its fact, either
@@ -28,6 +54,8 @@ pub(crate) struct LpBuildInputs<'a> {
     pub(crate) load_bus_indices: Vec<usize>,
     /// Target hydro ID → system indices of hydros diverting to it.
     pub(crate) diversion_upstream: HashMap<EntityId, Vec<usize>>,
+    /// Per-hydro tailrace-flow terms, one record per hydro in system order.
+    pub(crate) tailrace_lateral: Vec<ResolvedTailraceLateral>,
     /// Per-stage hydro productivities (MW per m³/s); FPHA hydros carry `0.0`.
     pub(crate) hydro_productivities_per_stage: Vec<Vec<f64>>,
     /// Study-invariant, non-state LP shape, from setup's

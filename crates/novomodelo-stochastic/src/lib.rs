@@ -23,6 +23,7 @@
 )]
 
 mod error;
+mod fnv1a;
 
 pub mod context;
 pub mod correlation;
@@ -47,11 +48,11 @@ pub use noise::quantile::norm_quantile;
 pub use noise::rng::rng_from_seed;
 pub use noise::seed::{derive_forward_seed, derive_opening_seed, derive_stage_seed};
 pub use normal::precompute::{BlockFactorPair, EntityFactorEntry, PrecomputedNormal};
-#[allow(deprecated)]
 pub use par::{
-    ArCoefficientEstimate, PrecomputedPar, SeasonalStats, add_noise_term_batch, evaluate_par,
-    evaluate_par_batch, evaluate_par_conditional_mean_batch, evaluate_par_inflow,
-    evaluate_par_inflows, evaluate_par_noise_term_batch, solve_par_noise, validate_par_parameters,
+    ArCoefficientEstimate, PrecomputedPar, SeasonalStats, add_noise_term_batch,
+    evaluate_lognormal_noise_term_batch, evaluate_par, evaluate_par_batch,
+    evaluate_par_conditional_mean_batch, evaluate_par_noise_term_batch, solve_par_noise,
+    validate_par_parameters,
 };
 pub use provenance::{ComponentProvenance, StochasticProvenance};
 pub use sampling::insample::sample_forward;

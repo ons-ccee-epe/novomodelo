@@ -247,9 +247,9 @@ fn resolve_evaporation_core(
 
             let stage_hours = BlockClock::new(stage).total_hours();
 
-            // A zero-duration stage no longer surfaces as a non-finite coefficient
-            // below (the divisor is now the calendar month, never zero), so reject
-            // it explicitly here.
+            // The divisor below is the calendar month, never zero, so a
+            // zero-duration stage would not surface as a non-finite coefficient;
+            // reject it explicitly here.
             if stage_hours <= 0.0 {
                 return Err(SddpError::Validation(format!(
                     "hydro {} (id={}) stage {}: total block duration is {stage_hours} h; \
@@ -421,40 +421,16 @@ mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
         EntityId,
-        entities::hydro::{HydroGenerationModel, HydroPenalties},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        entities::hydro::HydroPenalties,
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
 
     use crate::SddpError;
+    use crate::test_support::builders::{HydroSpec, StageSpec};
 
     use super::*;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
-
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
 
     /// Helper: build a slice of HydroGeometryRow references for interpolation tests.
     fn make_geo_rows(volume_area: &[(f64, f64)]) -> Vec<HydroGeometryRow> {
@@ -488,30 +464,28 @@ mod tests {
         start_date: NaiveDate,
         season_id: Option<usize>,
     ) -> Stage {
-        Stage {
-            index: usize::try_from(id.max(0)).unwrap_or(0),
-            id,
-            start_date,
-            end_date: start_date
-                .checked_add_months(chrono::Months::new(1))
-                .unwrap_or(start_date),
-            season_id,
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = crate::test_support::builders::make_stage(
+            usize::try_from(id.max(0)).unwrap_or(0),
+            StageSpec {
+                start_date,
+                end_date: start_date
+                    .checked_add_months(chrono::Months::new(1))
+                    .unwrap_or(start_date),
+                season_id,
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 744.0,
+                }],
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: 50,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 50,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     /// Helper: build a Hydro with the given id and evaporation coefficients.
@@ -521,36 +495,23 @@ mod tests {
         max_storage: f64,
         evap_mm: Option<[f64; 12]>,
     ) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: min_storage,
-            max_storage_hm3: max_storage,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 500.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 1000.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: evap_mm,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_penalties(),
-        };
-        hydro.declare_mirror_unit_group(EntityId::from(10));
-        hydro
+        crate::test_support::builders::make_hydro(
+            EntityId::from(id),
+            HydroSpec {
+                name: format!("Hydro{id}"),
+                bus_id: EntityId::from(10),
+                min_storage_hm3: min_storage,
+                max_storage_hm3: max_storage,
+                max_turbined_m3s: 500.0,
+                max_generation_mw: 1000.0,
+                evaporation_coefficients_mm: evap_mm,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        )
     }
 
     #[test]
@@ -730,7 +691,7 @@ mod tests {
 
     /// resolve_evaporation_models core logic: known geometry + coefficient gives correct intercept and slope.
     ///
-    /// Spec (acceptance criterion 2):
+    /// Fixture:
     ///   hydro: v_min=100, v_max=500, evaporation_coefficients_mm=[5.0; 12]
     ///   geometry: volumes [100, 200, 300, 400, 500], areas [1.0, 1.5, 2.0, 2.5, 3.0]
     ///   reference_volume = (100 + 500) / 2 = 300
@@ -1022,7 +983,7 @@ mod tests {
 
     /// resolve_evaporation_models core logic: 4 hydros where 2 have evaporation and 2 do not.
     ///
-    /// Acceptance criterion 1: returns 2 Linearized and 2 None models.
+    /// Returns 2 Linearized and 2 None models.
     #[test]
     fn resolve_evaporation_mixed_system_returns_correct_model_mix() {
         let evap_mm = [5.0f64; 12];
@@ -1082,8 +1043,8 @@ mod tests {
     }
 
     /// resolve_evaporation_core: a zero-duration stage is rejected by the
-    /// explicit `stage_hours > 0` guard (the divisor is the calendar month now,
-    /// so a zero-duration stage no longer surfaces as a non-finite coefficient).
+    /// explicit `stage_hours > 0` guard (the divisor is the calendar month, so
+    /// a zero-duration stage does not surface as a non-finite coefficient).
     #[test]
     fn resolve_evaporation_zero_duration_stage_is_rejected() {
         let evap_mm = [5.0f64; 12];
@@ -1398,10 +1359,10 @@ mod tests {
     }
 
     /// resolve_evaporation_core: a Weekly-cycle evaporating stage
-    /// (`season_id >= 12`) no longer hard-errors — the month is derived from
+    /// (`season_id >= 12`) resolves: the month is derived from
     /// `start_date` regardless of `season_id`'s range.
     #[test]
-    fn resolve_evaporation_weekly_cycle_no_longer_errors_on_season_id_ge_12() {
+    fn resolve_evaporation_weekly_cycle_resolves_season_id_ge_12() {
         let evap_mm = [5.0f64; 12];
         let hydro = make_hydro_with_evaporation(0, 100.0, 500.0, Some(evap_mm));
 
@@ -1417,7 +1378,7 @@ mod tests {
 
         let (models, provenance, _) =
             super::resolve_evaporation_core(&[hydro], &geometry_map, &stage_refs)
-                .expect("season_id >= 12 (Weekly) must no longer error");
+                .expect("season_id >= 12 (Weekly) must resolve");
 
         assert_eq!(provenance[0].1, EvaporationSource::LinearizedFromGeometry);
         assert!(matches!(

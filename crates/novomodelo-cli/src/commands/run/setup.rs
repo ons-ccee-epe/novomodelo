@@ -385,19 +385,16 @@ pub(super) fn broadcast_and_build_setup(
     )?;
 
     if ctx.comm.size() > 1 {
-        let fingerprint = setup.inputs.stochastic.opening_tree().fingerprint();
-        let (min, max) =
-            min_max_across_ranks(&ctx.comm, fingerprint).map_err(|e| CliError::Internal {
-                message: format!("opening tree fingerprint exchange failed: {e}"),
-            })?;
-        if min != max {
-            return Err(CliError::Internal {
-                message: format!(
-                    "opening tree differs across MPI ranks (fingerprints {min:#018x} to \
-                     {max:#018x}); every rank must build the same tree from the broadcast inputs"
-                ),
-            });
-        }
+        refuse_rank_disagreement(
+            &ctx.comm,
+            "opening tree",
+            setup.inputs.stochastic.opening_tree().fingerprint(),
+        )?;
+        refuse_rank_disagreement(
+            &ctx.comm,
+            "PAR model",
+            setup.inputs.stochastic.par().fingerprint(),
+        )?;
     }
 
     if let Some(timings) = root_setup_timings.as_mut() {
@@ -415,6 +412,25 @@ pub(super) fn broadcast_and_build_setup(
         policy_mode,
         setup_timings: root_setup_timings,
     })
+}
+
+fn refuse_rank_disagreement<C: Communicator>(
+    comm: &C,
+    what: &str,
+    fingerprint: u64,
+) -> Result<(), CliError> {
+    let (min, max) = min_max_across_ranks(comm, fingerprint).map_err(|e| CliError::Internal {
+        message: format!("{what} fingerprint exchange failed: {e}"),
+    })?;
+    if min != max {
+        return Err(CliError::Internal {
+            message: format!(
+                "{what} differs across MPI ranks (fingerprints {min:#018x} to {max:#018x}); \
+                 every rank must build the same {what} from the broadcast inputs"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn user_supplied_opening_tree(
@@ -445,7 +461,6 @@ fn reconstruct_stochastic_context_non_root(
         &bcast_config.training_source,
         bcast_config.boundary.inflow_lag_depth(),
         user_tree,
-        bcast_config.training_moment_matching.into(),
     )
     .map_err(CliError::from)
 }
@@ -470,6 +485,7 @@ fn build_study_setup(
         seed: bcast_config.seed,
         forward_passes: bcast_config.forward_passes,
         training_enumerated: bcast_config.training_enumerated,
+        first_iteration_trial_storage: bcast_config.first_iteration_trial_storage,
         stopping_rule_set,
         n_scenarios: bcast_config.n_scenarios,
         simulation_enumerated: bcast_config.simulation_enumerated,
@@ -477,6 +493,7 @@ fn build_study_setup(
         io_channel_capacity: usize::try_from(bcast_config.io_channel_capacity).unwrap_or(64),
         policy_path: bcast_config.policy_path.clone(),
         inflow_method: bcast_config.inflow_method,
+        inflow_residual: bcast_config.inflow_residual,
         cut_selection,
         cut_activity_tolerance: bcast_config.cut_activity_tolerance,
         budget: bcast_config.budget,
@@ -657,6 +674,7 @@ fn run_root_exports(
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -666,6 +684,7 @@ mod tests {
     use serde::de::DeserializeOwned;
     use tempfile::TempDir;
 
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::ScalarParameter;
     use novomodelo_core::System;
     use novomodelo_io::BroadcastScalarParameter;
@@ -680,7 +699,7 @@ mod tests {
 
     use super::{
         build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root,
-        user_supplied_opening_tree,
+        refuse_rank_disagreement, user_supplied_opening_tree,
     };
     use crate::commands::broadcast::BroadcastOpeningTree;
     use crate::commands::resolve_output_dir;
@@ -698,78 +717,55 @@ mod tests {
     /// exercise.
     #[test]
     fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups() {
-        let mut leg_bits = Vec::new();
-        for moment_matching in ["none", "per_coordinate"] {
-            let case = TempDir::new().expect("tempdir");
-            copy_dir_recursive(&d29_case_dir(), case.path());
-            set_moment_matching(case.path(), moment_matching);
-            let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-            let ids = study_stage_noise_group_ids(&system);
-            assert!(
-                ids.windows(2).any(|w| w[0] == w[1]),
-                "D29 fixture must exercise shared noise groups; got {ids:?}",
-            );
-            assert_same_tree(
-                rank0.opening_tree(),
-                non_root.opening_tree(),
-                &format!("shared noise groups, {moment_matching}"),
-            );
-            leg_bits.push(tree_bits(rank0.opening_tree()));
-        }
-        assert_ne!(
-            leg_bits[0], leg_bits[1],
-            "per_coordinate must change the D29 tree, or the rank comparison above has no power"
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(&d29_case_dir(), case.path());
+        let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+        let ids = study_stage_noise_group_ids(&system);
+        assert!(
+            ids.windows(2).any(|w| w[0] == w[1]),
+            "D29 fixture must exercise shared noise groups; got {ids:?}",
         );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "shared noise groups",
+        );
+        assert_hydro_openings_sum_to_zero(rank0.opening_tree());
     }
 
     #[test]
     fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_openings() {
-        let mut leg_bits = Vec::new();
-        for moment_matching in ["none", "per_coordinate"] {
-            let case = d56_with_num_openings(3, moment_matching);
-            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-            assert_eq!(
-                rank0.opening_tree().openings_per_stage_slice(),
-                &[1, 1],
-                "fixture must clamp every stage to the external library's scenario count"
-            );
-            assert_same_tree(
-                rank0.opening_tree(),
-                non_root.opening_tree(),
-                &format!("external clamp, {moment_matching}"),
-            );
-            leg_bits.push(tree_bits(rank0.opening_tree()));
-        }
+        let case = d56_with_num_openings(3);
+        let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
         assert_eq!(
-            leg_bits[0], leg_bits[1],
-            "per_coordinate must leave a one-opening stage as drawn"
+            rank0.opening_tree().openings_per_stage_slice(),
+            &[1, 1],
+            "fixture must clamp every stage to the external library's scenario count"
+        );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "external clamp",
         );
     }
 
     #[test]
     fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_a_matched_tree() {
-        let mut leg_bits = Vec::new();
-        for moment_matching in ["none", "per_coordinate"] {
-            let case = TempDir::new().expect("tempdir");
-            copy_dir_recursive(&d56_case_dir(), case.path());
-            crate::varying_external_deck::write_varying_external_deck(case.path(), moment_matching);
-            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-            assert_eq!(
-                rank0.opening_tree().openings_per_stage_slice(),
-                &[3, 3],
-                "fixture must clamp the 5 openings of every stage to the 3 external scenarios"
-            );
-            assert_same_tree(
-                rank0.opening_tree(),
-                non_root.opening_tree(),
-                &format!("external clamp, {moment_matching}"),
-            );
-            leg_bits.push(tree_bits(rank0.opening_tree()));
-        }
-        assert_ne!(
-            leg_bits[0], leg_bits[1],
-            "per_coordinate must change a clamped stage with several openings, or the rank comparison above has no power"
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(&d56_case_dir(), case.path());
+        crate::varying_external_deck::write_varying_external_deck(case.path());
+        let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+        assert_eq!(
+            rank0.opening_tree().openings_per_stage_slice(),
+            &[3, 3],
+            "fixture must clamp the 5 openings of every stage to the 3 external scenarios"
         );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "external clamp",
+        );
+        assert_hydro_openings_sum_to_zero(rank0.opening_tree());
     }
 
     fn load_rank0_and_rebuild_non_root(
@@ -833,11 +829,22 @@ mod tests {
         tree.data().iter().map(|v| v.to_bits()).collect()
     }
 
-    fn set_moment_matching(case: &Path, moment_matching: &str) {
-        crate::varying_external_deck::edit_json(&case.join("config.json"), |config| {
-            config["training"]["scenario_source"]["openings"] =
-                serde_json::json!({"source": "generated", "moment_matching": moment_matching});
-        });
+    fn assert_hydro_openings_sum_to_zero(tree: &OpeningTree) {
+        assert!(
+            tree.openings_per_stage_slice().iter().any(|&n| n >= 2),
+            "the tree must hold a stage with several openings, or per-coordinate matching is not exercised"
+        );
+        for stage in 0..tree.n_stages() {
+            let n = tree.n_openings(stage);
+            if n < 2 {
+                continue;
+            }
+            let sum: f64 = (0..n).map(|k| tree.opening(stage, k)[0]).sum();
+            assert!(
+                sum.abs() < 1e-12,
+                "stage {stage}: the first hydro's openings must sum to zero, got {sum}"
+            );
+        }
     }
 
     fn d56_case_dir() -> PathBuf {
@@ -845,10 +852,9 @@ mod tests {
             .join("../../examples/deterministic/d56-external-authoritative")
     }
 
-    fn d56_with_num_openings(num_openings: u32, moment_matching: &str) -> TempDir {
+    fn d56_with_num_openings(num_openings: u32) -> TempDir {
         let case = TempDir::new().expect("tempdir");
         copy_dir_recursive(&d56_case_dir(), case.path());
-        set_moment_matching(case.path(), moment_matching);
         crate::varying_external_deck::edit_json(&case.path().join("stages.json"), |stages| {
             for stage in stages["stages"]
                 .as_array_mut()
@@ -1077,5 +1083,123 @@ mod tests {
 
             assert_eq!(setup.simulation_cut_set, cut_set);
         }
+    }
+
+    struct TwoRankComm {
+        peer: Option<u64>,
+    }
+
+    impl TwoRankComm {
+        fn with_peer(peer: u64) -> Self {
+            Self { peer: Some(peer) }
+        }
+
+        fn failing() -> Self {
+            Self { peer: None }
+        }
+    }
+
+    fn refused(operation: &'static str) -> CommError {
+        CommError::CollectiveFailed {
+            operation,
+            mpi_error_code: 1,
+            message: "the stub peer refused the collective".to_string(),
+        }
+    }
+
+    impl Communicator for TwoRankComm {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            Err(refused("allgatherv"))
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            op: ReduceOp,
+        ) -> Result<(), CommError> {
+            let Some(peer) = self.peer else {
+                return Err(refused("allreduce"));
+            };
+            if op != ReduceOp::Max || send.len() != 2 || recv.len() != 2 {
+                return Err(refused("allreduce"));
+            }
+            for ((mine, out), theirs) in send.iter().zip(recv.iter_mut()).zip([!peer, peer]) {
+                let (Some(&mine), Some(out)) = (
+                    (mine as &dyn Any).downcast_ref::<u64>(),
+                    (out as &mut dyn Any).downcast_mut::<u64>(),
+                ) else {
+                    return Err(refused("allreduce"));
+                };
+                *out = mine.max(theirs);
+            }
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            Err(refused("broadcast"))
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            Err(refused("barrier"))
+        }
+
+        fn rank(&self) -> usize {
+            0
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, _error_code: i32) -> ! {
+            unreachable!("refuse_rank_disagreement never aborts")
+        }
+    }
+
+    #[test]
+    fn refuse_rank_disagreement_passes_when_every_rank_agrees() {
+        let comm = TwoRankComm::with_peer(0x0000_0000_0000_00aa);
+        refuse_rank_disagreement(&comm, "PAR model", 0x0000_0000_0000_00aa)
+            .expect("ranks holding the same fingerprint must pass");
+    }
+
+    #[test]
+    fn refuse_rank_disagreement_names_both_fingerprints_when_ranks_differ() {
+        let expected = "PAR model differs across MPI ranks (fingerprints 0x00000000000000aa to \
+                        0x00000000000000bb); every rank must build the same PAR model from the \
+                        broadcast inputs";
+        for (local, peer) in [
+            (0x0000_0000_0000_00aa, 0x0000_0000_0000_00bb),
+            (0x0000_0000_0000_00bb, 0x0000_0000_0000_00aa),
+        ] {
+            let err = refuse_rank_disagreement(&TwoRankComm::with_peer(peer), "PAR model", local)
+                .expect_err("ranks holding different fingerprints must refuse");
+            assert!(
+                matches!(&err, CliError::Internal { message } if message == expected),
+                "local {local:#x}, peer {peer:#x}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuse_rank_disagreement_reports_a_failed_exchange() {
+        let err =
+            refuse_rank_disagreement(&TwoRankComm::failing(), "PAR model", 0x0000_0000_0000_00aa)
+                .expect_err("a failed exchange must refuse");
+        assert!(
+            matches!(
+                &err,
+                CliError::Internal { message }
+                    if message.starts_with("PAR model fingerprint exchange failed: ")
+            ),
+            "got {err:?}"
+        );
     }
 }

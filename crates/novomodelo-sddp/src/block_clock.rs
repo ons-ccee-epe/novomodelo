@@ -48,42 +48,33 @@ impl<'a> BlockClock<'a> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
-    use novomodelo_core::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::{Block, Stage, StageStateConfig};
 
     use super::{BlockClock, M3S_TO_HM3};
     use crate::indexer::BlockIdx;
+    use crate::test_support::builders::{self, StageSpec};
 
     fn stage_with_hours(hours: [f64; 3]) -> Stage {
-        Stage {
-            index: 0,
-            id: 0,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: hours
-                .into_iter()
-                .enumerate()
-                .map(|(index, duration_hours)| Block {
-                    index,
-                    name: format!("BLK{index}"),
-                    duration_hours,
-                })
-                .collect(),
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
+        builders::make_stage(
+            0,
+            StageSpec {
+                season_id: Some(0),
+                blocks: hours
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, duration_hours)| Block {
+                        index,
+                        name: format!("BLK{index}"),
+                        duration_hours,
+                    })
+                    .collect(),
+                state_config: StageStateConfig {
+                    storage: false,
+                    inflow_lags: false,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        )
     }
 
     #[test]

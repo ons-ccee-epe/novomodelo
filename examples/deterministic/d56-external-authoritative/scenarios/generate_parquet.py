@@ -6,11 +6,6 @@ Run with: uv tool run --with pyarrow -- python3 generate_parquet.py
 Produces (committed alongside this script):
   - external_load_scenarios.parquet
   - external_inflow_scenarios.parquet
-
-Also produces, at a fixed cross-crate path outside this deck, the reject
-fixture the novomodelo-io integration suite composes into a TempDir to exercise
-the AR(p > 0) + sigma=0 rejection:
-  - crates/novomodelo-io/tests/fixtures/d56_reject_ar_coefficients.parquet
 """
 
 import os
@@ -18,7 +13,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-repo_root = os.path.abspath(os.path.join(script_dir, "..", "..", "..", ".."))
 
 # ── external_load_scenarios.parquet ───────────────────────────────────────────
 #
@@ -92,46 +86,5 @@ inflow_table = pa.table(
 inflow_path = os.path.join(script_dir, "external_inflow_scenarios.parquet")
 pq.write_table(inflow_table, inflow_path, compression="zstd")
 print(f"wrote {len(inflow_table)} rows -> {inflow_path}")
-
-# ── crates/novomodelo-io/tests/fixtures/d56_reject_ar_coefficients.parquet ─────────
-#
-# Schema: hydro_id (INT32), stage_id (INT32), lag (INT32), coefficient (FLOAT64)
-#
-# One AR(1) row for hydro_id=1 at stage 0 (season_id=0, this deck's only
-# season), coefficient=0.5 -- well inside the |psi| < 1 stationarity gate.
-# Composed into a TempDir as scenarios/inflow_ar_coefficients.parquet
-# alongside this deck's own unchanged files, it makes hydro 1 AR(1) while
-# its external inflow column stays constant (sigma=0), which the
-# deterministic AR(p > 0) inflow rule rejects.
-
-reject_hydro_ids = [1]
-reject_stage_ids = [0]
-reject_lags = [1]
-reject_coefficients = [0.5]
-
-reject_schema = pa.schema(
-    [
-        pa.field("hydro_id", pa.int32(), nullable=False),
-        pa.field("stage_id", pa.int32(), nullable=False),
-        pa.field("lag", pa.int32(), nullable=False),
-        pa.field("coefficient", pa.float64(), nullable=False),
-    ]
-)
-
-reject_table = pa.table(
-    {
-        "hydro_id": pa.array(reject_hydro_ids, type=pa.int32()),
-        "stage_id": pa.array(reject_stage_ids, type=pa.int32()),
-        "lag": pa.array(reject_lags, type=pa.int32()),
-        "coefficient": pa.array(reject_coefficients, type=pa.float64()),
-    },
-    schema=reject_schema,
-)
-
-reject_dir = os.path.join(repo_root, "crates", "novomodelo-io", "tests", "fixtures")
-os.makedirs(reject_dir, exist_ok=True)
-reject_path = os.path.join(reject_dir, "d56_reject_ar_coefficients.parquet")
-pq.write_table(reject_table, reject_path, compression="zstd")
-print(f"wrote {len(reject_table)} rows -> {reject_path}")
 
 print("done.")

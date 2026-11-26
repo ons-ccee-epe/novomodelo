@@ -25,7 +25,6 @@ use novomodelo_stochastic::build_stochastic_context;
 use novomodelo_stochastic::noise_entity_order;
 use novomodelo_stochastic::normal::precompute::EntityFactorEntry;
 use novomodelo_stochastic::par::lag_transition::precompute_noise_groups;
-use novomodelo_stochastic::tree::MomentMatching;
 use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::OpeningTree};
 
 use super::resolve_inflow_seeds;
@@ -342,7 +341,6 @@ pub fn prepare_stochastic(
         training_source,
         inflow_lag_depth,
         user_opening_tree,
-        config.training_moment_matching().into(),
     )?;
 
     Ok(PrepareStochasticResult {
@@ -360,10 +358,8 @@ pub fn prepare_stochastic(
 /// when `user_tree` is `None`), and the forward seed. Both rank 0 (via
 /// [`prepare_stochastic`], after PAR estimation and user-tree loading) and the CLI
 /// non-root reconstruction call this one builder, so the two paths cannot drift.
-/// `moment_matching` is `Config::training_moment_matching`'s value, which rank 0
-/// reads from the config and a non-root rank receives in its broadcast config, so
-/// it is identical on every rank. `user_tree` is the only input that differs by
-/// rank: rank 0 loads it, and a non-root rank receives it over the wire.
+/// `user_tree` is the only input that differs by rank: rank 0 loads it, and a
+/// non-root rank receives it over the wire.
 ///
 /// # Errors
 ///
@@ -376,7 +372,6 @@ pub fn build_stochastic_context_for_study(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
     user_tree: Option<OpeningTree>,
-    moment_matching: MomentMatching,
 ) -> Result<StochasticContext, SddpError> {
     let load_factor_entries = load_load_factors_for_stochastic(case_dir)?;
     let block_pairs: Vec<Vec<BlockFactorPair>> = load_factor_entries
@@ -417,7 +412,6 @@ pub fn build_stochastic_context_for_study(
             historical_library: opening_tree_library.as_ref(),
             external_scenario_counts: compute_external_scenario_counts(system, training_source),
             noise_group_ids: Some(study_stage_noise_group_ids(system)),
-            moment_matching,
         },
         class_schemes_for(training_source),
     )?)
@@ -426,23 +420,18 @@ pub fn build_stochastic_context_for_study(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use crate::test_support::ymd;
     use chrono::NaiveDate;
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, HorizonGraph,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, InitialConditions, LineBlockBounds,
-        LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        entities::{
-            bus::{Bus, DeficitSegment},
-            hydro::{Hydro, HydroGenerationModel},
-        },
+        HorizonGraph, HydroPenalties, InitialConditions, SystemBuilder,
+        entities::bus::DeficitSegment,
         scenario::{
             ExternalLoadRow, ExternalScenarioRow, InflowHistoryRow, InflowModel, LoadModel,
         },
         temporal::{
-            Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
-            SeasonDefinition, SeasonMap, Stage, StageLagTransition, StageRiskConfig,
-            StageStateConfig,
+            Block, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
+            SeasonDefinition, SeasonMap, Stage, StageLagTransition, StageStateConfig,
         },
     };
     use novomodelo_stochastic::par::lag_transition::{
@@ -524,36 +513,38 @@ mod tests {
         season_id: usize,
         duration_hours: f64,
     ) -> Stage {
-        Stage {
+        let mut stage = builders::make_stage(
             index,
-            id,
-            start_date: start,
-            end_date: end,
-            season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: true,
+            StageSpec {
+                start_date: start,
+                end_date: end,
+                season_id: Some(season_id),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "S".to_string(),
+                    duration_hours,
+                }],
+                state_config: StageStateConfig {
+                    storage: true,
+                    inflow_lags: true,
+                },
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: 1,
+                    noise_method: NoiseMethod::HistoricalResiduals,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::HistoricalResiduals,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     /// The one-hydro, one-bus `System` shell shared by every ring fixture:
     /// `stages` supplies its calendar, `inflow_models`/`inflow_history` its PAR
     /// and window-discovery data, `season_map` its policy-graph season map.
     #[expect(
-        clippy::too_many_lines,
-        reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
     )]
     fn ring_system(
         stages: &[Stage],
@@ -574,139 +565,31 @@ mod tests {
             })
             .collect();
 
-        let bus = Bus {
-            id: RING_BUS_ID,
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: RING_HYDRO_ID,
-            name: "H1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 200.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 250.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-        };
-        hydro.declare_mirror_unit_group(RING_BUS_ID);
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 200.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+        let bus = builders::make_bus(
+            RING_BUS_ID,
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
             },
         );
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
+        let hydro = builders::make_hydro(
+            RING_HYDRO_ID,
+            HydroSpec {
+                name: "H1".to_string(),
+                bus_id: RING_BUS_ID,
+                max_storage_hm3: 200.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                penalties: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
+                ..HydroSpec::default()
             },
         );
 
@@ -719,26 +602,36 @@ mod tests {
             season_map: Some(season_map),
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(stages.to_vec())
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .inflow_history(inflow_history)
-            .external_scenarios(external_scenarios)
-            .bounds(bounds)
-            .penalties(penalties)
-            .policy_graph(policy_graph)
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-            })
-            .build()
-            .expect("ring fixture: valid system")
+        crate::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.to_vec())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .inflow_history(inflow_history.clone())
+                    .external_scenarios(external_scenarios.clone())
+                    .policy_graph(policy_graph.clone())
+                    .initial_conditions(InitialConditions {
+                        storage: vec![],
+                        filling_storage: vec![],
+                        past_anticipated_commitments: vec![],
+                        recent_observations: vec![],
+                        past_defluences: vec![],
+                    })
+            },
+            0,
+            |system, _, penalties| {
+                for h in 0..system.hydros().len() {
+                    for s in 0..n_stages {
+                        penalties
+                            .hydro_penalties_mut(h, s)
+                            .storage_violation_below_cost = 500.0;
+                    }
+                }
+            },
+        )
     }
 
     /// A [`RingFixture`] with 5 study stages (three monthly, Jan-Mar 2026,
@@ -834,10 +727,9 @@ mod tests {
     /// Drive `advance_lag_chain::<LagMajor>` across `fx`'s stages with lag
     /// width `lag_width`, returning the incoming (pre-advance) lag vector at
     /// `at_stage` — the values the PAR model there reads. `downstream_par_order
-    /// = 0` (`accumulator`/`completed_lags` empty) reproduces the literal-`0`
-    /// regression `build_opening_tree_library` used to pass to
-    /// `standardize_historical_windows`; a positive value reproduces the
-    /// ring-aware, fixed behavior.
+    /// = 0` (`accumulator`/`completed_lags` empty) reproduces a literal `0`
+    /// passed to `standardize_historical_windows` (the primary-only advance); a
+    /// positive value reproduces the ring-aware behavior.
     fn ring_incoming_lags(
         fx: &RingFixture,
         transitions: &[StageLagTransition],
@@ -896,7 +788,7 @@ mod tests {
     /// `derive_downstream_par_order`'s result into `standardize_historical_windows`,
     /// not a literal `0`: the resulting eta at the quarterly transition must
     /// match the independent ring-aware forward-chain oracle and differ from
-    /// the primary-only advance the literal-`0` regression produces.
+    /// the primary-only advance a literal `0` produces.
     #[test]
     fn build_opening_tree_library_ring_aware_eta_at_quarterly_transition() {
         let fx = build_ring_fixture();
@@ -1071,7 +963,6 @@ mod tests {
             &training_source,
             Some(3),
             None,
-            MomentMatching::None,
         )
         .expect("stochastic context must build");
 
@@ -1237,7 +1128,6 @@ mod tests {
             &training_source,
             None,
             None,
-            MomentMatching::None,
         )
         .expect("stochastic context must build");
         let applied = stochastic.par();
@@ -1503,34 +1393,34 @@ mod tests {
         let bus_id = EntityId(2);
 
         let make_stage = |index: usize, month: u32| {
-            let start = NaiveDate::from_ymd_opt(2026, month, 1).unwrap();
+            let start = ymd(2026, month, 1);
             let end = if month == 12 {
-                NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()
+                ymd(2027, 1, 1)
             } else {
-                NaiveDate::from_ymd_opt(2026, month + 1, 1).unwrap()
+                ymd(2026, month + 1, 1)
             };
-            Stage {
+            builders::make_stage(
                 index,
-                id: index as i32,
-                start_date: start,
-                end_date: end,
-                season_id: Some(index),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "S".to_string(),
-                    duration_hours: 720.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: true,
+                StageSpec {
+                    start_date: start,
+                    end_date: end,
+                    season_id: Some(index),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 720.0,
+                    }],
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: true,
+                    },
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 1,
+                        noise_method: NoiseMethod::HistoricalResiduals,
+                    },
+                    ..StageSpec::default()
                 },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::HistoricalResiduals,
-                },
-            }
+            )
         };
         let stages: Vec<Stage> = (1..=12_u32)
             .map(|m| make_stage((m - 1) as usize, m))
@@ -1589,139 +1479,31 @@ mod tests {
             })
             .collect();
 
-        let bus = Bus {
-            id: bus_id,
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: hydro_id,
-            name: "H1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 200.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 250.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-        };
-        hydro.declare_mirror_unit_group(bus_id);
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: 12,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 200.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+        let bus = builders::make_bus(
+            bus_id,
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
             },
         );
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: 12,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
+        let hydro = builders::make_hydro(
+            hydro_id,
+            HydroSpec {
+                name: "H1".to_string(),
+                bus_id,
+                max_storage_hm3: 200.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                penalties: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
+                ..HydroSpec::default()
             },
         );
 
@@ -1734,25 +1516,35 @@ mod tests {
             season_map: Some(monthly_season_map()),
         };
 
-        let system = SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .inflow_history(inflow_history)
-            .bounds(bounds)
-            .penalties(penalties)
-            .policy_graph(policy_graph)
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-            })
-            .build()
-            .expect("AR(0) declared-lag-history fixture: valid system");
+        let system = crate::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .inflow_history(inflow_history.clone())
+                    .policy_graph(policy_graph.clone())
+                    .initial_conditions(InitialConditions {
+                        storage: vec![],
+                        filling_storage: vec![],
+                        past_anticipated_commitments: vec![],
+                        recent_observations: vec![],
+                        past_defluences: vec![],
+                    })
+            },
+            0,
+            |system, _, penalties| {
+                for h in 0..system.hydros().len() {
+                    for s in 0..stages.len() {
+                        penalties
+                            .hydro_penalties_mut(h, s)
+                            .storage_violation_below_cost = 500.0;
+                    }
+                }
+            },
+        );
 
         let training_source = ScenarioSource {
             inflow_scheme: SamplingScheme::InSample,
@@ -1764,11 +1556,11 @@ mod tests {
         (system, training_source)
     }
 
-    /// Cross-source regression at the SAME declared depth (24, the worked
-    /// acceptance example): `resolve_state_layout` (the dense-stride + mask
+    /// Cross-source regression at the SAME declared depth (24):
+    /// `resolve_state_layout` (the dense-stride + mask
     /// source) still widens past the fixture's AR(0) order to exactly 24, but
     /// the historical library's width is the applied PAR's own
-    /// order — the two sources address different facts and no longer agree.
+    /// order — the two sources address different facts, so their widths differ.
     /// A forward twin built from the same applied PAR and the same depth-24
     /// seed (`resolve_inflow_seeds` at `state_layout.max_par_order`, the one
     /// seed owner at one depth) must be bit-identical to the tree: same
@@ -1926,10 +1718,6 @@ mod tests {
     /// directly — a disagreement P-B1 (novomodelo-io) would reject at load, unreachable
     /// through the public API but the exact input that separates take-first from an
     /// element-wise minimum.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
-    )]
     fn external_count_system(
         stage_ids: &[i32],
         inflow_per_stage: usize,
@@ -1942,27 +1730,23 @@ mod tests {
         let stages: Vec<Stage> = stage_ids
             .iter()
             .enumerate()
-            .map(|(index, &id)| Stage {
-                index,
-                id,
-                start_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
-                season_id: Some(0),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "S".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|(index, &id)| {
+                let mut stage = builders::make_stage(
+                    index,
+                    StageSpec {
+                        start_date: ymd(2026, 1, 1),
+                        end_date: ymd(2026, 2, 1),
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        ..StageSpec::default()
+                    },
+                );
+                stage.id = id;
+                stage
             })
             .collect();
 
@@ -2009,139 +1793,31 @@ mod tests {
             }
         }
 
-        let bus = Bus {
-            id: bus_id,
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: hydro_id,
-            name: "H1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 200.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 250.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-        };
-        hydro.declare_mirror_unit_group(bus_id);
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 200.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+        let bus = builders::make_bus(
+            bus_id,
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
             },
         );
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
+        let hydro = builders::make_hydro(
+            hydro_id,
+            HydroSpec {
+                name: "H1".to_string(),
+                bus_id,
+                max_storage_hm3: 200.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                penalties: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
+                ..HydroSpec::default()
             },
         );
 
@@ -2154,26 +1830,36 @@ mod tests {
             season_map: None,
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .policy_graph(policy_graph)
-            .initial_conditions(InitialConditions {
-                storage: vec![],
-                filling_storage: vec![],
-                past_anticipated_commitments: vec![],
-                recent_observations: vec![],
-                past_defluences: vec![],
-            })
-            .external_scenarios(external_scenarios)
-            .external_load_scenarios(external_load_scenarios)
-            .build()
-            .expect("external-count fixture: valid system")
+        crate::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .policy_graph(policy_graph.clone())
+                    .initial_conditions(InitialConditions {
+                        storage: vec![],
+                        filling_storage: vec![],
+                        past_anticipated_commitments: vec![],
+                        recent_observations: vec![],
+                        past_defluences: vec![],
+                    })
+                    .external_scenarios(external_scenarios.clone())
+                    .external_load_scenarios(external_load_scenarios.clone())
+            },
+            0,
+            |system, _, penalties| {
+                for h in 0..system.hydros().len() {
+                    for s in 0..n_stages {
+                        penalties
+                            .hydro_penalties_mut(h, s)
+                            .storage_violation_below_cost = 500.0;
+                    }
+                }
+            },
+        )
     }
 
     fn external_source(inflow: SamplingScheme, load: SamplingScheme) -> ScenarioSource {
@@ -2373,10 +2059,9 @@ mod tests {
         }
     }
 
-    /// The ring fixture with deterministic order-0 inflow (`std_m3s = 0`), so the
-    /// stage-0 observation 80 against the mean 100 fails the historical library's
-    /// V2.3 check.
-    fn ring_with_failing_historical_library() -> System {
+    /// The ring fixture with deterministic order-0 inflow (`std_m3s = 0`, mean
+    /// 100) under a history that differs from the mean at every stage.
+    fn ring_with_zero_deviation_inflow() -> System {
         let fx = build_ring_fixture();
         let models = fx
             .system
@@ -2418,7 +2103,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(ring_user_tree()),
-            MomentMatching::None,
         )
         .expect("a supplied opening tree must not need the historical library");
         assert_eq!(
@@ -2426,11 +2110,6 @@ mod tests {
             ComponentProvenance::UserSupplied
         );
         assert_eq!(ctx.opening_tree().data(), [0.1, 0.2, 0.3, 0.4, 0.5]);
-    }
-
-    #[test]
-    fn supplied_opening_tree_ignores_a_historical_library_that_fails_validation() {
-        assert_supplied_tree_reaches_context(&ring_with_failing_historical_library());
     }
 
     #[test]
@@ -2449,7 +2128,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(OpeningTree::from_parts(data.clone(), vec![2; 5], 1)),
-            MomentMatching::PerCoordinate,
         )
         .expect("a supplied two-opening tree must build");
 
@@ -2457,7 +2135,6 @@ mod tests {
             ctx.provenance().opening_tree,
             ComponentProvenance::UserSupplied
         );
-        assert_eq!(ctx.provenance().opening_tree_moment_matching, None);
         assert_eq!(
             ctx.opening_tree()
                 .data()
@@ -2469,23 +2146,47 @@ mod tests {
     }
 
     #[test]
-    fn generated_opening_tree_still_refuses_a_historical_library_that_fails_validation() {
+    fn generated_opening_tree_has_zero_noise_at_a_zero_deviation_season() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let result = build_stochastic_context_for_study(
-            &ring_with_failing_historical_library(),
+        let ctx = build_stochastic_context_for_study(
+            &ring_with_zero_deviation_inflow(),
             tmp.path(),
             42,
             &ScenarioSource::default(),
             None,
             None,
-            MomentMatching::None,
+        )
+        .expect("a zero-deviation season must not refuse the historical library");
+        assert!(
+            ctx.opening_tree()
+                .data()
+                .iter()
+                .all(|v| v.to_bits() == 0.0_f64.to_bits()),
+            "got {:?}",
+            ctx.opening_tree().data()
+        );
+    }
+
+    #[test]
+    fn generated_opening_tree_still_refuses_a_case_without_historical_windows() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let result = build_stochastic_context_for_study(
+            &ring_without_inflow_history(),
+            tmp.path(),
+            42,
+            &ScenarioSource::default(),
+            None,
+            None,
         );
         match result {
             Err(SddpError::Stochastic(StochasticError::InsufficientData { context })) => {
-                assert!(context.starts_with("V2.3"), "got: {context}");
+                assert!(
+                    context.starts_with("no valid historical windows found"),
+                    "got: {context}"
+                );
             }
-            Err(other) => panic!("expected a V2.3 refusal, got: {other:?}"),
-            Ok(_) => panic!("a generated tree over a failing library must be refused"),
+            Err(other) => panic!("expected the no-windows refusal, got: {other:?}"),
+            Ok(_) => panic!("a generated tree without historical windows must be refused"),
         }
     }
 }
