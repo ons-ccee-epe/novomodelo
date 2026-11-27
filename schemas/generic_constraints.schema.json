@@ -19,6 +19,13 @@
       "additionalProperties": false,
       "description": "A single constraint entry.",
       "properties": {
+        "active_when": {
+          "description": "Optional condition under which the constraint holds, tested per stage, block and scenario;\nwhere it is false the constraint does not hold. It reads data only: the scenario bus loads\n`bus_load_value(n)`, `@parameters` and named expressions that read no LP variable,\ncompared with `<`, `<=`, `>`, `>=` or `==` and joined by `&` and `|`, e.g.\n`\"82000 < bus_load_value(0) + bus_load_value(1) & bus_load_value(0) + bus_load_value(1) <= 95000\"`.\nIt reads no LP variable, no `hydro_availability` and no `if()`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "description": {
           "description": "Optional human-readable description.",
           "type": [
@@ -27,7 +34,7 @@
           ]
         },
         "expression": {
-          "description": "Linear expression over LP variables, with numbers and `@parameters` combined by `+`, `-`,\n`*`, `/` and parentheses, e.g. `\"2.5 * thermal_generation(5) - @k * hydro_generation(3) <= @cap\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nFor a stage volume in hm³ use `\"hydro_outflow_volume(5)\"` (turbined plus spilled),\n`\"hydro_diversion_volume(5)\"` or `\"pumping_volume(2)\"`: each block's m³/s flow times its\nduration, summed over the stage, so a coefficient multiplies hm³. A constraint with one\ntakes only stage volumes, `hydro_storage`, and `hydro_storage_*` or\n`hydro_useful_volume_*` without a block argument; price its slack `\"per_unit\"`.\nAn optional inline relational operator (`<=`, `>=`, `==`) moves every variable term to\nthe left and assigns the remainder to the bound it targets.",
+          "description": "Linear expression over LP variables, with numbers and `@parameters` combined by `+`, `-`,\n`*`, `/` and parentheses, e.g. `\"2.5 * thermal_generation(5) - @k * hydro_generation(3) <= @cap\"`.\nTo constrain an anticipated thermal's commitment, use `\"anticipated_decision(5)\"` (stage-level scalar, no block index).\nTo constrain one bus of a plant split across several buses, use `\"hydro_turbined(5, bus=2)\"`\nor `\"hydro_generation(5, bus=2)\"` — the only two variables accepting a `bus=` selector.\nFor a stage volume in hm³ use `\"hydro_outflow_volume(5)\"` (turbined plus spilled),\n`\"hydro_diversion_volume(5)\"` or `\"pumping_volume(2)\"`: each block's m³/s flow times its\nduration, summed over the stage, so a coefficient multiplies hm³. A constraint with one\ntakes only stage volumes, `hydro_storage`, and `hydro_storage_*` or\n`hydro_useful_volume_*` without a block argument; price its slack `\"per_unit\"`.\nBesides numbers and `@parameters` it may read scenario data: `bus_load_value(n)` is the\nload of bus `n` in the scenario being solved, `bus_load_value(n, k)` that load at block\n`k`, and the load of several buses is their written sum, e.g.\n`bus_load_value(0) + bus_load_value(1)`. It may choose a value with `if(cond, a, b)`:\n`cond` reads data only, as `active_when` does, and the branches read the same LP\nvariables, differing only in coefficients and constants.\nAn optional inline relational operator (`<=`, `>=`, `==`) moves every variable term to\nthe left and assigns the remainder to the bound it targets. Without one,\n`constraints/generic_constraint_bounds.parquet` bounds the whole expression: its constant\nand data part shifts each endpoint the table gives and creates none.\n\n`hydro_availability(h)` is data, not an LP variable: at each stage and block it is the sum\nof the maximum generation of plant `h`'s unit groups. A group's maximum is the one the\nstudy resolves for the block or the stage from\n`constraints/hydro_unit_group_bounds.parquet`, where it resolves one, and the group's\ndeclared maximum elsewhere. The value is 0 at a stage where the plant does not operate.\nThe term reads the capacity of the row's block; `hydro_availability(h, k)` reads that of\nblock `k`. The term leaves the left side: its coefficient times that value moves into the\nbounds. A condition does not read it.",
           "type": "string"
         },
         "id": {
@@ -64,7 +71,7 @@
           ]
         },
         "expression": {
-          "description": "Linear expression over LP variables, under the same arithmetic as a constraint's\n`expression`, without a relational operator.",
+          "description": "Linear expression under the same arithmetic as a constraint's `expression`, scenario data\nand `if()` included, without a relational operator. One that reads no LP variable is data:\n`active_when` may read it, and in a constraint it joins the constant and data part.",
           "type": "string"
         },
         "name": {

@@ -9,6 +9,7 @@ use novomodelo_io::config::{
     InflowResidualDistribution, NumScenariosResolution, PhaseSolverProfileConfig, SimulationRowSet,
     StoppingRuleConfig,
 };
+use novomodelo_io::constraints::ScenarioLayer;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -185,6 +186,9 @@ pub struct StudyParams {
     /// Caller-supplied scalar parameters from `constraints/generic_parameters.json`
     /// to ensure boundary-configured studies cannot build against an empty table by omission.
     pub scalar_parameters: Vec<ScalarParameter>,
+    /// What the generic constraints read per scenario; empty when no constraint reads scenario
+    /// data.
+    pub generic_scenario: ScenarioLayer,
 }
 
 impl StudyParams {
@@ -356,6 +360,7 @@ impl StudyParams {
             export_states: config.exports.states,
             checkpoint_schedule: config.checkpoint_schedule(Path::new("config.json"))?,
             scalar_parameters,
+            generic_scenario: ScenarioLayer::default(),
         })
     }
 }
@@ -373,7 +378,7 @@ mod tests {
     };
     use novomodelo_stochastic::test_support::WarnRecorder;
 
-    use super::{BoundaryStateRequirements, StudyParams};
+    use super::{BoundaryStateRequirements, ScenarioLayer, StudyParams};
     use crate::config::CutManagementConfig;
     use crate::cut::CutSet;
 
@@ -644,6 +649,13 @@ mod tests {
         assert!(!params.boundary.is_present());
         assert_eq!(params.boundary.inflow_lag_depth(), None);
         assert_eq!(params.scalar_parameters, table);
+    }
+
+    #[test]
+    fn from_config_leaves_the_generic_scenario_empty() {
+        let params = StudyParams::from_config(&base_test_config(), Vec::new())
+            .expect("base config is valid");
+        assert_eq!(params.generic_scenario, ScenarioLayer::default());
     }
 
     /// `BoundaryStateRequirements` derives both facts together: `present(depth)`

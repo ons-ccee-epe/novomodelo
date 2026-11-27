@@ -2,6 +2,8 @@
 //! opening): the single owner the forward pass, backward pass, simulation
 //! pipeline, and lower-bound evaluation all route through, so every solve site
 //! patches the LP identically (the "patch NCS identically" contract, D15).
+//! `patch_opening` writes the load, inflow-shift and per-solve generic-constraint row
+//! bounds.
 //!
 //! Home is `training/`, not `lp/builder/`: the pipeline needs `crate::context`,
 //! `crate::workspace`, and `crate::noise`, which `training/` already depends on,
@@ -23,6 +25,7 @@ use crate::{
         apply_inflow_slack_col_bounds, apply_ncs_col_bounds, realize_inflow, transform_load_noise,
         transform_ncs_noise,
     },
+    policy::resolved_generic_coefficients::StageLoads,
     setup::node_graph::StageIdx,
     solve::StageOpeningSolver,
     workspace::ScratchBuffers,
@@ -299,6 +302,25 @@ impl StageSolvePrep {
         patch_buf.fill_inflow_shift_patches(
             &ctx.inflow_coupling[stage.0],
             &scratch.realized_inflow_buf,
+            &ctx.template(stage).row_scale,
+        );
+        let geometry = &ctx.geometry_per_stage[stage.0];
+        let loads = StageLoads {
+            noise: &scratch.load_rhs_buf,
+            row_lower: &ctx.template(stage).row_lower,
+            row_scale: &ctx.template(stage).row_scale,
+            geometry,
+        };
+        ctx.generic_rows.evaluate_bounds(
+            stage.0,
+            &geometry.per_solve_rows,
+            &loads,
+            &mut scratch.generic,
+        );
+        patch_buf.fill_row_list_patches(
+            geometry.per_solve_rows.iter().map(|row| row.row),
+            scratch.generic.lower(),
+            scratch.generic.upper(),
             &ctx.template(stage).row_scale,
         );
 

@@ -2,8 +2,8 @@
 //!
 //! [`write_generic_constraint_echo`] exports a slice of
 //! [`GenericConstraintEchoRow`] — each generic constraint's fully-resolved flat
-//! form, one row per `(constraint, stage, block, term)`. The on-disk shape is
-//! owned by `generic_constraint_echo_schema` in [`crate::output::schemas`].
+//! form, one row per term and plant-capacity read of each `(constraint, stage, block)`. The
+//! on-disk shape is owned by `generic_constraint_echo_schema` in [`crate::output::schemas`].
 //!
 //! All writes are atomic: data is first written to a `.tmp` suffix, then renamed
 //! to the final path.
@@ -22,13 +22,15 @@ pub const GENERIC_CONSTRAINT_ECHO_FILE: &str = "generic_constraints/resolved_ech
 
 /// One row of the resolved generic-constraint echo.
 ///
-/// Each row is one resolved LHS term of one generic constraint at one
-/// `(stage, block)`. Following the sense-free interval model, the constraint's
+/// Each row is one resolved LHS term, or one plant capacity the bounds read, of one generic
+/// constraint at one `(stage, block)`. Following the sense-free interval model, the constraint's
 /// bound is carried as the nullable pair `bound_lower`/`bound_upper` (min before
-/// max) plus a derived shape label — there is no authored sense. A term-less
-/// (constant-only) constraint contributes a single placeholder row whose per-term
-/// columns are all `None`.
+/// max) plus a derived shape label — there is no authored sense. A constraint with neither
+/// a term nor a capacity read contributes a single placeholder row whose per-term columns are
+/// all `None`.
 #[derive(Debug, Clone)]
+// Rationale (struct_excessive_bools): each flag is a Boolean column of the Parquet schema.
+#[allow(clippy::struct_excessive_bools)]
 pub struct GenericConstraintEchoRow {
     /// Study stage id.
     pub stage_id: i32,
@@ -46,11 +48,11 @@ pub struct GenericConstraintEchoRow {
     pub variable: Option<String>,
     /// Resolved coefficient, before any per-column LP factor.
     pub coefficient: Option<f64>,
-    /// Lower interval endpoint; `None` when unbounded below.
+    /// Lower interval endpoint; `None` when unbounded below or evaluated per solve.
     pub bound_lower: Option<f64>,
-    /// Upper interval endpoint; `None` when unbounded above.
+    /// Upper interval endpoint; `None` when unbounded above or evaluated per solve.
     pub bound_upper: Option<f64>,
-    /// Shape label derived from which endpoints are finite.
+    /// Shape label derived from which sides the row carries, fixed or evaluated per solve.
     pub derived_shape: String,
     /// Whether the constraint carries a slack term.
     pub slack_enabled: bool,
@@ -59,13 +61,21 @@ pub struct GenericConstraintEchoRow {
     /// How `slack_penalty` is charged (`"per_hour"` / `"per_unit"`); `None` when
     /// slack is disabled.
     pub slack_penalty_basis: Option<String>,
+    /// Plant capacity in MW read at this stage and block; `None` except on a capacity read row.
+    pub value: Option<f64>,
+    /// Whether the lower bound is evaluated per solve; `false` on a row without one.
+    pub lower_per_solve: bool,
+    /// Whether the upper bound is evaluated per solve; `false` on a row without one.
+    pub upper_per_solve: bool,
+    /// Whether the constraint has an `active_when` condition.
+    pub has_active_when: bool,
 }
 
 /// Write a slice of [`GenericConstraintEchoRow`] to a Parquet file at `path`.
 ///
 /// Rows are written in the order given; the caller emits them in canonical
-/// `(constraint, stage, block, term_index)` order. An empty slice produces a valid
-/// 0-row file. The parent directory is created if absent; the write is atomic.
+/// `(constraint, stage, block)` order, terms by `term_index` before capacity reads. An empty
+/// slice produces a valid 0-row file. The parent directory is created if absent; the write is atomic.
 ///
 /// # Errors
 ///
@@ -94,6 +104,10 @@ pub struct GenericConstraintEchoRow {
 ///     slack_enabled: true,
 ///     slack_penalty: Some(1000.0),
 ///     slack_penalty_basis: Some("per_hour".to_string()),
+///     value: None,
+///     lower_per_solve: false,
+///     upper_per_solve: false,
+///     has_active_when: false,
 /// }];
 /// write_generic_constraint_echo(
 ///     Path::new("/tmp/out/generic_constraints_echo.parquet"),
@@ -129,6 +143,10 @@ fn build_generic_constraint_echo_batch(
     let mut slack_enabled_col = BooleanBuilder::with_capacity(n);
     let mut slack_penalty_col = Float64Builder::with_capacity(n);
     let mut slack_penalty_basis_col = StringBuilder::with_capacity(n, n * 8);
+    let mut value_col = Float64Builder::with_capacity(n);
+    let mut lower_per_solve_col = BooleanBuilder::with_capacity(n);
+    let mut upper_per_solve_col = BooleanBuilder::with_capacity(n);
+    let mut has_active_when_col = BooleanBuilder::with_capacity(n);
 
     for row in rows {
         stage_id_col.append_value(row.stage_id);
@@ -145,6 +163,10 @@ fn build_generic_constraint_echo_batch(
         slack_enabled_col.append_value(row.slack_enabled);
         slack_penalty_col.append_option(row.slack_penalty);
         slack_penalty_basis_col.append_option(row.slack_penalty_basis.as_deref());
+        value_col.append_option(row.value);
+        lower_per_solve_col.append_value(row.lower_per_solve);
+        upper_per_solve_col.append_value(row.upper_per_solve);
+        has_active_when_col.append_value(row.has_active_when);
     }
 
     RecordBatch::try_new(
@@ -164,6 +186,10 @@ fn build_generic_constraint_echo_batch(
             Arc::new(slack_enabled_col.finish()),
             Arc::new(slack_penalty_col.finish()),
             Arc::new(slack_penalty_basis_col.finish()),
+            Arc::new(value_col.finish()),
+            Arc::new(lower_per_solve_col.finish()),
+            Arc::new(upper_per_solve_col.finish()),
+            Arc::new(has_active_when_col.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("generic_constraint_echo", e.to_string()))
@@ -175,6 +201,7 @@ mod tests {
     use super::*;
     use crate::test_support::output::read_first_batch;
     use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
+    use arrow::datatypes::DataType;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use tempfile::tempdir;
 
@@ -196,6 +223,10 @@ mod tests {
                 slack_enabled: true,
                 slack_penalty: Some(1000.0),
                 slack_penalty_basis: Some("per_hour".to_string()),
+                value: None,
+                lower_per_solve: false,
+                upper_per_solve: false,
+                has_active_when: false,
             },
             // Stage-level (block_id None), upper-only → "cap"; slack off.
             GenericConstraintEchoRow {
@@ -213,6 +244,10 @@ mod tests {
                 slack_enabled: false,
                 slack_penalty: None,
                 slack_penalty_basis: None,
+                value: None,
+                lower_per_solve: false,
+                upper_per_solve: false,
+                has_active_when: false,
             },
             // Term-less placeholder (all per-term columns None), lower-only → "floor".
             GenericConstraintEchoRow {
@@ -230,6 +265,10 @@ mod tests {
                 slack_enabled: false,
                 slack_penalty: None,
                 slack_penalty_basis: None,
+                value: None,
+                lower_per_solve: false,
+                upper_per_solve: false,
+                has_active_when: false,
             },
         ]
     }
@@ -244,7 +283,7 @@ mod tests {
         assert!(path.exists(), "file must exist after write");
 
         let batch = read_first_batch(&path);
-        assert_eq!(batch.num_columns(), 14, "must have 14 columns");
+        assert_eq!(batch.num_columns(), 18, "must have 18 columns");
         assert_eq!(batch.num_rows(), 3, "must have 3 rows");
 
         let stage_id = batch
@@ -387,6 +426,85 @@ mod tests {
         assert!(slack_penalty_basis.is_null(2));
     }
 
+    /// A per-solve or gated row and a capacity read set each scenario column on its own: a
+    /// swapped column would read another row's pattern.
+    #[test]
+    fn the_scenario_columns_round_trip() {
+        let base = sample_rows().remove(0);
+        let rows = vec![
+            GenericConstraintEchoRow {
+                term_index: None,
+                variable_kind: Some("hydro_availability".to_string()),
+                variable: Some("hydro_availability(id=14, block=all)".to_string()),
+                coefficient: None,
+                bound_upper: None,
+                value: Some(300.0),
+                upper_per_solve: true,
+                has_active_when: true,
+                ..base.clone()
+            },
+            GenericConstraintEchoRow {
+                bound_lower: None,
+                lower_per_solve: true,
+                ..base
+            },
+        ];
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("generic_constraints_echo.parquet");
+
+        write_generic_constraint_echo(&path, &rows).expect("write must succeed");
+
+        let batch = read_first_batch(&path);
+        let column = |name| batch.column_by_name(name).unwrap().as_any();
+        let value = column("value").downcast_ref::<Float64Array>().unwrap();
+        let flags = |name| {
+            let flags = column(name).downcast_ref::<BooleanArray>().unwrap();
+            [flags.value(0), flags.value(1)]
+        };
+        assert!(value.value(0) == 300.0);
+        assert!(value.is_null(1), "a term row has no capacity value");
+        assert_eq!(flags("lower_per_solve"), [false, true]);
+        assert_eq!(flags("upper_per_solve"), [true, false]);
+        assert_eq!(flags("has_active_when"), [true, false]);
+    }
+
+    #[test]
+    fn the_echo_schema_appends_the_scenario_columns() {
+        let schema = generic_constraint_echo_schema();
+        let expected: &[(&str, DataType, bool)] = &[
+            ("stage_id", DataType::Int32, false),
+            ("block_id", DataType::Int32, true),
+            ("constraint_id", DataType::Int32, false),
+            ("constraint_name", DataType::Utf8, false),
+            ("term_index", DataType::Int32, true),
+            ("variable_kind", DataType::Utf8, true),
+            ("variable", DataType::Utf8, true),
+            ("coefficient", DataType::Float64, true),
+            ("bound_lower", DataType::Float64, true),
+            ("bound_upper", DataType::Float64, true),
+            ("derived_shape", DataType::Utf8, false),
+            ("slack_enabled", DataType::Boolean, false),
+            ("slack_penalty", DataType::Float64, true),
+            ("slack_penalty_basis", DataType::Utf8, true),
+            ("value", DataType::Float64, true),
+            ("lower_per_solve", DataType::Boolean, false),
+            ("upper_per_solve", DataType::Boolean, false),
+            ("has_active_when", DataType::Boolean, false),
+        ];
+        let actual: Vec<(&str, DataType, bool)> = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                (
+                    field.name().as_str(),
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn generic_constraint_echo_empty_slice_produces_valid_zero_row_file() {
         let tmp = tempdir().expect("tempdir");
@@ -399,8 +517,8 @@ mod tests {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         assert_eq!(
             builder.schema().fields().len(),
-            14,
-            "empty file must still carry the full 14-column schema"
+            18,
+            "empty file must still carry the full 18-column schema"
         );
         let total_rows: usize = builder
             .build()

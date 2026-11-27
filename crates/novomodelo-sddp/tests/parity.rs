@@ -5,8 +5,10 @@
 //! the b6a hydro-inflow parity, the determinism conformance suite,
 //! `simulation_scenario_seed` (the simulation seed's effect on out-of-sample
 //! draws, its fallback to the training seed, and their declaration-order and
-//! thread-count invariance), and `moment_matched_opening_tree` (properties of a
-//! moment-matched opening tree built from a committed deck) into one
+//! thread-count invariance), `scenario_constraint_invariance` (the same invariances for the
+//! outputs of generic constraints that read the scenario and for stage LPs), and
+//! `moment_matched_opening_tree`
+//! (properties of a moment-matched opening tree built from a committed deck) into one
 //! binary so the statically-linked solver links once rather than once per file.
 //! The two parity-hash sources carry mutually exclusive solver-backend gates, so
 //! each is a per-`mod` `#[cfg(feature = …)]`: `parity_hash_highs` compiles under
@@ -29,6 +31,16 @@
 
 mod common;
 
+use std::path::Path;
+use std::sync::mpsc;
+
+use novomodelo_io::Config;
+use novomodelo_io::config::SimulationSelection;
+use novomodelo_sddp::{SimulationScenarioResult, StudySetup};
+use novomodelo_solver::ActiveSolver;
+
+use common::{StubComm, fresh_setup_with};
+
 /// Fixed base seed for the declaration-order-shuffle axis. Permutation `i`'s
 /// seed is `SHUFFLE_BASE_SEED.wrapping_add(i as u64)`; the single permutation
 /// folded into each `parity_hash_<case>` test uses `i = 0`. See
@@ -39,6 +51,59 @@ const SHUFFLE_BASE_SEED: u64 = 0x5EED_C0BE_5EED_C0BE;
 /// Permutation count for the `shuffle_matrix_<case>` tests, dispatched only via
 /// `.github/workflows/invariance-shuffle.yml` (`--run-ignored ignored-only`).
 const FULL_SHUFFLE_PERMUTATIONS: usize = 8;
+
+/// Trains `case` and simulates `num_scenarios` sampled scenarios, with `n_threads` training
+/// workers and simulation workspaces on a rayon pool of the same size; `mutate` adjusts the
+/// config first. Returns the setup and the scenario results in channel arrival order.
+fn train_and_simulate_with_threads(
+    case: &Path,
+    n_threads: usize,
+    num_scenarios: u32,
+    mutate: impl FnOnce(&mut Config),
+) -> (StudySetup, Vec<SimulationScenarioResult>) {
+    let mut setup = fresh_setup_with(case, |config| {
+        config.simulation.enabled = true;
+        config.simulation.selection = Some(SimulationSelection::Sampled { num_scenarios });
+        mutate(config);
+    });
+    let threads = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .expect("rayon pool must build");
+    let results = threads.install(|| {
+        let comm = StubComm;
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &comm, n_threads, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "training returned an error: {:?}",
+            outcome.error
+        );
+
+        let mut workspace_pool = setup
+            .create_workspace_pool(&comm, n_threads, ActiveSolver::new)
+            .expect("create_workspace_pool must succeed");
+        let (result_tx, result_rx) =
+            mpsc::sync_channel(setup.simulation_config().io_channel_capacity.max(1));
+        let drain = std::thread::spawn(move || result_rx.into_iter().collect::<Vec<_>>());
+        setup
+            .simulate(
+                &mut workspace_pool.workspaces,
+                &comm,
+                &result_tx,
+                None,
+                None,
+                &outcome.result.basis_cache,
+            )
+            .expect("simulate must return Ok");
+        // A live sender keeps the drain's `into_iter` blocked, deadlocking the join.
+        drop(result_tx);
+        drain.join().expect("drain thread must not panic")
+    });
+    (setup, results)
+}
 
 #[cfg(feature = "highs")]
 mod parity_hash_highs {
@@ -2429,65 +2494,20 @@ mod water_travel_time_gate_byte_neutrality {
 
 mod simulation_scenario_seed {
     use std::path::Path;
-    use std::sync::mpsc;
 
     use novomodelo_io::Config;
     use novomodelo_io::config::{
-        RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, SimulationSelection,
-        StoppingRuleConfig,
+        RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, StoppingRuleConfig,
     };
-    use novomodelo_solver::ActiveSolver;
 
     use super::common::parity_hash::compute_parity_hash;
     use super::common::permute::permute_case;
-    use super::common::{StubComm, fresh_setup_with};
 
     const SIMULATED_SCENARIOS: u32 = 4;
 
     fn simulated_hash(case: &Path, n_threads: usize, mutate: impl FnOnce(&mut Config)) -> String {
-        let mut setup = fresh_setup_with(case, |config| {
-            config.simulation.enabled = true;
-            config.simulation.selection = Some(SimulationSelection::Sampled {
-                num_scenarios: SIMULATED_SCENARIOS,
-            });
-            mutate(config);
-        });
-        let threads = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_threads)
-            .build()
-            .expect("rayon pool must build");
-        let results = threads.install(|| {
-            let comm = StubComm;
-            let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-            let outcome = setup
-                .train(&mut solver, &comm, n_threads, ActiveSolver::new, None, None)
-                .expect("train must return Ok");
-            assert!(
-                outcome.error.is_none(),
-                "training returned an error: {:?}",
-                outcome.error
-            );
-
-            let mut workspace_pool = setup
-                .create_workspace_pool(&comm, n_threads, ActiveSolver::new)
-                .expect("create_workspace_pool must succeed");
-            let (result_tx, result_rx) =
-                mpsc::sync_channel(setup.simulation_config().io_channel_capacity.max(1));
-            let drain = std::thread::spawn(move || result_rx.into_iter().collect::<Vec<_>>());
-            setup
-                .simulate(
-                    &mut workspace_pool.workspaces,
-                    &comm,
-                    &result_tx,
-                    None,
-                    None,
-                    &outcome.result.basis_cache,
-                )
-                .expect("simulate must return Ok");
-            // A live sender keeps the drain's `into_iter` blocked, deadlocking the join.
-            drop(result_tx);
-            drain.join().expect("drain thread must not panic")
-        });
+        let (setup, results) =
+            super::train_and_simulate_with_threads(case, n_threads, SIMULATED_SCENARIOS, mutate);
         compute_parity_hash(&setup, results)
     }
 
@@ -2604,6 +2624,530 @@ mod simulation_scenario_seed {
         assert_eq!(
             one_thread, one_thread_per_scenario,
             "simulation-seeded draws must not depend on the thread count"
+        );
+    }
+}
+
+mod scenario_constraint_invariance {
+    //! The outputs of generic constraints that read the scenario (`generic_violations`,
+    //! `generic_activation`, the `generic_violation_cost` column and the bus spot price) are
+    //! bit-identical across thread counts and entity declaration order. The parity hash digests
+    //! none of them, so these tests compare the projected vectors themselves, and for a case with
+    //! a bounds table, parameters read by `@name` and `if()` selectors, whose ids follow the file
+    //! order, also the stage LPs, fact for fact.
+
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
+
+    use arrow::util::pretty::pretty_format_batches;
+    use novomodelo_sddp::SimulationScenarioResult;
+    use novomodelo_sddp::test_support::template_fact_groups;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::common::constraint_oracle_cases::{default_slack, write_generic};
+    use super::common::copy_case_with_stage_field;
+    use super::common::parquet_fixtures::{
+        GenericBoundsRow, write_generic_constraint_bounds, write_seasonal_stats,
+    };
+    use super::common::permute::permute_case;
+
+    const SCENARIOS: u32 = 8;
+    const CONSTRAINTS_FILE: &str = "constraints/generic_constraints.json";
+
+    fn constraints_file(dir: &TempDir) -> serde_json::Value {
+        let text = std::fs::read_to_string(dir.path().join(CONSTRAINTS_FILE))
+            .expect("constraints file must exist");
+        serde_json::from_str(&text).expect("constraints file must parse")
+    }
+
+    /// `d02-single-hydro` with 4 openings per stage and a load drawn at 20% of its mean, and
+    /// that mean, the same at every stage of d02, so one threshold on the load of bus 0 splits the
+    /// scenarios.
+    fn drawn_load_case() -> (TempDir, f64) {
+        let d02 = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d02-single-hydro");
+        let case = copy_case_with_stage_field(&d02, "num_openings", &json!(4));
+
+        let load_stats = case.path().join("scenarios/load_seasonal_stats.parquet");
+        let rows: Vec<_> = novomodelo_io::parse_load_seasonal_stats(&load_stats)
+            .expect("d02 load stats must parse")
+            .into_iter()
+            .map(|row| (row.bus_id.0, row.stage_id, row.mean_mw, 0.2 * row.mean_mw))
+            .collect();
+        write_seasonal_stats(&load_stats, "bus_id", "mean_mw", "std_mw", &rows);
+        let mean = rows[0].2;
+        (case, mean)
+    }
+
+    /// [`base_case`] with two constraints on hydro 0 in every block: 701 (generation at least
+    /// 1000) is short in every scenario, and 703 (generation at most 1000000) is active where the
+    /// load of bus 0 is at most its mean, which holds in some scenarios and not in others.
+    fn gated_case() -> TempDir {
+        let (case, mean, cells) = base_case();
+        let slack = default_slack(case.path());
+        let file = json!({
+            "constraints": [
+                { "id": 701, "name": "constraint_701",
+                  "expression": "hydro_generation(0) >= 1000", "slack": slack },
+                { "id": 703, "name": "constraint_703",
+                  "expression": "hydro_generation(0) <= 1000000",
+                  "active_when": format!("bus_load_value(0) <= {mean}"), "slack": slack },
+            ],
+        });
+        let bounds: Vec<GenericBoundsRow> = cells
+            .iter()
+            .flat_map(|&(stage_id, block_id)| {
+                [701, 703].map(|id| (id, stage_id, Some(block_id), None, None))
+            })
+            .collect();
+        write_generic(&case, &file, &bounds);
+        case
+    }
+
+    /// `(constraint_id, block_id, active, bound_lower, bound_upper)`, the bounds as bit patterns.
+    type ActivationBits = (i32, Option<u32>, bool, Option<u64>, Option<u64>);
+
+    /// The generic constraint outputs of one `(scenario_id, stage_id)`, floats as bit patterns.
+    #[derive(Debug, PartialEq)]
+    struct ConstraintRows {
+        /// `(constraint_id, block_id, slack_value, slack_cost)`.
+        violations: Vec<(i32, Option<u32>, u64, u64)>,
+        activation: Vec<ActivationBits>,
+        /// `(block_id, generic_violation_cost)`.
+        violation_costs: Vec<(Option<u32>, u64)>,
+        /// `(bus_id, block_id, spot_price)`.
+        spot_prices: Vec<(i32, Option<u32>, u64)>,
+    }
+
+    fn constraint_rows(
+        results: &[SimulationScenarioResult],
+    ) -> BTreeMap<(u32, u32), ConstraintRows> {
+        results
+            .iter()
+            .flat_map(|scenario| {
+                scenario.stages.iter().map(|stage| {
+                    let rows = ConstraintRows {
+                        violations: stage
+                            .generic_violations
+                            .iter()
+                            .map(|v| {
+                                (
+                                    v.constraint_id,
+                                    v.block_id,
+                                    v.slack_value.to_bits(),
+                                    v.slack_cost.to_bits(),
+                                )
+                            })
+                            .collect(),
+                        activation: stage
+                            .generic_activation
+                            .iter()
+                            .map(|a| {
+                                (
+                                    a.constraint_id,
+                                    a.block_id,
+                                    a.active,
+                                    a.bound_lower.map(f64::to_bits),
+                                    a.bound_upper.map(f64::to_bits),
+                                )
+                            })
+                            .collect(),
+                        violation_costs: stage
+                            .costs
+                            .iter()
+                            .map(|c| (c.block_id, c.generic_violation_cost.to_bits()))
+                            .collect(),
+                        spot_prices: stage
+                            .buses
+                            .iter()
+                            .map(|b| (b.bus_id, b.block_id, b.spot_price.to_bits()))
+                            .collect(),
+                    };
+                    ((scenario.scenario_id, stage.stage_id), rows)
+                })
+            })
+            .collect()
+    }
+
+    fn assert_gate_has_both_states(results: &[SimulationScenarioResult], constraint_id: i32) {
+        let mut gate_states: BTreeMap<(u32, Option<u32>), BTreeSet<bool>> = BTreeMap::new();
+        for record in results
+            .iter()
+            .flat_map(|scenario| &scenario.stages)
+            .flat_map(|stage| &stage.generic_activation)
+        {
+            if record.constraint_id == constraint_id {
+                gate_states
+                    .entry((record.stage_id, record.block_id))
+                    .or_default()
+                    .insert(record.active);
+            }
+        }
+        assert!(
+            gate_states.values().any(|states| states.len() == 2),
+            "fixture has no power: constraint {constraint_id} is active in every scenario or in \
+             none at each (stage, block): {gate_states:?}"
+        );
+    }
+
+    fn assert_fixture_has_power(results: &[SimulationScenarioResult]) {
+        assert_gate_has_both_states(results, 703);
+        assert!(
+            results
+                .iter()
+                .flat_map(|scenario| &scenario.stages)
+                .flat_map(|stage| &stage.generic_violations)
+                .any(|v| v.constraint_id == 701 && v.slack_value != 0.0),
+            "fixture has no power: constraint 701 has no slack in any scenario"
+        );
+    }
+
+    /// For [`rich_bounds_case`] on top of [`assert_fixture_has_power`]: 707 is active in some
+    /// scenarios and not in others, and the `if()` of 704 picks each of its branches in some
+    /// scenario. The upper bound of 704 is `0.5 * load` plus what the `if()` picked and `OFFSET`,
+    /// so the picked value is read off the bound with the load term removed.
+    fn assert_selector_fixture_has_power(results: &[SimulationScenarioResult]) {
+        assert_gate_has_both_states(results, 707);
+        let mut picked: BTreeMap<(u32, Option<u32>), BTreeSet<u64>> = BTreeMap::new();
+        for stage in results.iter().flat_map(|scenario| &scenario.stages) {
+            for record in stage
+                .generic_activation
+                .iter()
+                .filter(|record| record.constraint_id == 704)
+            {
+                let upper = record.bound_upper.expect("704 is bounded above");
+                let load = stage
+                    .buses
+                    .iter()
+                    .find(|bus| bus.bus_id == 0 && bus.block_id == record.block_id)
+                    .expect("bus 0 has a record in every block")
+                    .load_mw;
+                picked
+                    .entry((record.stage_id, record.block_id))
+                    .or_default()
+                    .insert((upper - 0.5 * load).round().to_bits());
+            }
+        }
+        assert!(
+            picked.values().any(|values| values.len() == 2),
+            "fixture has no power: the if() of constraint 704 picks one branch in every scenario \
+             at each (stage, block): {picked:?}"
+        );
+    }
+
+    #[test]
+    fn scenario_constraint_outputs_are_bit_identical_across_thread_counts() {
+        let case = gated_case();
+        let (_, one_thread) =
+            super::train_and_simulate_with_threads(case.path(), 1, SCENARIOS, |_| {});
+        assert_fixture_has_power(&one_thread);
+        // 4 workspaces share the scenarios in pairs; one per scenario leaves no workspace a
+        // history, so a leak between consecutive scenarios of a workspace shows in either.
+        for n_threads in [4, SCENARIOS as usize] {
+            let (_, many_threads) =
+                super::train_and_simulate_with_threads(case.path(), n_threads, SCENARIOS, |_| {});
+            assert_eq!(
+                constraint_rows(&one_thread),
+                constraint_rows(&many_threads),
+                "generic constraint outputs must not depend on the thread count (1 vs {n_threads})"
+            );
+        }
+    }
+
+    #[test]
+    fn scenario_constraint_outputs_are_invariant_to_declaration_order() {
+        let case = gated_case();
+        let permuted = permute_case(case.path(), super::SHUFFLE_BASE_SEED);
+        assert_ne!(
+            constraints_file(&case),
+            constraints_file(&permuted),
+            "the shuffle must reorder the constraints file, or the order check is vacuous"
+        );
+
+        let (_, base) = super::train_and_simulate_with_threads(case.path(), 1, SCENARIOS, |_| {});
+        assert_fixture_has_power(&base);
+        let (_, reordered) =
+            super::train_and_simulate_with_threads(permuted.path(), 1, SCENARIOS, |_| {});
+        assert_eq!(
+            constraint_rows(&base),
+            constraint_rows(&reordered),
+            "generic constraint outputs must not depend on declaration order"
+        );
+    }
+
+    const BOUNDS_FILE: &str = "constraints/generic_constraint_bounds.parquet";
+    const VIOLATION_COST: f64 = 2500.0;
+
+    /// The value of `CAP` at a stage and block.
+    fn cap(stage_id: i32, block_id: i32) -> f64 {
+        30.1 + 2.2 * f64::from(stage_id) + 0.3 * f64::from(block_id)
+    }
+
+    /// The upper limit of constraint 702 at a stage.
+    fn cap_margin(stage_id: i32) -> f64 {
+        4.9 + f64::from(stage_id)
+    }
+
+    /// [`drawn_load_case`] with a `constraints` directory, its load mean, and the
+    /// `(stage_id, block_id)` of every block of `stages.json`.
+    fn base_case() -> (TempDir, f64, Vec<(i32, i32)>) {
+        let (case, mean) = drawn_load_case();
+        let text =
+            std::fs::read_to_string(case.path().join("stages.json")).expect("stages.json exists");
+        let stages: serde_json::Value = serde_json::from_str(&text).expect("stages.json parses");
+        let id = |entry: &serde_json::Value| {
+            i32::try_from(entry["id"].as_i64().expect("an integer id")).expect("an i32 id")
+        };
+        let cells = stages["stages"]
+            .as_array()
+            .expect("a stages array")
+            .iter()
+            .flat_map(|stage| {
+                let stage_id = id(stage);
+                stage["blocks"]
+                    .as_array()
+                    .expect("a blocks array")
+                    .iter()
+                    .map(move |block| (stage_id, id(block)))
+            })
+            .collect();
+        std::fs::create_dir_all(case.path().join("constraints")).expect("create constraints dir");
+        (case, mean, cells)
+    }
+
+    fn write_json(case: &TempDir, relative: &str, value: &serde_json::Value) {
+        std::fs::write(case.path().join(relative), value.to_string()).expect("write a case file");
+    }
+
+    /// [`base_case`] with constraints 701 to 706 on hydro 0, and its load mean: `CAP` a
+    /// `per_stage_block` parameter at every `(stage, block)`, read as `@CAP`, the limits of 702
+    /// per stage in the bounds table, and 706 in block 0 only.
+    fn bounds_case() -> (TempDir, f64) {
+        let (case, mean, cells) = base_case();
+        let slack = default_slack(case.path());
+        let file = json!({
+            "constraints": [
+                { "id": 701, "name": "constraint_701",
+                  "expression": "hydro_generation(0) >= 1000",
+                  "slack": { "enabled": true, "penalty": VIOLATION_COST,
+                             "penalty_basis": "per_hour" } },
+                { "id": 702, "name": "constraint_702",
+                  "expression": "hydro_generation(0) - @CAP", "slack": slack },
+                { "id": 703, "name": "constraint_703",
+                  "expression": "hydro_generation(0) <= 1000000",
+                  "active_when": format!("bus_load_value(0) <= {mean}"), "slack": slack },
+                { "id": 704, "name": "constraint_704",
+                  "expression": "hydro_generation(0) - 0.5*bus_load_value(0) <= 100000",
+                  "slack": slack },
+                { "id": 705, "name": "constraint_705",
+                  "expression":
+                      "hydro_availability(0) - hydro_generation(0) >= 0.01*bus_load_value(0)",
+                  "slack": slack },
+                { "id": 706, "name": "constraint_706",
+                  "expression": "hydro_generation(0) <= 100000", "slack": slack },
+            ],
+        });
+        let mut bounds: Vec<GenericBoundsRow> = Vec::new();
+        for &(stage_id, block_id) in &cells {
+            for id in [701, 703, 704, 705] {
+                bounds.push((id, stage_id, Some(block_id), None, None));
+            }
+            bounds.push((
+                702,
+                stage_id,
+                Some(block_id),
+                None,
+                Some(cap_margin(stage_id)),
+            ));
+            if block_id == 0 {
+                bounds.push((706, stage_id, Some(block_id), None, None));
+            }
+        }
+        write_generic(&case, &file, &bounds);
+        let parameters = json!({
+            "scalar_parameters": [{
+                "id": 0, "name": "CAP", "kind": "per_stage_block",
+                "block_values": cells
+                    .iter()
+                    .map(|&(stage, block)| json!([stage, block, cap(stage, block)]))
+                    .collect::<Vec<_>>(),
+            }],
+        });
+        write_json(&case, "constraints/generic_parameters.json", &parameters);
+        (case, mean)
+    }
+
+    /// [`bounds_case`] with at least two entries in every list a permutation reorders and two
+    /// `if()` selectors on the load of bus 0, one in 704 and one in 707, whose values differ: 703
+    /// reads the named expression `G`, 704 the parameter `OFFSET`, 706 reads `H` under a limit of
+    /// its own per stage, 707 is active where 703 is not, and 702 has a higher limit in block 0.
+    /// 701 holds in the first stage only, and each later stage `s` has a copy of it of its own,
+    /// `7010 + s`, bounded in that stage only and costing `VIOLATION_COST + 500 s`, so the slack
+    /// cost varies by stage and constraints skip stages.
+    fn rich_bounds_case() -> TempDir {
+        let (case, mean) = bounds_case();
+        let bounds_path = case.path().join(BOUNDS_FILE);
+        let rows = novomodelo_io::parse_generic_constraint_bounds(&bounds_path)
+            .expect("the bounds must parse");
+        let first_stage = rows
+            .iter()
+            .map(|row| row.stage_id)
+            .min()
+            .expect("the bounds have rows");
+        let later_stages: BTreeSet<i32> = rows
+            .iter()
+            .map(|row| row.stage_id)
+            .filter(|&stage_id| stage_id != first_stage)
+            .collect();
+        let copy_of_701 = |stage_id: i32| 7010 + stage_id;
+        let bounds: Vec<GenericBoundsRow> = rows
+            .iter()
+            .map(|row| {
+                let id = match row.constraint_id {
+                    701 if row.stage_id != first_stage => copy_of_701(row.stage_id),
+                    id => id,
+                };
+                let upper = match (row.constraint_id, row.block_id) {
+                    (702, Some(0)) => row.bound_upper.map(|upper| upper + 1.0),
+                    (706, _) => Some(f64::from(200_000 + 1_000 * row.stage_id)),
+                    _ => row.bound_upper,
+                };
+                (id, row.stage_id, row.block_id, row.bound_lower, upper)
+            })
+            .chain(
+                rows.iter()
+                    .filter(|row| row.constraint_id == 701)
+                    .map(|row| (707, row.stage_id, row.block_id, None, None)),
+            )
+            .collect();
+        write_generic_constraint_bounds(&bounds_path, &bounds);
+
+        let mut file = constraints_file(&case);
+        let constraints = file["constraints"]
+            .as_array_mut()
+            .expect("a constraints array");
+        for constraint in constraints.iter_mut() {
+            match constraint["id"].as_i64() {
+                Some(703) => constraint["expression"] = json!("@G <= 1000000"),
+                Some(704) => {
+                    constraint["expression"] = json!(format!(
+                        "hydro_generation(0) - 0.5*bus_load_value(0) \
+                         <= if(bus_load_value(0) > {mean}, 100000, 90000) + @OFFSET"
+                    ));
+                }
+                Some(706) => constraint["expression"] = json!("@H"),
+                _ => {}
+            }
+        }
+        let slack = default_slack(case.path());
+        constraints.push(json!({
+            "id": 707, "name": "constraint_707",
+            "expression":
+                format!("hydro_generation(0) <= if(bus_load_value(0) > {mean}, 2000000, 1900000)"),
+            "active_when": format!("bus_load_value(0) > {mean}"), "slack": slack,
+        }));
+        for stage_id in later_stages {
+            constraints.push(json!({
+                "id": copy_of_701(stage_id), "name": format!("constraint_{}", copy_of_701(stage_id)),
+                "expression": "hydro_generation(0) >= 1000",
+                "slack": { "enabled": true, "penalty": VIOLATION_COST + 500.0 * f64::from(stage_id),
+                           "penalty_basis": "per_hour" },
+            }));
+        }
+        file["expressions"] = json!([
+            { "name": "G", "expression": "hydro_generation(0)" },
+            { "name": "H", "expression": "2*hydro_generation(0)" },
+        ]);
+        write_json(&case, CONSTRAINTS_FILE, &file);
+
+        let parameters_path = case.path().join("constraints/generic_parameters.json");
+        let text = std::fs::read_to_string(&parameters_path).expect("parameters file must exist");
+        let mut parameters: serde_json::Value =
+            serde_json::from_str(&text).expect("parameters file must parse");
+        parameters["scalar_parameters"]
+            .as_array_mut()
+            .expect("a scalar_parameters array")
+            .push(json!({ "id": 1, "name": "OFFSET", "kind": "constant", "value": 5.0 }));
+        write_json(&case, "constraints/generic_parameters.json", &parameters);
+        case
+    }
+
+    #[test]
+    fn the_constraints_file_is_invariant_to_declaration_order() {
+        let case = rich_bounds_case();
+        // The bounds parser sorts the rows it reads, so the file order is read raw.
+        let bounds_in_file_order = |dir: &TempDir| -> String {
+            let file =
+                std::fs::File::open(dir.path().join(BOUNDS_FILE)).expect("bounds file must exist");
+            let batches = ParquetRecordBatchReaderBuilder::try_new(file)
+                .expect("bounds file must open")
+                .build()
+                .expect("bounds reader must build")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("bounds rows must read");
+            pretty_format_batches(&batches)
+                .expect("bounds rows must render")
+                .to_string()
+        };
+        let selectors = |dir: &TempDir| {
+            novomodelo_io::load_case_with_artifacts(dir.path())
+                .expect("the case must load")
+                .artifacts
+                .generic_scenario
+                .selectors
+        };
+
+        let (base_setup, base) =
+            super::train_and_simulate_with_threads(case.path(), 1, SCENARIOS, |_| {});
+        assert_fixture_has_power(&base);
+        assert_selector_fixture_has_power(&base);
+        let base_groups = template_fact_groups(&base_setup);
+        let base_selectors = selectors(&case);
+        assert_eq!(base_selectors.len(), 2, "the case must read two selectors");
+        let mut renumbered = false;
+        for seed in [1, 2, 3] {
+            let permuted = permute_case(case.path(), seed);
+            if seed == 1 {
+                assert_ne!(
+                    constraints_file(&case),
+                    constraints_file(&permuted),
+                    "the shuffle must reorder the constraints file, or the order check is vacuous"
+                );
+                assert_ne!(
+                    bounds_in_file_order(&case),
+                    bounds_in_file_order(&permuted),
+                    "the shuffle must reorder the bounds rows, or the order check is vacuous"
+                );
+            }
+            renumbered |= selectors(&permuted) != base_selectors;
+
+            let (setup, reordered) =
+                super::train_and_simulate_with_threads(permuted.path(), 1, SCENARIOS, |_| {});
+            assert_eq!(
+                constraint_rows(&base),
+                constraint_rows(&reordered),
+                "seed {seed}: generic constraint outputs must not depend on declaration order"
+            );
+            let groups = template_fact_groups(&setup);
+            assert!(
+                base_groups.keys().eq(groups.keys()),
+                "seed {seed}: the fact groups differ: base {:?}, permuted {:?}",
+                base_groups.keys().collect::<Vec<_>>(),
+                groups.keys().collect::<Vec<_>>(),
+            );
+            for (group, bytes) in &base_groups {
+                assert!(
+                    groups[group] == *bytes,
+                    "seed {seed}: fact group {group} depends on declaration order"
+                );
+            }
+        }
+        assert!(
+            renumbered,
+            "no permutation renumbers the selectors, so the check that their ids reach neither \
+             the LP nor the outputs is vacuous"
         );
     }
 }

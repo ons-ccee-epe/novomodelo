@@ -70,6 +70,6 @@ pub(crate) struct LpBuildInputs<'a> {
     /// [`crate::resolved_parameters::build_resolved_parameters`].
     pub(crate) resolved_parameters: &'a ResolvedParameters,
     /// Per-`(stage, block)` generic-constraint term values and bound
-    /// remainders, from [`ResolvedGenericCoefficients::build`].
+    /// remainders, from [`ResolvedGenericCoefficients::build_with_scenario`].
     pub(crate) resolved_generic_coefficients: &'a ResolvedGenericCoefficients,
 }

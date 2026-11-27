@@ -424,6 +424,18 @@ const REMOVED_FILES: &[RemovedFile] = &[
             constraints/generic_parameters.json, beside the constraints that \
             reference them by @name. Move the file (its contents are unchanged).",
     },
+    RemovedFile {
+        relative: "constraints/electrical_constraints.json",
+        replacement: "electrical constraints now live in \
+            constraints/generic_constraints.json, with their bounds in \
+            constraints/generic_constraint_bounds.parquet. Re-convert the case.",
+    },
+    RemovedFile {
+        relative: "constraints/electrical_constraint_bounds.parquet",
+        replacement: "electrical constraint bounds now live in \
+            constraints/generic_constraint_bounds.parquet, beside their \
+            constraints in constraints/generic_constraints.json. Re-convert the case.",
+    },
 ];
 
 /// Performs Layer 1 structural validation on the case directory at `case_root`,
@@ -1029,6 +1041,62 @@ mod tests {
             "message should name the replacement path, got: {}",
             entry.message
         );
+    }
+
+    #[test]
+    fn removed_electrical_constraint_files_are_rejected() {
+        let dir = TempDir::new().unwrap();
+        make_case_with_required(&dir);
+        let constraints_dir = dir.path().join("constraints");
+        fs::create_dir_all(&constraints_dir).unwrap();
+        // Layer 1 rejects on presence alone and never parses, so a well-formed
+        // empty list and an empty bounds file are both refused.
+        fs::write(
+            constraints_dir.join("electrical_constraints.json"),
+            b"{\"constraints\": []}",
+        )
+        .unwrap();
+        fs::write(
+            constraints_dir.join("electrical_constraint_bounds.parquet"),
+            b"",
+        )
+        .unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let _manifest = validate_structure(dir.path(), &mut ctx);
+
+        assert_eq!(
+            ctx.errors().len(),
+            2,
+            "should have exactly 1 error per removed electrical file, got: {:?}",
+            ctx.errors()
+        );
+        for removed in [
+            "constraints/electrical_constraints.json",
+            "constraints/electrical_constraint_bounds.parquet",
+        ] {
+            let entry = ctx
+                .errors()
+                .into_iter()
+                .find(|e| e.file.to_string_lossy().contains(removed))
+                .unwrap();
+            assert_eq!(
+                entry.kind,
+                ErrorKind::BusinessRuleViolation,
+                "removed-file rejection should carry BusinessRuleViolation"
+            );
+            for expected in [
+                "constraints/generic_constraints.json",
+                "constraints/generic_constraint_bounds.parquet",
+                "Re-convert the case",
+            ] {
+                assert!(
+                    entry.message.contains(expected),
+                    "message for {removed} should contain {expected:?}, got: {}",
+                    entry.message
+                );
+            }
+        }
     }
 
     #[test]

@@ -17,12 +17,15 @@ use arrow::record_batch::RecordBatch;
 use novomodelo_core::AnticipatedConfig;
 use novomodelo_core::EntityId;
 use novomodelo_core::System;
-use novomodelo_io::constraints::ThermalBoundsRow;
+use novomodelo_io::constraints::scenario::DataAtom;
+use novomodelo_io::constraints::{
+    GenericConstraintBoundsRow, ThermalBoundsRow, parse_generic_constraint_bounds,
+};
 use novomodelo_io::output::simulation_writer::{
     HydroBusWriteRecord, HydroWriteRecord, ScenarioWritePayload, SimulationParquetWriter,
     StageWritePayload, write_paths,
 };
-use novomodelo_io::{load_case, validate_case};
+use novomodelo_io::{LoadedCase, load_case, validate_case, validate_case_with_artifacts};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::TempDir;
 
@@ -1104,6 +1107,7 @@ fn empty_stage_write_payload(
         inflow_lags: vec![],
         transit_buckets: vec![],
         generic_violations: vec![],
+        generic_activation: vec![],
         anticipated_lanes: vec![],
     }
 }
@@ -1709,4 +1713,325 @@ fn no_committed_case_raises_an_fpha_plane_or_price_warning() {
         fpha_cases > 0,
         "no committed case declares an FPHA production model"
     );
+}
+
+const GENERIC_CONTRACT_JSON: &str = "tests/fixtures/generic_constraints_contract.json";
+const GENERIC_CONTRACT_BOUNDS_PARQUET: &str =
+    "tests/fixtures/generic_constraint_bounds_contract.parquet";
+
+/// The bounds rows of the generic contract fixture, in the order the parser returns them.
+fn generic_contract_bounds() -> Vec<GenericConstraintBoundsRow> {
+    let row =
+        |constraint_id, stage_id, block_id, bound_lower, bound_upper| GenericConstraintBoundsRow {
+            constraint_id,
+            stage_id,
+            block_id,
+            bound_lower,
+            bound_upper,
+        };
+    (0..3)
+        .map(|stage| row(101, stage, None, None, None))
+        .chain((0..6).map(|stage| row(102, stage, None, None, Some(500.0))))
+        .chain((0..2).map(|block| row(103, 0, Some(block), Some(-100.0), Some(100.0))))
+        .chain((0..6).map(|stage| row(104, stage, None, None, None)))
+        .collect()
+}
+
+/// A case with the entities the generic contract fixture names (buses 0 and 1, line 0 from bus 0
+/// to bus 1, hydros 0 and 1 with unit group 0, thermal 0, source 0), the parameter
+/// `reserve_margin` with id 0, six stages of two blocks, and the fixture pair as its constraints.
+fn write_generic_contract_case(dir: &TempDir) {
+    use serde_json::json;
+
+    helpers::make_minimal_case(dir);
+    let root = dir.path();
+    let write = |relative: &str, value: serde_json::Value| {
+        helpers::write_file(root, relative, &value.to_string());
+    };
+    let stages: Vec<serde_json::Value> = (1..=6)
+        .map(|month| {
+            json!({
+                "id": month - 1,
+                "start_date": format!("2024-{month:02}-01"),
+                "end_date": format!("2024-{:02}-01", month + 1),
+                "blocks": [
+                    { "id": 0, "name": "PEAK", "hours": 200.0 },
+                    { "id": 1, "name": "OFF_PEAK", "hours": 500.0 }
+                ],
+                "num_openings": 1
+            })
+        })
+        .collect();
+    write(
+        "stages.json",
+        json!({
+            "policy_graph": { "type": "finite_horizon", "annual_discount_rate": 0.0 },
+            "stages": stages
+        }),
+    );
+    let start = "2024-01-01";
+    let bus =
+        |id: i32| json!({ "id": id, "name": format!("BUS_{id}"), "operational_start_date": start });
+    write("system/buses.json", json!({ "buses": [bus(0), bus(1)] }));
+    write(
+        "system/lines.json",
+        json!({ "lines": [{
+            "id": 0,
+            "name": "LINE_0",
+            "operational_start_date": start,
+            "source_bus_id": 0,
+            "target_bus_id": 1,
+            "capacity": { "direct_mw": 1000.0, "reverse_mw": 1000.0 }
+        }] }),
+    );
+    let hydro = |id: i32| {
+        json!({
+            "id": id,
+            "name": format!("HYDRO_{id}"),
+            "operational_start_date": start,
+            "downstream_id": null,
+            "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 200.0 },
+            "outflow": { "min_outflow_m3s": 0.0, "max_outflow_m3s": null },
+            "generation": {
+                "model": "constant_productivity",
+                "min_turbined_m3s": 0.0,
+                "max_turbined_m3s": 50.0,
+                "min_generation_mw": 0.0,
+                "max_generation_mw": 50.0
+            },
+            "unit_groups": [{
+                "id": 0,
+                "name": format!("HYDRO_{id}"),
+                "bus_id": id,
+                "min_generation_mw": 0.0,
+                "max_generation_mw": 50.0,
+                "min_turbined_m3s": 0.0,
+                "max_turbined_m3s": 50.0
+            }]
+        })
+    };
+    write(
+        "system/hydros.json",
+        json!({ "hydros": [hydro(0), hydro(1)] }),
+    );
+    let productivity = |hydro_id: i32| {
+        json!({
+            "hydro_id": hydro_id,
+            "selection_mode": "stage_ranges",
+            "stage_ranges": [{
+                "start_stage_id": 0,
+                "end_stage_id": null,
+                "model": "constant_productivity",
+                "productivity_mw_per_m3s": 1.0
+            }]
+        })
+    };
+    write(
+        "system/hydro_production_models.json",
+        json!({ "production_models": [productivity(0), productivity(1)] }),
+    );
+    write(
+        "initial_conditions.json",
+        json!({
+            "storage": [
+                { "hydro_id": 0, "value_hm3": 100.0 },
+                { "hydro_id": 1, "value_hm3": 100.0 }
+            ],
+            "filling_storage": []
+        }),
+    );
+    write(
+        "system/thermals.json",
+        json!({ "thermals": [{
+            "id": 0,
+            "name": "THERMAL_0",
+            "operational_start_date": start,
+            "bus_id": 0,
+            "cost_per_mwh": 80.0,
+            "generation": { "min_mw": 0.0, "max_mw": 300.0 }
+        }] }),
+    );
+    write(
+        "system/non_controllable_sources.json",
+        json!({ "non_controllable_sources": [{
+            "id": 0,
+            "name": "SOURCE_0",
+            "operational_start_date": start,
+            "bus_id": 1,
+            "max_generation_mw": 100.0,
+            "curtailment_cost": 0.001
+        }] }),
+    );
+    write(
+        "constraints/generic_parameters.json",
+        json!({ "scalar_parameters": [
+            { "id": 0, "name": "reserve_margin", "kind": "constant", "value": 150.0 }
+        ] }),
+    );
+    std::fs::copy(
+        GENERIC_CONTRACT_JSON,
+        root.join("constraints/generic_constraints.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        GENERIC_CONTRACT_BOUNDS_PARQUET,
+        root.join("constraints/generic_constraint_bounds.parquet"),
+    )
+    .unwrap();
+}
+
+/// The consumer side of the generic contract with the bridge emitter: the fixture pair loads
+/// unchanged, with no diagnostic, into four constraints and the scenario layer they read.
+#[test]
+fn generic_constraints_contract_fixture_loads_and_resolves() {
+    let bounds =
+        parse_generic_constraint_bounds(Path::new(GENERIC_CONTRACT_BOUNDS_PARQUET)).unwrap();
+    assert_eq!(bounds, generic_contract_bounds());
+
+    let dir = TempDir::new().unwrap();
+    write_generic_contract_case(&dir);
+    let (LoadedCase { system, artifacts }, report) =
+        validate_case_with_artifacts(dir.path()).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+    let ids: Vec<EntityId> = system
+        .generic_constraints()
+        .iter()
+        .map(|constraint| constraint.id)
+        .collect();
+    assert_eq!(ids, [101, 102, 103, 104].map(EntityId));
+
+    let scenario = &artifacts.generic_scenario;
+    let atoms: Vec<&DataAtom> = scenario.data_atoms.iter().map(|(_, atom)| atom).collect();
+    let bus_load_value = |bus_id| DataAtom::BusLoadValue {
+        bus_id: EntityId(bus_id),
+        block_id: None,
+    };
+    assert_eq!(atoms, [&bus_load_value(0), &bus_load_value(1)]);
+    assert!(scenario.availability_atoms.is_empty());
+    assert_eq!(scenario.selectors.len(), 1);
+
+    let entries: Vec<(EntityId, bool, bool)> = scenario
+        .constraints
+        .iter()
+        .map(|entry| {
+            (
+                entry.constraint_id,
+                entry.active_when.is_some(),
+                entry.endpoint_shift.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        [(EntityId(103), false, true), (EntityId(104), true, false)]
+    );
+    let bus_one_load = scenario.data_atoms[1].0;
+    let mut shift_reads: Vec<EntityId> = scenario.constraints[0]
+        .endpoint_shift
+        .as_ref()
+        .unwrap()
+        .params()
+        .collect();
+    shift_reads.sort_unstable();
+    assert_eq!(shift_reads, [EntityId(0), bus_one_load]);
+}
+
+/// `generic_constraints.json` in the field order of the file's serde types, an absent option
+/// omitted as in the slack of a hard constraint: the form the bridge emitter reproduces.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalGenericFile {
+    #[serde(rename = "$schema")]
+    schema: String,
+    constraints: Vec<CanonicalConstraint>,
+    expressions: Vec<CanonicalNamedExpression>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalConstraint {
+    id: i32,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    expression: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_when: Option<String>,
+    slack: CanonicalSlack,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalSlack {
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    penalty_basis: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalNamedExpression {
+    name: String,
+    expression: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+/// The generic fixture is the canonical serialization of the value it parses to, so the bridge
+/// emitter can match it byte for byte.
+#[test]
+fn the_generic_contract_fixture_is_canonical_json() {
+    let text = std::fs::read_to_string(GENERIC_CONTRACT_JSON).unwrap();
+    let parsed: CanonicalGenericFile = serde_json::from_str(&text).unwrap();
+    assert_eq!(serde_json::to_string_pretty(&parsed).unwrap() + "\n", text);
+}
+
+/// Writes the generic bounds contract fixture from `generic_contract_bounds`, in the column order
+/// of the bounds file contract.
+#[test]
+#[ignore = "rewrites tests/fixtures/generic_constraint_bounds_contract.parquet"]
+fn regenerate_the_generic_bounds_contract_fixture() {
+    use arrow::array::Float64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("constraint_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("bound_lower", DataType::Float64, true),
+        Field::new("bound_upper", DataType::Float64, true),
+    ]));
+    let rows = generic_contract_bounds();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from_iter_values(
+                rows.iter().map(|row| row.constraint_id),
+            )),
+            Arc::new(Int32Array::from_iter_values(
+                rows.iter().map(|row| row.stage_id),
+            )),
+            Arc::new(rows.iter().map(|row| row.block_id).collect::<Int32Array>()),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.bound_lower)
+                    .collect::<Float64Array>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|row| row.bound_upper)
+                    .collect::<Float64Array>(),
+            ),
+        ],
+    )
+    .unwrap();
+    let file = std::fs::File::create(GENERIC_CONTRACT_BOUNDS_PARQUET).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }

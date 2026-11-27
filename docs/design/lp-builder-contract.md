@@ -44,6 +44,10 @@ per-solve edits are:
 - the bounds of the base rows the inflow-coupling sink recorded, shifted by the
   realized inflow (`PatchBuffer::fill_inflow_shift_patches`), and the right-hand
   sides of the load-balance rows (`fill_load_patches`);
+- the bounds of the generic-constraint rows whose bound or activation depends on
+  the scenario (`PatchBuffer::fill_row_list_patches`), written every solve at the
+  positions of `StageGeometry::per_solve_rows`; their coefficients do not change,
+  and the row of a constraint inactive in the scenario gets open bounds;
 - the column bounds of stochastic non-controllable sources (`apply_ncs_col_bounds`);
 - the column bounds of the inflow-slack columns under the truncation methods
   (`apply_inflow_slack_col_bounds`), divided by the column scale;
@@ -141,8 +145,7 @@ depends on. Their full statements, with the regression tests that pin them, are 
     are appended after it, the boundary that basis reconstruction
     (`ReconstructionTarget`) and cut-dual extraction read;
   - a column scale has one meaning: state pins, inflow-slack bounds and reduced costs
-    are divided by it,
-    and commitment columns are left unscaled;
+    are divided by it, and commitment columns are left unscaled;
   - state boxes are built from physical bounds before column scaling is applied;
   - θ is the same column at every stage, and its objective coefficient is the
     stage's one-step discount factor.

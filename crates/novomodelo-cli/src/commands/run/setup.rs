@@ -18,6 +18,7 @@ use novomodelo_io::BroadcastScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::PolicyMode;
 use novomodelo_io::SetupTimings;
+use novomodelo_io::constraints::ScenarioLayer;
 use novomodelo_io::load_case_with_artifacts;
 use novomodelo_io::parse_config;
 use novomodelo_io::remove_conditional_training_outputs;
@@ -67,17 +68,18 @@ pub(super) fn resolve_thread_count(cli_threads: Option<u32>) -> usize {
     }
 }
 
-/// Values loaded on rank 0 by [`load_case_and_config`]. The trailing
-/// [`novomodelo_io::SetupTimings`] leaves `broadcast_seconds` zero;
-/// [`broadcast_and_build_setup`] fills it after the broadcast region runs.
-type LoadedCase = (
-    PrepareStochasticResult,
-    PrepareHydroModelsResult,
-    BroadcastConfig,
-    Config,
-    Vec<ScalarParameter>,
-    SetupTimings,
-);
+/// Values loaded on rank 0 by [`load_case_and_config`]. `timings` leaves
+/// `broadcast_seconds` zero; [`broadcast_and_build_setup`] fills it after the
+/// broadcast region runs.
+struct LoadCaseResult {
+    prepared: PrepareStochasticResult,
+    hydro_models: PrepareHydroModelsResult,
+    bcast: BroadcastConfig,
+    config: Config,
+    scalar_parameters: Vec<ScalarParameter>,
+    generic_scenario: ScenarioLayer,
+    timings: SetupTimings,
+}
 
 /// Load case and config on rank 0, capturing errors for MPI collective participation.
 fn load_case_and_config(
@@ -85,7 +87,7 @@ fn load_case_and_config(
     output_dir: &Path,
     quiet: bool,
     out: &Term,
-) -> Result<LoadedCase, CliError> {
+) -> Result<LoadCaseResult, CliError> {
     if !args.case_dir.exists() {
         return Err(CliError::Io {
             source: std::io::Error::new(
@@ -145,14 +147,15 @@ fn load_case_and_config(
     timings.production_fit_seconds = hydro_timings.production_fit_seconds;
     timings.evaporation_fit_seconds = hydro_timings.evaporation_fit_seconds;
 
-    Ok((
+    Ok(LoadCaseResult {
         prepared,
         hydro_models,
         bcast,
         config,
-        artifacts.scalar_parameters,
+        scalar_parameters: artifacts.scalar_parameters,
+        generic_scenario: artifacts.generic_scenario,
         timings,
-    ))
+    })
 }
 
 /// Output of [`broadcast_and_build_setup`]. `root_*` fields are `Some` only on
@@ -274,10 +277,19 @@ pub(super) fn broadcast_and_build_setup(
         raw_bcast_tree,
         root_hydro_models,
         raw_scalar_parameters,
+        raw_generic_scenario,
         load_err,
     ) = if ctx.is_root {
         match load_case_and_config(args, &ctx.output_dir, ctx.quiet, &ctx.stdout) {
-            Ok((prepared, hydro_models, bcast, config, scalar_parameters, timings)) => {
+            Ok(LoadCaseResult {
+                prepared,
+                hydro_models,
+                bcast,
+                config,
+                scalar_parameters,
+                generic_scenario,
+                timings,
+            }) => {
                 root_setup_timings = Some(timings);
                 let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
                 let PrepareStochasticResult {
@@ -302,10 +314,12 @@ pub(super) fn broadcast_and_build_setup(
                     Some(bcast_tree),
                     Some(hydro_models),
                     Some(bcast_params),
+                    Some(generic_scenario),
                     None,
                 )
             }
             Err(e) => (
+                None,
                 None,
                 None,
                 None,
@@ -321,13 +335,14 @@ pub(super) fn broadcast_and_build_setup(
         }
     } else {
         (
-            None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None,
         )
     };
     let broadcast_start = std::time::Instant::now();
     let system_result = broadcast_value(raw_system, &ctx.comm);
     let bcast_config_result = broadcast_value(raw_bcast_config, &ctx.comm);
     let scalar_parameters_result = broadcast_value(raw_scalar_parameters, &ctx.comm);
+    let generic_scenario_result = broadcast_value(raw_generic_scenario, &ctx.comm);
 
     let tree_result = broadcast_value(raw_bcast_tree, &ctx.comm);
 
@@ -382,6 +397,7 @@ pub(super) fn broadcast_and_build_setup(
         stochastic,
         hydro_models,
         scalar_parameters,
+        generic_scenario_result?,
     )?;
 
     if ctx.comm.size() > 1 {
@@ -475,6 +491,7 @@ fn build_study_setup(
     stochastic: novomodelo_stochastic::StochasticContext,
     hydro_models: PrepareHydroModelsResult,
     scalar_parameters: Vec<ScalarParameter>,
+    generic_scenario: ScenarioLayer,
 ) -> Result<StudySetup, CliError> {
     let stopping_rule_set = stopping_rules_from_broadcast(bcast_config);
     let cut_selection = bcast_config.cut_selection.take();
@@ -500,6 +517,7 @@ fn build_study_setup(
         export_states: bcast_config.export_states,
         checkpoint_schedule: bcast_config.checkpoint_schedule,
         scalar_parameters,
+        generic_scenario,
         training_solver_backward,
         training_solver_forward,
         simulation_solver,
@@ -698,8 +716,9 @@ mod tests {
     use novomodelo_stochastic::context::OpeningTree;
 
     use super::{
-        build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root,
-        refuse_rank_disagreement, user_supplied_opening_tree,
+        LoadCaseResult, build_study_setup, load_case_and_config,
+        reconstruct_stochastic_context_non_root, refuse_rank_disagreement,
+        user_supplied_opening_tree,
     };
     use crate::commands::broadcast::BroadcastOpeningTree;
     use crate::commands::resolve_output_dir;
@@ -778,7 +797,9 @@ mod tests {
             threads: None,
             comm_backend: CommBackendArg::Local,
         };
-        let (prepared, _hydro_models, bcast, _config, _scalars, _timings) = load_case_and_config(
+        let LoadCaseResult {
+            prepared, bcast, ..
+        } = load_case_and_config(
             &args,
             &resolve_output_dir(&args.case_dir, None),
             true,
@@ -909,13 +930,19 @@ mod tests {
                 threads: None,
                 comm_backend: CommBackendArg::Local,
             };
-            let (prepared, hydro_models, mut bcast, _config, scalars, _timings) =
-                load_case_and_config(
-                    &args,
-                    &resolve_output_dir(&args.case_dir, None),
-                    true,
-                    &Term::stderr(),
-                )?;
+            let LoadCaseResult {
+                prepared,
+                hydro_models,
+                mut bcast,
+                scalar_parameters: scalars,
+                generic_scenario,
+                ..
+            } = load_case_and_config(
+                &args,
+                &resolve_output_dir(&args.case_dir, None),
+                true,
+                &Term::stderr(),
+            )?;
 
             let bcast_tree = user_supplied_opening_tree(&prepared.stochastic);
             let bcast_params: Vec<BroadcastScalarParameter> =
@@ -932,6 +959,7 @@ mod tests {
             let non_root_tree: Option<BroadcastOpeningTree> = broadcast_round_trip(&bcast_tree)?;
             let non_root_params: Vec<BroadcastScalarParameter> =
                 broadcast_round_trip(&bcast_params)?;
+            let non_root_generic_scenario = broadcast_round_trip(&generic_scenario)?;
 
             let user_tree: Option<OpeningTree> = non_root_tree
                 .map(|bt| OpeningTree::from_parts(bt.data, bt.openings_per_stage, bt.dim));
@@ -961,14 +989,21 @@ mod tests {
                 non_root_stochastic,
                 non_root_hydro_models,
                 non_root_scalars,
+                non_root_generic_scenario,
             )?;
 
             let rank0_scalars: Vec<ScalarParameter> = bcast_params
                 .into_iter()
                 .map(ScalarParameter::from)
                 .collect();
-            let rank0_setup =
-                build_study_setup(&system, &mut bcast, stochastic, hydro_models, rank0_scalars)?;
+            let rank0_setup = build_study_setup(
+                &system,
+                &mut bcast,
+                stochastic,
+                hydro_models,
+                rank0_scalars,
+                generic_scenario,
+            )?;
 
             Ok([
                 template_fact_groups(&rank0_setup),
@@ -1040,6 +1075,54 @@ mod tests {
     }
 
     #[test]
+    fn a_scenario_layer_survives_the_broadcast_wire() {
+        use novomodelo_core::{EntityId, ScalarExpr};
+        use novomodelo_io::constraints::scenario::{
+            AvailabilityAtom, CompareOp, ConditionalScalar, DataAtom, ResolvedCondition,
+        };
+        use novomodelo_io::constraints::{ConstraintScenario, ScenarioLayer};
+
+        let load_above = |threshold: f64| ResolvedCondition::Compare {
+            lhs: ScalarExpr::param(EntityId(1)),
+            op: CompareOp::Gt,
+            rhs: ScalarExpr::literal(threshold),
+        };
+        let layer = ScenarioLayer {
+            data_atoms: vec![(
+                EntityId(1),
+                DataAtom::BusLoadValue {
+                    bus_id: EntityId(3),
+                    block_id: Some(1),
+                },
+            )],
+            availability_atoms: vec![(
+                EntityId(2),
+                AvailabilityAtom {
+                    hydro_id: EntityId(5),
+                    block_id: None,
+                },
+            )],
+            selectors: vec![(
+                EntityId(3),
+                ConditionalScalar {
+                    cond: load_above(80.0),
+                    then: ScalarExpr::literal(1.5),
+                    else_: ScalarExpr::literal(-0.5),
+                },
+            )],
+            constraints: vec![ConstraintScenario {
+                constraint_id: EntityId(7),
+                active_when: Some(load_above(95.0)),
+                endpoint_shift: Some(ScalarExpr::param(EntityId(2))),
+            }],
+        };
+
+        let received = broadcast_round_trip(&layer).expect("scenario layer must survive the wire");
+
+        assert_eq!(received, layer);
+    }
+
+    #[test]
     fn non_root_rebuild_carries_the_simulation_cut_set() {
         let case_dir = d29_case_dir();
         let args = RunArgs {
@@ -1049,14 +1132,19 @@ mod tests {
             threads: None,
             comm_backend: CommBackendArg::Local,
         };
-        let (prepared, _hydro_models, mut bcast, _config, scalars, _timings) =
-            load_case_and_config(
-                &args,
-                &resolve_output_dir(&args.case_dir, None),
-                true,
-                &Term::stderr(),
-            )
-            .expect("D29 must load on rank 0");
+        let LoadCaseResult {
+            prepared,
+            mut bcast,
+            scalar_parameters: scalars,
+            generic_scenario,
+            ..
+        } = load_case_and_config(
+            &args,
+            &resolve_output_dir(&args.case_dir, None),
+            true,
+            &Term::stderr(),
+        )
+        .expect("D29 must load on rank 0");
         let system = broadcast_round_trip(&prepared.system).expect("system round trip");
 
         for cut_set in [CutSet::All, CutSet::Active] {
@@ -1078,6 +1166,7 @@ mod tests {
                 stochastic,
                 hydro_models,
                 scalars.clone(),
+                generic_scenario.clone(),
             )
             .expect("non-root setup must build for D29");
 

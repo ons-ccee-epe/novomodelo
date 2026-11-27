@@ -100,7 +100,7 @@ impl Default for CtxFixture {
             AnticipatedResolution::default(),
         );
         Self {
-            positions: EntityPositions::from_slices([], [], [], [], [], []),
+            positions: EntityPositions::from_slices([], [], [], [], [], [], []),
             hydros: Vec::new(),
             thermals: Vec::new(),
             lines: Vec::new(),
@@ -180,6 +180,7 @@ impl CtxFixture {
             self.buses.iter().map(|b| b.id),
             self.pumping_stations.iter().map(|p| p.id),
             self.contracts.iter().map(|c| c.id),
+            self.non_controllable_sources.iter().map(|n| n.id),
         );
         let resolution = if self.anticipated_resolution == AnticipatedResolution::default() {
             constant_lead_resolution(&self.anticipated_lead_stages, self.bounds.n_stages())

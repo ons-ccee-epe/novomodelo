@@ -823,6 +823,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
         contract_bounds: vec![],
         generic_constraints: vec![],
         generic_constraint_named_sources: std::collections::BTreeMap::new(),
+        generic_scenario: crate::constraints::ScenarioLayer::default(),
         generic_constraint_bounds: vec![],
         penalty_overrides_bus: vec![],
         penalty_overrides_line: vec![],

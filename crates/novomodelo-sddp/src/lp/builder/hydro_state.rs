@@ -932,7 +932,7 @@ mod tests {
     }
 
     fn positions_of(hydros: &[Hydro]) -> EntityPositions {
-        EntityPositions::from_slices(hydros.iter().map(|h| h.id), [], [], [], [], [])
+        EntityPositions::from_slices(hydros.iter().map(|h| h.id), [], [], [], [], [], [])
     }
 
     #[test]

@@ -67,16 +67,17 @@ pub use config::{
     BoundaryPolicy, Config, EstimationConfig, OrderSelectionMethod, PolicyMode, parse_config,
 };
 pub use constraints::{
-    BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
-    HydroPenaltyOverrideRow, LineBoundsRow, LineBusPairIndex, LinePenaltyOverrideRow,
-    NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow, build_line_bus_pair_index,
-    load_contract_bounds, load_generic_constraint_bounds, load_generic_constraints,
-    load_hydro_bounds, load_line_bounds, load_penalty_overrides_bus, load_penalty_overrides_hydro,
-    load_penalty_overrides_line, load_penalty_overrides_ncs, load_pumping_bounds,
-    load_thermal_bounds, parse_contract_bounds, parse_generic_constraint_bounds,
-    parse_generic_constraints, parse_hydro_bounds, parse_line_bounds, parse_penalty_overrides_bus,
-    parse_penalty_overrides_hydro, parse_penalty_overrides_line, parse_penalty_overrides_ncs,
-    parse_pumping_bounds, parse_thermal_bounds,
+    AvailabilityError, BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow,
+    HydroBoundsRow, HydroPenaltyOverrideRow, LineBoundsRow, LineBusPairIndex,
+    LinePenaltyOverrideRow, NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow,
+    build_line_bus_pair_index, load_contract_bounds, load_generic_constraint_bounds,
+    load_generic_constraints, load_hydro_bounds, load_line_bounds, load_penalty_overrides_bus,
+    load_penalty_overrides_hydro, load_penalty_overrides_line, load_penalty_overrides_ncs,
+    load_pumping_bounds, load_thermal_bounds, parse_contract_bounds,
+    parse_generic_constraint_bounds, parse_generic_constraints, parse_hydro_bounds,
+    parse_line_bounds, parse_penalty_overrides_bus, parse_penalty_overrides_hydro,
+    parse_penalty_overrides_line, parse_penalty_overrides_ncs, parse_pumping_bounds,
+    parse_thermal_bounds, resolve_hydro_availability,
 };
 pub use error::LoadError;
 pub use extensions::{
@@ -191,6 +192,11 @@ pub struct CaseArtifacts {
     /// Assembled scalar parameters from `constraints/generic_parameters.json`.
     pub scalar_parameters: Vec<ScalarParameter>,
 
+    /// The data, `if()` selectors, conditions and endpoint shifts the generic constraints of
+    /// `constraints/generic_constraints.json` read per scenario; empty when no constraint reads
+    /// scenario data.
+    pub generic_scenario: constraints::ScenarioLayer,
+
     /// Rows from `system/tailrace_curves.parquet`.
     pub tailrace_curves: Vec<extensions::TailraceCurveRow>,
 }
@@ -287,12 +293,248 @@ pub fn validate_case_with_artifacts(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
-    use crate::CaseArtifacts;
+    use crate::constraints::scenario::{ConstraintScenario, DataAtom};
+    use crate::test_support::{make_minimal_case, write_file, write_parquet};
+    use crate::{CaseArtifacts, InputFile, LoadError, LoadedCase, load_case_with_artifacts};
+    use arrow::array::{ArrayRef, Float64Array, Int32Array};
+    use arrow::record_batch::RecordBatch;
+    use novomodelo_core::resolved::GenericConstraintBoundEntry;
+    use novomodelo_core::{EntityId, LinearTerm, ScalarExpr, VariableRef};
+    use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[test]
     fn case_artifacts_plane_reduction_defaults_to_none() {
         let artifacts = CaseArtifacts::default();
         assert!(artifacts.plane_reduction.is_none());
+    }
+
+    #[test]
+    fn a_generic_case_carries_an_empty_scenario_layer() {
+        let case = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d13-generic-constraint");
+        let file: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(case.join("constraints/generic_constraints.json"))
+                .expect("the constraints file reads"),
+        )
+        .expect("the constraints file is JSON");
+        let LoadedCase { system, artifacts } =
+            load_case_with_artifacts(&case).expect("the case loads");
+        assert!(artifacts.generic_scenario.is_empty());
+        assert_eq!(
+            system.generic_constraints().len(),
+            file["constraints"]
+                .as_array()
+                .expect("a constraints array")
+                .len()
+        );
+    }
+
+    const THERMALS_JSON: &str = r#"{ "thermals": [
+        { "id": 2, "name": "T2", "operational_start_date": "2024-01-01", "bus_id": 1,
+          "cost_per_mwh": 10.0, "generation": { "min_mw": 0.0, "max_mw": 100.0 } },
+        { "id": 3, "name": "T3", "operational_start_date": "2024-01-01", "bus_id": 1,
+          "cost_per_mwh": 20.0, "generation": { "min_mw": 0.0, "max_mw": 100.0 } }
+    ] }"#;
+
+    fn constraint_error(dir: &TempDir) -> String {
+        match load_case_with_artifacts(dir.path()) {
+            Err(LoadError::ConstraintError { description }) => description,
+            other => panic!("expected a constraint error, got {other:?}"),
+        }
+    }
+
+    const GENERIC_FILE: &str = "constraints/generic_constraints.json";
+
+    /// A case with thermals 2 and 3, `generic` as its generic constraints file and a bounds table
+    /// with one stage-0 row per `(constraint_id, bound_upper)` of `rows`.
+    fn generic_case(generic: &str, rows: &[(i32, Option<f64>)]) -> TempDir {
+        let dir = TempDir::new().expect("temp dir");
+        make_minimal_case(&dir);
+        write_file(dir.path(), "system/thermals.json", THERMALS_JSON);
+        write_file(dir.path(), GENERIC_FILE, generic);
+        let (ids, uppers): (Vec<i32>, Vec<Option<f64>>) = rows.iter().copied().unzip();
+        let batch = RecordBatch::try_from_iter([
+            ("constraint_id", Arc::new(Int32Array::from(ids)) as ArrayRef),
+            (
+                "stage_id",
+                Arc::new(Int32Array::from(vec![0; rows.len()])) as ArrayRef,
+            ),
+            (
+                "bound_upper",
+                Arc::new(Float64Array::from(uppers)) as ArrayRef,
+            ),
+        ])
+        .expect("bounds batch");
+        std::fs::copy(
+            write_parquet(&batch).path(),
+            dir.path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+        )
+        .expect("write the bounds table");
+        dir
+    }
+
+    /// derived: no parameter is declared, so the load of bus 1 both conditions read is id 0 and
+    /// the `if()` selector is id 1.
+    #[test]
+    fn a_case_carries_its_generic_constraints_and_their_scenario_layer() {
+        let dir = generic_case(
+            r#"{ "constraints": [
+                { "id": 405, "name": "constraint_405",
+                  "expression": "@FNESE <= if(bus_load_value(1) <= 85000, 100, 200)",
+                  "active_when": "82000 < bus_load_value(1) & bus_load_value(1) <= 95000",
+                  "slack": { "enabled": false } },
+                { "id": 401, "name": "constraint_401", "expression": "thermal_generation(2)",
+                  "slack": { "enabled": false } }
+            ],
+            "expressions": [{ "name": "FNESE",
+                              "expression": "thermal_generation(2) - thermal_generation(3)" }] }"#,
+            &[(401, Some(6300.0)), (405, None)],
+        );
+        let LoadedCase { system, artifacts } =
+            load_case_with_artifacts(dir.path()).expect("the case loads");
+        for file in [
+            InputFile::ConstraintsGenericConstraintsJson,
+            InputFile::ConstraintsGenericConstraintBoundsParquet,
+        ] {
+            assert!(artifacts.file_manifest.present(file), "{file:?}");
+        }
+
+        let thermal = |id: i32| VariableRef::ThermalGeneration {
+            thermal_id: EntityId(id),
+            block_id: None,
+        };
+        let constraints = system.generic_constraints();
+        let ids: Vec<EntityId> = constraints.iter().map(|constraint| constraint.id).collect();
+        assert_eq!(ids, [EntityId(401), EntityId(405)]);
+        assert_eq!(
+            constraints[0].expression.terms,
+            [LinearTerm::literal(1.0, thermal(2))]
+        );
+        assert_eq!(
+            constraints[1].expression.terms,
+            [
+                LinearTerm::literal(1.0, thermal(2)),
+                LinearTerm::literal(-1.0, thermal(3)),
+            ]
+        );
+        assert_eq!(
+            constraints[1].bound_upper,
+            Some(ScalarExpr::literal(0.0) + ScalarExpr::param(EntityId(1)))
+        );
+        assert_eq!(
+            system.resolved_generic_bounds().bounds_for_stage(0, 0),
+            [GenericConstraintBoundEntry {
+                block_id: None,
+                bound_lower: None,
+                bound_upper: Some(6300.0),
+            }]
+        );
+
+        let layer = &artifacts.generic_scenario;
+        assert_eq!(
+            layer.data_atoms,
+            [(
+                EntityId(0),
+                DataAtom::BusLoadValue {
+                    bus_id: EntityId(1),
+                    block_id: None,
+                }
+            )]
+        );
+        assert_eq!(
+            layer
+                .selectors
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            [EntityId(1)]
+        );
+        let [
+            ConstraintScenario {
+                constraint_id: EntityId(405),
+                active_when: Some(_),
+                endpoint_shift: None,
+            },
+        ] = layer.constraints.as_slice()
+        else {
+            panic!(
+                "expected the condition of 405, got: {:?}",
+                layer.constraints
+            );
+        };
+    }
+
+    #[test]
+    fn a_generic_constraint_on_an_undeclared_plant_fails_the_load() {
+        let json = r#"{ "constraints": [
+            { "id": 701, "name": "constraint_701", "expression": "hydro_generation(14) >= 10",
+              "slack": { "enabled": false } },
+            { "id": 402, "name": "constraint_402", "expression": "hydro_generation(14)",
+              "slack": { "enabled": false } }
+        ] }"#;
+        let expected: Vec<String> = [402, 701]
+            .map(|id| {
+                let label = format!("GenericConstraint {id} term[0]");
+                format!(
+                    "[InvalidReference] {GENERIC_FILE} ({label}): {label} references \
+                     non-existent Hydro 14"
+                )
+            })
+            .into();
+        assert_eq!(
+            constraint_error(&generic_case(json, &[(402, Some(6300.0)), (701, None)])),
+            expected.join("\n")
+        );
+    }
+
+    #[test]
+    fn an_active_when_that_does_not_parse_fails_the_load() {
+        let condition = "if unparseable (";
+        let json = format!(
+            r#"{{ "constraints": [
+                {{ "id": 401, "name": "constraint_401", "expression": "thermal_generation(2)",
+                   "slack": {{ "enabled": false }} }},
+                {{ "id": 400, "name": "constraint_400", "expression": "thermal_generation(3) <= 100",
+                   "active_when": "{condition}", "slack": {{ "enabled": false }} }}
+            ] }}"#
+        );
+        let diagnostic = crate::expression::parser::parse_condition(condition)
+            .expect_err("the condition does not parse");
+        assert_eq!(
+            constraint_error(&generic_case(&json, &[(401, Some(6300.0)), (400, None)])),
+            format!(
+                "[SchemaViolation] {GENERIC_FILE}: field constraints[1].active_when: {}",
+                diagnostic.render(condition)
+            )
+        );
+    }
+
+    #[test]
+    fn an_active_when_reading_a_decision_fails_the_load() {
+        let json = r#"{ "constraints": [
+            { "id": 401, "name": "constraint_401", "expression": "thermal_generation(2)",
+              "active_when": "hydro_generation(7) > 100", "slack": { "enabled": false } }
+        ] }"#;
+        assert_eq!(
+            constraint_error(&generic_case(json, &[(401, Some(6300.0))])),
+            format!(
+                "[SchemaViolation] {GENERIC_FILE}: field constraints[0].active_when: \
+                 `hydro_generation(7)`: an LP variable cannot appear in a scalar-parameter \
+                 expression"
+            )
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a converted case; set NOVOMODELO_CONVERTED_CASE to its directory"]
+    fn the_converted_case_carries_its_scenario_layer() {
+        let dir = std::env::var("NOVOMODELO_CONVERTED_CASE").expect("NOVOMODELO_CONVERTED_CASE");
+        let LoadedCase { artifacts, .. } =
+            load_case_with_artifacts(std::path::Path::new(&dir)).expect("the case loads");
+        assert!(!artifacts.generic_scenario.constraints.is_empty());
     }
 }

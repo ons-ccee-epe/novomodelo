@@ -3,7 +3,7 @@
 //!
 //! Rejects per-block variable references that cannot resolve to a real column on a
 //! stage: interior storage boundaries (`HydroStorageInitial` / `HydroStorageFinal`)
-//! on parallel stages, and out-of-range block selectors on any per-block reference.
+//! on parallel stages, and out-of-range block selectors on any per-block decision term.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -32,8 +32,9 @@ use crate::expression::catalog::variable_call;
 /// with `K > 1` is ambiguous (the blocks differ) and is rejected — a block must
 /// be named.
 ///
-/// An out-of-range `block_id` (`b >= K`) is rejected on every stage: it would
-/// otherwise resolve to no column and silently drop the term.
+/// A decision term naming a block `b >= K` is rejected at every stage where the
+/// constraint has a bounds row: it would otherwise resolve to a column of another
+/// block or entity, or to none.
 ///
 /// A `(constraint, stage)` pair the constraint does not activate (no bound row for
 /// that stage) is skipped: no LP row is emitted there, so validating it would
@@ -264,12 +265,11 @@ fn add_constraint_error(
     );
 }
 
-/// Dispatch a term to its per-block validity check. Storage boundaries get the
-/// full interior + out-of-range check; evaporation gets the out-of-range check
-/// plus, on a `Parallel` stage with `K > 1`, a reject for any block past the
-/// stage-level slot (`Some(1..K)`) and, on a `Chronological` stage with `K > 1`,
-/// a reject for the ambiguous bare reference; every other variant is
-/// unrestricted.
+/// Dispatch a term to its per-block validity check. A decision term naming a block
+/// `b >= K` is out of range. In range, a storage boundary gets the interior check;
+/// evaporation gets, on a `Parallel` stage with `K > 1`, a reject for any block past
+/// the stage-level slot (`Some(1..K)`) and, on a `Chronological` stage with `K > 1`,
+/// a reject for the ambiguous bare reference; every other variant is unrestricted.
 fn validate_block_ref(
     constraint: &GenericConstraint,
     variable: &VariableRef,
@@ -278,27 +278,27 @@ fn validate_block_ref(
     block_mode: BlockMode,
     ctx: &mut ValidationContext,
 ) {
+    if let Some(b) = decision_block(variable)
+        && b >= k
+    {
+        let term = variable_call(variable);
+        add_constraint_error(
+            ctx,
+            &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
+            constraint,
+            format!(
+                "Constraint \"{}\": expression term `{term}` references block {b} \
+                 which does not exist at stage {stage_id} (K = {k})",
+                constraint.name
+            ),
+        );
+        return;
+    }
     if let Some(boundary) = storage_boundary_ref(variable) {
         validate_storage_ref(constraint, variable, boundary, k, stage_id, block_mode, ctx);
         return;
     }
     match variable {
-        VariableRef::HydroEvaporation {
-            block_id: Some(b), ..
-        } if *b >= k => {
-            let term = variable_call(variable);
-            add_constraint_error(
-                ctx,
-                &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
-                constraint,
-                format!(
-                    "Constraint \"{}\": per-block evaporation reference \
-                     `{term}` at stage {stage_id} references block {b} \
-                     which does not exist at stage {stage_id} (K = {k})",
-                    constraint.name
-                ),
-            );
-        }
         VariableRef::HydroEvaporation {
             block_id: Some(b), ..
         } if block_mode == BlockMode::Parallel && k > 1 && *b >= 1 => {
@@ -342,6 +342,43 @@ fn validate_block_ref(
     }
 }
 
+/// The block a decision term names; an availability term is data, not a decision.
+fn decision_block(variable: &VariableRef) -> Option<usize> {
+    match *variable {
+        VariableRef::HydroTurbined { block_id, .. }
+        | VariableRef::HydroSpillage { block_id, .. }
+        | VariableRef::HydroDiversion { block_id, .. }
+        | VariableRef::HydroOutflow { block_id, .. }
+        | VariableRef::HydroGeneration { block_id, .. }
+        | VariableRef::HydroEvaporation { block_id, .. }
+        | VariableRef::HydroInflow { block_id, .. }
+        | VariableRef::HydroStorageInitial { block_id, .. }
+        | VariableRef::HydroStorageFinal { block_id, .. }
+        | VariableRef::HydroUsefulVolumeInitial { block_id, .. }
+        | VariableRef::HydroUsefulVolumeFinal { block_id, .. }
+        | VariableRef::HydroGroupGeneration { block_id, .. }
+        | VariableRef::ThermalGeneration { block_id, .. }
+        | VariableRef::LineDirect { block_id, .. }
+        | VariableRef::LineReverse { block_id, .. }
+        | VariableRef::LineExchange { block_id, .. }
+        | VariableRef::BusDeficit { block_id, .. }
+        | VariableRef::BusExcess { block_id, .. }
+        | VariableRef::PumpingFlow { block_id, .. }
+        | VariableRef::PumpingPower { block_id, .. }
+        | VariableRef::ContractImport { block_id, .. }
+        | VariableRef::ContractExport { block_id, .. }
+        | VariableRef::NonControllableGeneration { block_id, .. }
+        | VariableRef::NonControllableCurtailment { block_id, .. } => block_id,
+        VariableRef::HydroStorage { .. }
+        | VariableRef::HydroWithdrawal { .. }
+        | VariableRef::AnticipatedDecision { .. }
+        | VariableRef::HydroOutflowVolume { .. }
+        | VariableRef::HydroDiversionVolume { .. }
+        | VariableRef::PumpingVolume { .. }
+        | VariableRef::HydroAvailability { .. } => None,
+    }
+}
+
 /// The boundary a storage-boundary term references, `None` for every other variant.
 fn storage_boundary_ref(variable: &VariableRef) -> Option<StorageRef> {
     match variable {
@@ -367,24 +404,6 @@ fn validate_storage_ref(
     ctx: &mut ValidationContext,
 ) {
     let (StorageRef::Initial(block_id) | StorageRef::Final(block_id)) = boundary;
-
-    if let Some(b) = block_id
-        && b >= k
-    {
-        let rendered = variable_call(variable);
-        add_constraint_error(
-            ctx,
-            &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
-            constraint,
-            format!(
-                "Constraint \"{}\": per-block storage reference `{rendered}` at \
-                 stage {stage_id} references block {b} which does not exist at \
-                 stage {stage_id} (K = {k})",
-                constraint.name
-            ),
-        );
-        return;
-    }
 
     match block_mode {
         BlockMode::Chronological => {}
@@ -463,7 +482,9 @@ fn is_stage_amount(variable: &VariableRef) -> bool {
         | VariableRef::ContractExport { .. }
         | VariableRef::NonControllableGeneration { .. }
         | VariableRef::NonControllableCurtailment { .. }
-        | VariableRef::AnticipatedDecision { .. } => false,
+        | VariableRef::AnticipatedDecision { .. }
+        | VariableRef::HydroAvailability { .. }
+        | VariableRef::HydroGroupGeneration { .. } => false,
     }
 }
 
@@ -561,13 +582,19 @@ mod tests {
 
     use super::super::validate_semantic_hydro_thermal;
     use super::{check_productivity_tag_pairing, check_stage_volume_constraints};
-    use crate::ValidationEntry;
-    use crate::constraints::GenericConstraintBoundsRow;
+    use std::collections::HashMap;
+
+    use crate::constraints::generic::{
+        LoadedGenericConstraints, parse_generic_constraints_with_provenance,
+    };
+    use crate::constraints::scenario::DataAtom;
+    use crate::constraints::{GenericConstraintBoundsRow, LineBusPairIndex};
     use crate::expression::catalog::{build_variable_ref, variable_call};
     use crate::expression::lower::NamedSource;
     use crate::test_support::*;
     use crate::validation::schema::ParsedData;
     use crate::validation::{ErrorKind, ValidationContext};
+    use crate::{LoadError, ValidationEntry};
 
     fn make_blocks(k: usize) -> Vec<Block> {
         (0..k)
@@ -737,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn non_storage_per_block_reference_is_unrestricted() {
+    fn non_storage_per_block_reference_in_range_is_unrestricted() {
         // An interior block on a parallel stage would be rejected for a storage boundary.
         for block_mode in [BlockMode::Parallel, BlockMode::Chronological] {
             let turbined = VariableRef::HydroTurbined {
@@ -1076,6 +1103,157 @@ mod tests {
         ] {
             let msg = sole_error_for_hydro_7(BlockMode::Parallel, variable);
             assert!(msg.contains(term), "expected {term}, got: {msg}");
+        }
+    }
+
+    /// Constraint "I" (id 701), `hydro_generation(14, block) >= 0`, over stages 3 and 4 of
+    /// `block_counts` blocks, with a bounds row at each of `bounded_stages`.
+    fn generation_of_block_data(
+        block: usize,
+        block_counts: [usize; 2],
+        bounded_stages: &[i32],
+    ) -> ParsedData {
+        let mut data = make_data(
+            vec![make_hydro(14, None)],
+            vec![],
+            vec![],
+            make_stages(vec![3, 4]),
+            vec![],
+            vec![],
+        );
+        for (stage, k) in data.stages.stages.iter_mut().zip(block_counts) {
+            stage.blocks = make_blocks(k);
+        }
+        let generation = VariableRef::HydroGeneration {
+            hydro_id: EntityId::from(14),
+            block_id: Some(block),
+            bus_id: None,
+        };
+        data.generic_constraints = vec![GenericConstraint {
+            id: EntityId::from(701),
+            name: "I".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(1.0, generation)],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        }];
+        data.generic_constraint_bounds = bounded_stages
+            .iter()
+            .map(|&stage_id| GenericConstraintBoundsRow {
+                constraint_id: 701,
+                stage_id,
+                block_id: None,
+                bound_lower: Some(0.0),
+                bound_upper: None,
+            })
+            .collect();
+        data
+    }
+
+    /// derived: with two blocks at stages 3 and 4, block 1 is their last and block 2 out of
+    /// range at both; with one block at stage 4, block 1 is out of range there only.
+    #[test]
+    fn a_decision_term_naming_a_block_its_stage_does_not_have_is_out_of_range() {
+        let out_of_range = |block: usize, stage: i32, k: usize| {
+            format!(
+                "Constraint \"I\": expression term `hydro_generation(14, {block})` references \
+                 block {block} which does not exist at stage {stage} (K = {k})"
+            )
+        };
+        for (block, block_counts, expected) in [
+            (1, [2, 2], vec![]),
+            (
+                2,
+                [2, 2],
+                vec![out_of_range(2, 3, 2), out_of_range(2, 4, 2)],
+            ),
+            (1, [2, 1], vec![out_of_range(1, 4, 1)]),
+        ] {
+            let errors = interior_errors(&generation_of_block_data(block, block_counts, &[3, 4]));
+            let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+            assert_eq!(messages, expected, "block {block}, counts {block_counts:?}");
+            for error in &errors {
+                assert_eq!(error.entity.as_deref(), Some("constraint[id=701]"));
+            }
+        }
+    }
+
+    /// derived: stage 4 has one block and no bounds row, so the constraint has no row there.
+    #[test]
+    fn a_block_a_stage_without_a_bounds_row_does_not_have_is_accepted() {
+        let errors = interior_errors(&generation_of_block_data(1, [2, 1], &[3]));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn every_decision_term_naming_a_block_past_its_stage_is_out_of_range() {
+        const PER_BLOCK_NAMES: [&str; 23] = [
+            "hydro_evaporation",
+            "hydro_inflow",
+            "hydro_turbined",
+            "hydro_spillage",
+            "hydro_diversion",
+            "hydro_outflow",
+            "hydro_generation",
+            "hydro_storage_initial",
+            "hydro_storage_final",
+            "hydro_useful_volume_initial",
+            "hydro_useful_volume_final",
+            "thermal_generation",
+            "line_direct",
+            "line_reverse",
+            "line_exchange",
+            "bus_deficit",
+            "bus_excess",
+            "pumping_flow",
+            "pumping_power",
+            "contract_import",
+            "contract_export",
+            "non_controllable_generation",
+            "non_controllable_curtailment",
+        ];
+        let group_generation = VariableRef::HydroGroupGeneration {
+            hydro_id: EntityId::from(1),
+            group_id: EntityId::from(1),
+            block_id: Some(3),
+        };
+        let terms: Vec<VariableRef> = PER_BLOCK_NAMES
+            .iter()
+            .map(|name| build_variable_ref(name, EntityId::from(1), Some(3), None).unwrap())
+            .chain([group_generation])
+            .collect();
+        for block_mode in [BlockMode::Parallel, BlockMode::Chronological] {
+            for &variable in &terms {
+                let call = variable_call(&variable);
+                let errors = interior_errors(&make_data_storage_ref(block_mode, 3, variable));
+                let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+                assert_eq!(
+                    messages,
+                    [format!(
+                        "Constraint \"storage_constraint\": expression term `{call}` references \
+                         block 3 which does not exist at stage 0 (K = 3)"
+                    )],
+                    "{block_mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_load_or_availability_term_naming_a_block_past_its_stage_is_not_a_decision_term() {
+        let variable = VariableRef::HydroAvailability {
+            hydro_id: EntityId::from(1),
+            block_id: Some(3),
+        };
+        for block_mode in [BlockMode::Parallel, BlockMode::Chronological] {
+            let errors = interior_errors(&make_data_storage_ref(block_mode, 3, variable));
+            assert!(
+                errors.is_empty(),
+                "{variable:?}, {block_mode:?}: {errors:?}"
+            );
         }
     }
 
@@ -1925,5 +2103,195 @@ mod tests {
         data.generic_constraint_bounds = vec![bounds_row(0, Some(0), None, Some(5.0))];
         let entries = volume_refusal_entries(&data);
         assert!(entries.is_empty(), "{entries:?}");
+    }
+
+    /// Constraint 0 of a generic constraints file, `expression` holding where `active_when` holds.
+    fn constraint_file(expression: &str, active_when: Option<&str>) -> String {
+        let active_when =
+            active_when.map_or_else(String::new, |text| format!(r#""active_when": "{text}","#));
+        format!(
+            r#"{{ "constraints": [{{ "id": 0, "name": "c0", "expression": "{expression}",
+                 {active_when} "slack": {{ "enabled": false }} }}] }}"#
+        )
+    }
+
+    /// `condition` read by an `if()` of constraint 0 and by its `active_when`.
+    fn in_both_conditions(condition: &str) -> [String; 2] {
+        [
+            constraint_file(
+                &format!("hydro_generation(0) <= if({condition}, 1, 2)"),
+                None,
+            ),
+            constraint_file("hydro_generation(0) <= 5", Some(condition)),
+        ]
+    }
+
+    /// `json` loaded with the scalar parameters `cap` and `margin_a` and no line.
+    fn load_generic(json: &str) -> Result<LoadedGenericConstraints, LoadError> {
+        let params = HashMap::from([
+            ("cap".to_owned(), EntityId(7)),
+            ("margin_a".to_owned(), EntityId(8)),
+        ]);
+        parse_generic_constraints_with_provenance(
+            write_json(json).path(),
+            &params,
+            &LineBusPairIndex::default(),
+        )
+    }
+
+    fn schema_fault(json: &str) -> (String, String) {
+        match load_generic(json).err() {
+            Some(LoadError::SchemaError { field, message, .. }) => (field, message),
+            other => panic!("expected a SchemaError, got: {other:?}"),
+        }
+    }
+
+    const CONDITION_FIELDS: [&str; 2] = ["constraints[0].expression", "constraints[0].active_when"];
+
+    #[test]
+    fn a_condition_reading_a_decision_or_the_availability_is_a_fault_of_its_field() {
+        for name in [
+            "hydro_generation",
+            "thermal_generation",
+            "non_controllable_generation",
+            "line_flow",
+            "contract_import",
+            "contract_export",
+        ] {
+            let call = format!("{name}(1)");
+            let faults = in_both_conditions(&format!("{call} > 0")).map(|json| schema_fault(&json));
+            assert_eq!(
+                faults,
+                [
+                    (
+                        CONDITION_FIELDS[0].to_owned(),
+                        format!(
+                            "`{call}`: an if() condition may read only data, not an LP variable"
+                        ),
+                    ),
+                    (
+                        CONDITION_FIELDS[1].to_owned(),
+                        format!(
+                            "`{call}`: an LP variable cannot appear in a scalar-parameter expression"
+                        ),
+                    ),
+                ],
+                "{name}"
+            );
+        }
+        let capacity = "`hydro_availability(1)`: a condition cannot read hydro_availability: it is \
+                        the capacity of a plant, resolved per stage and block, not a scenario value";
+        assert_eq!(
+            in_both_conditions("hydro_availability(1) > 0").map(|json| schema_fault(&json)),
+            CONDITION_FIELDS.map(|field| (field.to_owned(), capacity.to_owned()))
+        );
+        for expression in [
+            "hydro_generation(0) <= if(bus_load_value(3) <= 1, if(hydro_generation(1) > 0, 1, 2), 3)",
+            "hydro_generation(0) <= if(if(hydro_generation(1) > 0, 1, 2) > 0, 1, 2)",
+        ] {
+            assert_eq!(
+                schema_fault(&constraint_file(expression, None)),
+                (
+                    CONDITION_FIELDS[0].to_owned(),
+                    "`hydro_generation(1)`: an if() condition may read only data, not an LP \
+                     variable"
+                        .to_owned()
+                ),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_condition_reads_the_loads_as_values() {
+        let bus = |bus_id: i32| DataAtom::BusLoadValue {
+            bus_id: EntityId(bus_id),
+            block_id: None,
+        };
+        let hydro_0 = VariableRef::HydroGeneration {
+            hydro_id: EntityId(0),
+            block_id: None,
+            bus_id: None,
+        };
+        for (condition, atoms) in [
+            ("@cap <= 3 | @margin_a <= 3000", vec![]),
+            ("bus_load_value(1) > 5", vec![bus(1)]),
+        ] {
+            for json in in_both_conditions(condition) {
+                let loaded =
+                    load_generic(&json).unwrap_or_else(|error| panic!("{condition}: {error:?}"));
+                assert_eq!(
+                    loaded.constraints[0].expression.terms,
+                    [LinearTerm::literal(1.0, hydro_0)],
+                    "{condition}"
+                );
+                let read: Vec<DataAtom> = loaded
+                    .scenario
+                    .data_atoms
+                    .into_iter()
+                    .map(|(_, atom)| atom)
+                    .collect();
+                assert_eq!(read, atoms, "{condition}");
+            }
+        }
+    }
+
+    /// An unknown name in a condition is refused as it is outside one, not as an LP variable.
+    #[test]
+    fn a_condition_with_an_unknown_call_or_wrong_arguments_is_a_fault_of_its_field() {
+        for (call, catalog_message) in [
+            (
+                "foo(3)",
+                "unknown variable name \"foo\": not a recognised LP variable name",
+            ),
+            ("foo()", "variable \"foo\" has an empty argument list"),
+            (
+                "bus_load_value()",
+                "variable \"bus_load_value\" has an empty argument list",
+            ),
+        ] {
+            for (json, field) in in_both_conditions(&format!("{call} > 0"))
+                .iter()
+                .zip(CONDITION_FIELDS)
+            {
+                assert_eq!(
+                    schema_fault(json),
+                    (field.to_owned(), format!("`{call}`: {catalog_message}")),
+                    "{call}"
+                );
+            }
+        }
+    }
+
+    /// A side that reads an LP variable and `hydro_availability` is a fault of the first of the
+    /// two in source order, in an `if()` condition and in `active_when`.
+    #[test]
+    fn a_condition_side_reading_a_variable_and_the_availability_is_a_fault_of_its_first_term() {
+        let capacity = "`hydro_availability(1)`: a condition cannot read hydro_availability: it is \
+                        the capacity of a plant, resolved per stage and block, not a scenario value";
+        let variable_first = "hydro_generation(1) + hydro_availability(1)";
+        assert_eq!(
+            in_both_conditions(&format!("{variable_first} > 0")).map(|json| schema_fault(&json)),
+            [
+                (
+                    CONDITION_FIELDS[0].to_owned(),
+                    format!(
+                        "`{variable_first}`: an if() condition may read only data, not an LP \
+                         variable"
+                    ),
+                ),
+                (
+                    CONDITION_FIELDS[1].to_owned(),
+                    "`hydro_generation(1)`: an LP variable cannot appear in a scalar-parameter \
+                     expression"
+                        .to_owned(),
+                ),
+            ]
+        );
+        assert_eq!(
+            in_both_conditions("hydro_availability(1) + hydro_generation(1) > 0")
+                .map(|json| schema_fault(&json)),
+            CONDITION_FIELDS.map(|field| (field.to_owned(), capacity.to_owned()))
+        );
     }
 }

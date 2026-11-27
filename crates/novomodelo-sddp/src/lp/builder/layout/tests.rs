@@ -44,7 +44,7 @@ use super::{
     RangeCursor, StageGeometry, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
     build_anticipated_decision_row_pos, build_anticipated_fishing_row_pos,
     build_anticipated_slot_row_pos, build_transit_bucket_row_pos, entity_flat,
-    evaporation_slot_boundaries, fold_endpoint, variable_ref_is_block_independent,
+    evaporation_slot_boundaries, variable_ref_is_block_independent,
 };
 
 // ── RangeCursor ──────────────────────────────────────────────────────────
@@ -378,60 +378,6 @@ fn folded_upper_bound_constant_shifts_parquet_base() {
         row.bound_upper.expect("upper present").to_bits(),
         95.0_f64.to_bits(),
         "row_upper = 100 + (-5) = 95, to_bits() equality"
-    );
-}
-
-// ── fold_endpoint ─────────────────────────────────────────────────────────
-
-/// `(None, None)`: an endpoint neither side targets stays untargeted.
-#[test]
-fn fold_endpoint_both_absent_stays_none() {
-    assert_eq!(fold_endpoint(None, None), None);
-}
-
-/// `(Some(base), None)`: a pure literal passes through unchanged.
-#[test]
-fn fold_endpoint_pure_literal_is_unchanged() {
-    assert_eq!(fold_endpoint(Some(95.0), None), Some(95.0));
-}
-
-/// `(None, Some(remainder))`: with no parquet base, the remainder alone
-/// establishes the endpoint; `7.0` stands for a single-parameter remainder
-/// resolved to `7.0`.
-#[test]
-fn fold_endpoint_pure_affine_establishes_endpoint() {
-    assert_eq!(fold_endpoint(None, Some(7.0)), Some(7.0));
-}
-
-/// `(Some(base), Some(remainder))` with a constant-only remainder (`-5.0`)
-/// shifts the base by the constant — the fold is `base + R`, never `R`
-/// replacing `base`.
-#[test]
-fn fold_endpoint_literal_and_constant_affine_composes() {
-    assert_eq!(fold_endpoint(Some(100.0), Some(-5.0)), Some(95.0));
-}
-
-/// `(Some(base), Some(remainder))` with a `@param`-bearing remainder (`4.0`,
-/// the parameter's value at block 1) folds exactly as a constant-only one does —
-/// the fold does not distinguish the shape.
-#[test]
-fn fold_endpoint_literal_and_param_affine_composes() {
-    assert_eq!(fold_endpoint(Some(100.0), Some(4.0)), Some(104.0));
-}
-
-/// An `==`-normalized constant remainder (`2.0`) assigned to both endpoints
-/// folds each independently against its own parquet base.
-#[test]
-fn fold_endpoint_equals_normalized_folds_both_endpoints() {
-    assert_eq!(
-        fold_endpoint(Some(10.0), Some(2.0)),
-        Some(12.0),
-        "lower endpoint folds against its own base"
-    );
-    assert_eq!(
-        fold_endpoint(Some(50.0), Some(2.0)),
-        Some(52.0),
-        "upper endpoint folds against its own base"
     );
 }
 

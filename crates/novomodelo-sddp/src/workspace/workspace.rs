@@ -19,6 +19,7 @@ use crate::dcs::DcsSolveScratch;
 use crate::indexer::CutStateProjection;
 use crate::lp::builder::{PatchBuffer, StageGeometry};
 use crate::noise::AccumSnapshot;
+use crate::policy::resolved_generic_coefficients::RowBoundScratch;
 use crate::risk_measure::RiskMeasureScratch;
 use crate::setup::{NodeId, NodePos};
 use crate::solve::partition;
@@ -923,6 +924,10 @@ pub struct ScratchBuffers {
     /// trajectory being solved. Grown, never shrunk, at each `run_forward_worker`
     /// call.
     pub(crate) trial_lag_chains: Vec<AccumSnapshot>,
+
+    /// Per-solve bound scratch of the generic rows of `StageGeometry::per_solve_rows`, sized
+    /// once from the longest stage list so `evaluate_bounds` never allocates on the hot path.
+    pub(crate) generic: RowBoundScratch,
 }
 
 /// All per-thread mutable resources required for one LP solve sequence.
@@ -1080,6 +1085,15 @@ impl ScratchBuffers {
             corr_scratch: Vec::with_capacity(2 * noise_dim),
             current_node_buf: Vec::with_capacity(max_local_fwd),
             trial_lag_chains: Vec::with_capacity(max_local_fwd),
+            generic: RowBoundScratch::new(
+                stage_ctx.generic_rows.per_solve_tables(),
+                stage_ctx
+                    .geometry_per_stage
+                    .iter()
+                    .map(|geometry| geometry.per_solve_rows.len())
+                    .max()
+                    .unwrap_or(0),
+            ),
         }
     }
 
@@ -1544,6 +1558,7 @@ impl ScratchBuffers {
             corr_scratch: Vec::new(),
             current_node_buf: Vec::new(),
             trial_lag_chains: Vec::new(),
+            generic: RowBoundScratch::default(),
         }
     }
 }
@@ -1560,6 +1575,7 @@ mod tests {
     use crate::context::StageContext;
     use crate::lead_time::AnticipatedResolution;
     use crate::lp::indexer::StateSpace;
+    use crate::policy::resolved_generic_coefficients::NO_GENERIC_ROWS;
     use crate::solve::partition;
     use crate::test_support::{TrainingContextFixture, inflow_coupling_with_entries, state_layout};
     use novomodelo_io::config::BackwardScheduler;
@@ -1632,6 +1648,7 @@ mod tests {
             cumulative_discount_factors: &[],
             stage_lag_transitions: &[],
             noise_group_ids: &[],
+            generic_rows: &NO_GENERIC_ROWS,
         }
     }
 

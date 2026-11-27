@@ -22,8 +22,10 @@
 //! ## Patch sequence
 //!
 //! Every solve writes the row buffer (`fill_load_patches`, then
-//! `fill_inflow_shift_patches`) in `StageSolvePrep::patch_opening` and the column
-//! buffer (`fill_col_state_patches`) in `StageSolvePrep::pin_and_bracket`.
+//! `fill_inflow_shift_patches`, then `fill_row_list_patches` for the generic
+//! rows a solve bounds) in
+//! `StageSolvePrep::patch_opening` and the column buffer (`fill_col_state_patches`) in
+//! `StageSolvePrep::pin_and_bracket`.
 //!
 //! ## Commissioning window
 //!
@@ -72,6 +74,7 @@ pub(crate) use build_inputs::{LpBuildInputs, ResolvedTailraceLateral};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use entries::assemble_csc;
 pub(crate) use hydro_state::{frozen_turbining_hydros, warn_on_inert_plant_floor_overrides};
+pub(crate) use layout::PerSolveRow;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use layout::ResolvedTables;
 #[cfg(any(test, feature = "test-support"))]
@@ -123,9 +126,19 @@ pub(crate) const EVAP_F_MINUS_OFFSET: usize = 2;
 // Shared types
 // ---------------------------------------------------------------------------
 
-/// Per-row metadata for one active generic constraint row at a single stage, used
-/// by the LP builder (CSC entries, bounds, objective) and the simulation extraction
-/// pipeline (LP index → constraint identity + block).
+/// Where a row of the generic-constraint row family comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowOrigin {
+    /// A generic constraint.
+    Generic {
+        /// Index into `System::generic_constraints()`.
+        constraint_idx: usize,
+    },
+}
+
+/// Per-row metadata for one active row of the generic-constraint row family at a
+/// single stage, used by the LP builder (CSC entries, bounds, objective) and the
+/// simulation extraction pipeline (LP index → constraint identity + block).
 ///
 /// One entry per active `(constraint, block)` pair, except: a `block_id = None`
 /// bound whose expression is **block-independent** collapses to a *single*
@@ -134,9 +147,9 @@ pub(crate) const EVAP_F_MINUS_OFFSET: usize = 2;
 /// one entry per block; a `block_id = Some(k)` bound generates exactly one.
 #[derive(Debug, Clone)]
 pub struct GenericConstraintRowEntry {
-    /// Index into `System::generic_constraints()` for the parent constraint.
-    pub constraint_idx: usize,
-    /// Entity ID of the parent constraint (copied from `GenericConstraint::id`).
+    /// The constraint the row stands for.
+    pub origin: RowOrigin,
+    /// `GenericConstraint::id`.
     pub entity_id: i32,
     /// Block index within the stage (0-indexed); the sentinel `0` for a collapsed
     /// stage-level row (`is_stage_level = true`), which resolves the same column for

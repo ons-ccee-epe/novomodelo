@@ -1,16 +1,18 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use novomodelo_core::{EntityId, ScalarExpr, VariableRef};
+use novomodelo_core::{EntityId, Line, ScalarExpr, VariableRef};
 
 use super::{
-    Fault, LinearForm, LoweredRelation, Lowering, NamedTable, Scope, Slot, lower_relation,
+    Fault, LinearForm, LoweredRelation, Lowering, NamedTable, Scope, Slot,
+    collect_named_references, lower_activation_condition, lower_relation, lower_relation_from,
     lower_scalar_body,
 };
+use crate::constraints::scenario::{CompareOp, ConditionalScalar, ResolvedCondition};
 use crate::expression::Diagnostic;
-use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
-use crate::expression::parser::{Expr, parse};
+use crate::expression::catalog::{DataAtom, LineBusPairIndex, build_line_bus_pair_index};
+use crate::expression::parser::{Expr, parse, parse_condition};
 use crate::test_support::make_line;
 
 fn params() -> HashMap<String, EntityId> {
@@ -163,6 +165,18 @@ fn scalar_body_rejects_an_lp_variable() {
 }
 
 #[test]
+fn a_scalar_parameter_cannot_read_scenario_data() {
+    assert_eq!(
+        lower_scalar_body("2 * bus_load_value(1)", &params()).unwrap_err(),
+        Diagnostic {
+            span: 4..21,
+            message: "\"bus_load_value\" reads scenario data, which a scalar parameter cannot read"
+                .to_owned(),
+        }
+    );
+}
+
+#[test]
 fn scalar_body_rejects_an_unknown_name_with_the_hint() {
     assert_eq!(
         rendered_rejection("@a + 2 * @demand"),
@@ -182,11 +196,11 @@ fn scalar_body_rejects_a_relation() {
     }
 }
 
-/// Runs `f` under `params()`, the named expressions `decls` and `line_index()`.
+/// Runs `f` under `params()`, the named expressions `decls` and `line_index()`, without data ids.
 fn with_named<T>(decls: &[(&str, &str)], f: impl FnOnce(&Scope) -> T) -> T {
     let params = params();
     let line_index = line_index();
-    let named = match NamedTable::declare(decls, &params, &line_index) {
+    let named = match NamedTable::declare(decls, &params, &line_index, &BTreeMap::new()) {
         Ok(named) => named,
         Err((j, d)) => panic!("expressions[{j}]: {}", d.render(decls[j].1)),
     };
@@ -194,14 +208,20 @@ fn with_named<T>(decls: &[(&str, &str)], f: impl FnOnce(&Scope) -> T) -> T {
         params: &params,
         line_index: &line_index,
         named: &named,
+        data_ids: None,
     })
+}
+
+/// A line `id` running from bus `source` to bus `target`.
+fn line(id: i32, source: i32, target: i32) -> Line {
+    let mut line = make_line(id, source, target);
+    line.name = format!("L{id}");
+    line
 }
 
 /// A single line 5 running from bus 3 to bus 7.
 fn line_index() -> LineBusPairIndex {
-    let mut line = make_line(5, 3, 7);
-    line.name = "L5".to_owned();
-    build_line_bus_pair_index(&[line]).unwrap()
+    build_line_bus_pair_index(&[line(5, 3, 7)]).unwrap()
 }
 
 fn with_scope<T>(f: impl FnOnce(&Scope) -> T) -> T {
@@ -613,6 +633,42 @@ fn forward_line_pair_contributes_plus_one() {
     );
 }
 
+/// derived: line 10 runs from bus 3 to bus 7, so the flow 3 -> 7 is its direct variable at
+/// `1.0` and the flow 7 -> 3 its reverse variable, which the `-` makes `-1.0`, exactly as
+/// `line_direct(10) - line_reverse(10)`.
+#[test]
+fn line_flow_lowers_to_the_directional_variable_of_its_line() {
+    let (params, named) = (params(), NamedTable::default());
+    let line_index = build_line_bus_pair_index(&[line(10, 3, 7)]).unwrap();
+    let scope = Scope {
+        params: &params,
+        line_index: &line_index,
+        named: &named,
+        data_ids: None,
+    };
+    let src =
+        "line_flow(source_bus=3, target_bus=7) - line_flow(source_bus=7, target_bus=3) <= 100";
+    let flow = lower_relation(src, &scope).unwrap_or_else(|d| panic!("{}", d.render(src)));
+    let (line_id, block_id) = (EntityId(10), None);
+    assert_eq!(
+        literal_bits_of(src, flow.terms.clone()),
+        [
+            (
+                VariableRef::LineDirect { line_id, block_id },
+                1.0_f64.to_bits()
+            ),
+            (
+                VariableRef::LineReverse { line_id, block_id },
+                (-1.0_f64).to_bits()
+            ),
+        ]
+    );
+    assert_eq!(
+        Ok(flow),
+        lower_relation("line_direct(10) - line_reverse(10) <= 100", &scope)
+    );
+}
+
 #[test]
 fn products_and_divisions_of_lp_variables_are_rejected() {
     let product = "product of LP variables is not linear";
@@ -755,30 +811,32 @@ fn variable_argument_rules_keep_their_messages() {
             "hydro_generation(0, source_bus=3, target_bus=7)",
             "hydro_generation(0, source_bus=3, target_bus=7)",
             "the (source_bus=, target_bus=) pair form is only accepted on \"line_exchange\" \
-             as its sole argument, e.g. \"line_exchange(source_bus=3, target_bus=7)\"; it \
-             cannot follow a positional argument in \"hydro_generation\"",
+             or \"line_flow\" as its sole argument, e.g. \"line_exchange(source_bus=3, \
+             target_bus=7)\"; it cannot follow a positional argument in \"hydro_generation\"",
         ),
         (
             "hydro_turbined(5, foo=2)",
             "hydro_turbined(5, foo=2)",
-            "unknown named argument \"foo\" in variable \"hydro_turbined\": only \"bus\" is \
-             supported",
+            "unknown named argument \"foo\" in variable \"hydro_turbined\": only \"bus\" and \
+             \"unit_group\" are supported",
         ),
         (
             "hydro_generation(source_bus=3, target_bus=7)",
             "hydro_generation(source_bus=3, target_bus=7)",
             "the (source_bus=, target_bus=) pair form addresses a line by its endpoint buses \
-             and is only accepted on \"line_exchange\", not \"hydro_generation\"",
+             and is only accepted on \"line_exchange\" or \"line_flow\", not \"hydro_generation\"",
         ),
         (
             "line_exchange(source_bus=3, 7)",
             "line_exchange(source_bus=3, 7)",
-            "expected \"source_bus\" or \"target_bus\" in \"line_exchange\" pair form",
+            "expected \"source_bus\" or \"target_bus\" in \"line_exchange\" pair form; write \
+             \"line_exchange(source_bus=X, target_bus=Y)\"",
         ),
         (
             "line_exchange(source_bus=3, bus=7)",
             "line_exchange(source_bus=3, bus=7)",
-            "expected \"source_bus\" or \"target_bus\" in \"line_exchange\" pair form",
+            "expected \"source_bus\" or \"target_bus\" in \"line_exchange\" pair form; write \
+             \"line_exchange(source_bus=X, target_bus=Y)\"",
         ),
         (
             "line_exchange(source_bus=3.5, target_bus=7)",
@@ -1145,7 +1203,7 @@ fn chained_parameter_product_lowers_to_one_constant() {
         rhs,
         LinearForm {
             terms: Vec::new(),
-            constant: Some(a() * b() * ScalarExpr::param(EntityId(9))),
+            constant: Some(a() * b() * param(9)),
         }
     );
 }
@@ -1590,7 +1648,7 @@ fn named_rejection(decls: &[(&str, &str)], src: &str) -> String {
 }
 
 fn declaration_rejection(decls: &[(&str, &str)]) -> (usize, String) {
-    match NamedTable::declare(decls, &params(), &line_index()) {
+    match NamedTable::declare(decls, &params(), &line_index(), &BTreeMap::new()) {
         Ok(_) => panic!("{decls:?} declared"),
         Err((j, d)) => (j, d.render(decls[j].1)),
     }
@@ -1743,28 +1801,6 @@ fn composition_resolves_transitively() {
     );
     assert_eq!(shared.lowerings, [1, 1, 1]);
     assert!(shared.cache_empty);
-}
-
-#[test]
-fn a_scalar_body_is_rejected_with_the_parameter_hint() {
-    let hint = |name: &str| {
-        format!(
-            "\"{name}\" contains no LP variable; declare it in generic_parameters.json as a \
-             kind \"expression\" parameter"
-        )
-    };
-    assert_eq!(
-        declaration_rejection(&[("x0", "hydro_generation(0)"), ("k", "2 * @p")]),
-        (1, format!("`2 * @p`: {}", hint("k")))
-    );
-    assert_eq!(
-        declaration_rejection(&[("three", "3")]),
-        (0, format!("`3`: {}", hint("three")))
-    );
-    assert_eq!(
-        declaration_rejection(&[("k", "@p")]),
-        (0, format!("`@p`: {}", hint("k")))
-    );
 }
 
 #[test]
@@ -2119,11 +2155,7 @@ fn a_linear_chain_keeps_at_most_two_bodies_cached() {
 fn an_evicted_body_is_lowered_again_for_the_next_constraint() {
     let decls = [("e", "hydro_generation(0) + 2 * hydro_generation(1)")];
     let src = "@e <= 1";
-    let (first, second) = with_named(&decls, |scope| {
-        let first = trace_in(scope, src);
-        let second = trace_in(scope, src);
-        (first, second)
-    });
+    let (first, second) = with_named(&decls, |scope| (trace_in(scope, src), trace_in(scope, src)));
     for trace in [&first, &second] {
         assert_eq!(trace.lowerings, [1]);
         assert!(trace.cache_empty);
@@ -2133,5 +2165,948 @@ fn an_evicted_body_is_lowered_again_for_the_next_constraint() {
     assert_eq!(
         literal_bits_of(src, first.terms),
         [(hg(0), 1.0_f64.to_bits()), (hg(1), 2.0_f64.to_bits())]
+    );
+}
+
+const CONDITIONAL_UNSUPPORTED: &str = "()` is not supported in this expression context";
+const BRANCHES_DIFFER: &str =
+    "() must read the same LP variables; they may differ only in coefficients and constants";
+
+/// Asserts that `message` is `before`, then `if`, then `after`.
+fn assert_around_conditional(message: &str, before: &str, after: &str) {
+    assert_eq!(message, format!("{before}if{after}"));
+}
+
+#[test]
+fn a_conditional_is_rejected_in_a_scalar_body() {
+    for (src, call) in [
+        ("if(@a<=1, 10, 20)", "if(@a<=1, 10, 20)"),
+        ("2 * @a + if(@a<=1, 10, 20)", "if(@a<=1, 10, 20)"),
+        (
+            "-if(@a<=1, if(@b<=2, 1, 2), 20)",
+            "if(@a<=1, if(@b<=2, 1, 2), 20)",
+        ),
+    ] {
+        assert_around_conditional(
+            &rendered_rejection(src),
+            &format!("`{call}`: `"),
+            CONDITIONAL_UNSUPPORTED,
+        );
+    }
+}
+
+#[test]
+fn a_conditional_is_rejected_in_a_linear_form_and_a_relation() {
+    let call = "if(@a<=1, 10, 20)";
+    let before = format!("`{call}`: `");
+    for src in [
+        format!("hydro_storage(1) + {call}"),
+        format!("2 * {call}"),
+        format!("{call} * hydro_storage(1)"),
+    ] {
+        assert_around_conditional(&linear_rejection(&src), &before, CONDITIONAL_UNSUPPORTED);
+    }
+    for src in [
+        format!("hydro_storage(1) <= {call}"),
+        format!("{call} >= hydro_storage(1)"),
+        format!("hydro_storage(1) + {call} == 5"),
+    ] {
+        assert_around_conditional(&relation_rejection(&src), &before, CONDITIONAL_UNSUPPORTED);
+    }
+}
+
+/// derived: the references of `if(@n <= 1 & @m > 2, @m, -@n)` in source order are the
+/// condition's `n`, `m`, then the branches' `m`, `n`.
+#[test]
+fn named_references_inside_a_conditional_are_collected_in_source_order() {
+    let named = HashMap::from([("n".to_owned(), 0), ("m".to_owned(), 1)]);
+    let expr = parse("if(@n <= 1 & @m > 2 | @x == 3, @m, -@n)")
+        .unwrap()
+        .lhs;
+    let mut references = Vec::new();
+    collect_named_references(&expr, &named, &mut references);
+    assert_eq!(references, [0, 1, 1, 0]);
+}
+
+/// Runs `f` in a constraint scope where the loads of bus 3 and of bus 3 in block 1 are parameters
+/// 20 and 21.
+fn with_atoms<T>(f: impl FnOnce(&Scope) -> T) -> T {
+    let params = params();
+    let line_index = line_index();
+    let named = NamedTable::default();
+    let data_ids = BTreeMap::from([
+        (
+            DataAtom::BusLoadValue {
+                bus_id: EntityId(3),
+                block_id: None,
+            },
+            EntityId(20),
+        ),
+        (
+            DataAtom::BusLoadValue {
+                bus_id: EntityId(3),
+                block_id: Some(1),
+            },
+            EntityId(21),
+        ),
+    ]);
+    f(&Scope {
+        params: &params,
+        line_index: &line_index,
+        named: &named,
+        data_ids: Some(&data_ids),
+    })
+}
+
+fn param(id: i32) -> ScalarExpr {
+    ScalarExpr::param(EntityId(id))
+}
+
+/// derived: a data term times a decision variable is a coefficient program over the parameter,
+/// `p20 * h14`, and a data term alone on a side is a constant.
+#[test]
+fn a_data_term_scales_a_variable_and_stands_alone_as_a_constant() {
+    let relation = with_atoms(|scope| {
+        lower_relation(
+            "bus_load_value(3) * hydro_generation(14) <= bus_load_value(3)",
+            scope,
+        )
+    })
+    .unwrap();
+    assert_eq!(relation.terms, [(hg(14), param(20))]);
+    assert_eq!(relation.upper, Some(lit(0.0) + param(20)));
+}
+
+#[test]
+fn a_data_term_needs_data_ids_and_a_listed_atom() {
+    let without =
+        with_scope(|scope| lower_relation("hydro_generation(14) >= bus_load_value(3)", scope));
+    assert_eq!(
+        without.unwrap_err().message,
+        "\"bus_load_value\" reads scenario data, which a scalar parameter cannot read"
+    );
+    assert!(lower_scalar_body("bus_load_value(3)", &params()).is_err());
+
+    let unlisted =
+        with_atoms(|scope| lower_relation("hydro_generation(14) >= bus_load_value(7)", scope));
+    assert_eq!(
+        unlisted.unwrap_err().message,
+        "data term \"bus_load_value\" has no parameter id"
+    );
+}
+
+const FIRST_SELECTOR: i32 = 30;
+
+/// Runs `f` with the data atoms of a constraint scope: parameters 20 (load of bus 3) and 21 (load
+/// of bus 7).
+fn with_data_ids<T>(
+    f: impl FnOnce(&BTreeMap<DataAtom, EntityId>, &HashMap<String, EntityId>, &LineBusPairIndex) -> T,
+) -> T {
+    let params = params();
+    let line_index = line_index();
+    let data_ids = BTreeMap::from([
+        (
+            DataAtom::BusLoadValue {
+                bus_id: EntityId(3),
+                block_id: None,
+            },
+            EntityId(20),
+        ),
+        (
+            DataAtom::BusLoadValue {
+                bus_id: EntityId(7),
+                block_id: None,
+            },
+            EntityId(21),
+        ),
+    ]);
+    f(&data_ids, &params, &line_index)
+}
+
+fn with_constraint_scope<T>(decls: &[(&str, &str)], f: impl FnOnce(&Scope) -> T) -> T {
+    with_data_ids(|data_ids, params, line_index| {
+        let named = match NamedTable::declare(decls, params, line_index, data_ids) {
+            Ok(named) => named,
+            Err((j, d)) => panic!("declaration {j}: {}", d.render(decls[j].1)),
+        };
+        f(&Scope {
+            params,
+            line_index,
+            named: &named,
+            data_ids: Some(data_ids),
+        })
+    })
+}
+
+fn constraint_result(decls: &[(&str, &str)], src: &str) -> Result<LoweredRelation, Diagnostic> {
+    with_constraint_scope(decls, |scope| {
+        lower_relation_from(src, scope, EntityId(FIRST_SELECTOR))
+    })
+}
+
+fn constraint_relation(decls: &[(&str, &str)], src: &str) -> LoweredRelation {
+    constraint_result(decls, src).unwrap_or_else(|d| panic!("{}", d.render(src)))
+}
+
+fn constraint_rejection(decls: &[(&str, &str)], src: &str) -> String {
+    constraint_result(decls, src).unwrap_err().render(src)
+}
+
+fn hg_block(id: i32, block: usize) -> VariableRef {
+    VariableRef::HydroGeneration {
+        hydro_id: EntityId(id),
+        block_id: Some(block),
+        bus_id: None,
+    }
+}
+
+fn compare(lhs: ScalarExpr, op: CompareOp, rhs: ScalarExpr) -> ResolvedCondition {
+    ResolvedCondition::Compare { lhs, op, rhs }
+}
+
+fn selector(cond: ResolvedCondition, then: ScalarExpr, else_: ScalarExpr) -> ConditionalScalar {
+    ConditionalScalar { cond, then, else_ }
+}
+
+#[test]
+fn a_bare_name_is_rejected() {
+    let rejection = with_scope(|scope| lower_relation("FNS <= 1", scope))
+        .unwrap_err()
+        .render("FNS <= 1");
+    assert_eq!(rejection, "`FNS`: expected '(' after variable name \"FNS\"");
+}
+
+/// derived: only `if` opens a conditional. In `when(1 <= 2, 1, 2)` the comparison stands among
+/// the arguments of a call, which the parser rejects, and a `when(...)` whose arguments parse is
+/// a call the catalog does not know.
+#[test]
+fn only_if_opens_a_conditional() {
+    assert_eq!(
+        constraint_rejection(&[], "when(1 <= 2, 1, 2)"),
+        "`<=`: a relational operator is only allowed at the top level"
+    );
+    assert_eq!(
+        constraint_rejection(&[], "hydro_generation(14) <= when(1)"),
+        "`when(1)`: unknown variable name \"when\": not a recognised LP variable name"
+    );
+}
+
+#[test]
+fn an_entity_term_without_arguments_is_rejected_at_lowering() {
+    let src = "hydro_generation() <= 1";
+    assert!(parse(src).is_ok());
+    let rejection = with_scope(|scope| lower_relation(src, scope))
+        .unwrap_err()
+        .render(src);
+    assert!(
+        rejection.contains("variable \"hydro_generation\" has an empty argument list"),
+        "{rejection}"
+    );
+}
+
+/// derived: the bound is `0.0 + p30` and the selector compares the load of bus 7, parameter 21,
+/// with 85000 and takes 100 or 200.
+#[test]
+fn a_conditional_bound_lowers_to_a_selector_parameter() {
+    let relation = constraint_relation(
+        &[],
+        "hydro_generation(14) <= if(bus_load_value(7) <= 85000, 100, 200)",
+    );
+    assert_eq!(relation.terms, [(hg(14), lit(1.0))]);
+    assert_eq!(relation.upper, Some(lit(0.0) + param(30)));
+    assert_eq!(
+        relation.selectors,
+        [(
+            EntityId(30),
+            selector(
+                compare(param(21), CompareOp::Le, lit(85000.0)),
+                lit(100.0),
+                lit(200.0)
+            )
+        )]
+    );
+}
+
+#[test]
+fn a_conditional_coefficient_lowers_to_a_selector_parameter() {
+    let relation = constraint_relation(
+        &[],
+        "if(bus_load_value(7) <= 85000, 2, 3) * hydro_generation(14) <= 1",
+    );
+    assert_eq!(relation.terms, [(hg(14), param(30))]);
+    assert_eq!(
+        relation.selectors,
+        [(
+            EntityId(30),
+            selector(
+                compare(param(21), CompareOp::Le, lit(85000.0)),
+                lit(2.0),
+                lit(3.0)
+            )
+        )]
+    );
+}
+
+/// derived: the branches `h14 + 1` and `h14 + 2` share the variable and the unit coefficient, so
+/// only the constant is a selector, and `h14 + p30 <= 10` has the bound `10 - p30`.
+#[test]
+fn conditional_branches_over_the_same_variables_select_only_the_difference() {
+    let relation = constraint_relation(
+        &[],
+        "if(bus_load_value(7) <= 1, hydro_generation(14) + 1, hydro_generation(14) + 2) <= 10",
+    );
+    assert_eq!(relation.terms, [(hg(14), lit(1.0))]);
+    assert_eq!(relation.upper, Some(lit(10.0) - param(30)));
+    assert_eq!(
+        relation.selectors,
+        [(
+            EntityId(30),
+            selector(
+                compare(param(21), CompareOp::Le, lit(1.0)),
+                lit(1.0),
+                lit(2.0)
+            )
+        )]
+    );
+
+    let coefficient = constraint_relation(
+        &[],
+        "if(bus_load_value(7) <= 1, 2 * hydro_generation(14), 3 * hydro_generation(14)) >= 0",
+    );
+    assert_eq!(coefficient.terms, [(hg(14), param(30))]);
+    assert_eq!(coefficient.selectors.len(), 1);
+
+    let same = constraint_relation(
+        &[],
+        "if(bus_load_value(7) <= 1, 2 * hydro_generation(14), 2 * hydro_generation(14)) >= 0",
+    );
+    assert_eq!(same.terms, [(hg(14), lit(2.0))]);
+    assert!(same.selectors.is_empty());
+}
+
+#[test]
+fn conditional_branches_over_different_variables_are_rejected() {
+    for src in [
+        "if(bus_load_value(7) <= 1, hydro_generation(14), 0) <= 1",
+        "if(bus_load_value(7) <= 1, 0, hydro_generation(14)) <= 1",
+        "if(bus_load_value(7) <= 1, hydro_generation(14), hydro_generation(14, 1)) <= 1",
+        "if(bus_load_value(7) <= 1, hydro_generation(14) + hydro_generation(14, 1), \
+         hydro_generation(14)) <= 1",
+    ] {
+        let rejection = constraint_rejection(&[], src);
+        let message = rejection
+            .split_once("`: ")
+            .map_or("", |(_, message)| message);
+        assert_around_conditional(message, "the branches of ", BRANCHES_DIFFER);
+    }
+}
+
+#[test]
+fn a_condition_that_reads_an_lp_variable_is_rejected() {
+    let decls = [("RSUL", "hydro_generation(14) + 1")];
+    for (src, fragment) in [
+        (
+            "if(hydro_generation(14) <= 1, 1, 2) <= 5",
+            "hydro_generation(14)",
+        ),
+        (
+            "if(1 <= @RSUL & bus_load_value(7) <= 2, 1, 2) <= 5",
+            "@RSUL",
+        ),
+    ] {
+        assert_around_conditional(
+            &constraint_rejection(&decls, src),
+            &format!("`{fragment}`: an "),
+            "() condition may read only data, not an LP variable",
+        );
+    }
+}
+
+const CAPACITY_IN_CONDITION: &str = "a condition cannot read hydro_availability: it is the \
+                                      capacity of a plant, resolved per stage and block, not a \
+                                      scenario value";
+
+fn activation_rejection(decls: &[(&str, &str)], src: &str) -> String {
+    with_constraint_scope(decls, |scope| {
+        lower_activation_condition(&parse_condition(src).unwrap(), scope)
+    })
+    .unwrap_err()
+    .render(src)
+}
+
+/// The fault sits on the call, not on the side that holds it; outside a condition the term keeps
+/// its meaning.
+#[test]
+fn a_condition_naming_a_plant_capacity_says_so() {
+    let capacity = CAPACITY_IN_CONDITION;
+    let activation = |src: &str| {
+        with_constraint_scope(&[], |scope| {
+            lower_activation_condition(&parse_condition(src).unwrap(), scope)
+        })
+        .unwrap_err()
+        .render(src)
+    };
+    for (rejection, call) in [
+        (
+            activation("hydro_availability(14) > 10"),
+            "hydro_availability(14)",
+        ),
+        (
+            activation("bus_load_value(7) > 1 & 2 * hydro_availability(14, 2) > 10"),
+            "hydro_availability(14, 2)",
+        ),
+        (
+            constraint_rejection(
+                &[],
+                "hydro_generation(14) <= if(2 * hydro_availability(14) > 1, 1, 2)",
+            ),
+            "hydro_availability(14)",
+        ),
+    ] {
+        assert_eq!(rejection, format!("`{call}`: {capacity}"));
+        assert!(!rejection.contains("LP variable"), "{rejection}");
+    }
+
+    assert_eq!(
+        rendered_rejection("2 * hydro_availability(14)"),
+        "`hydro_availability(14)`: an LP variable cannot appear in a scalar-parameter expression"
+    );
+    let relation = constraint_relation(
+        &[],
+        "hydro_generation(14) <= if(bus_load_value(7) <= 1, 2 * hydro_availability(14), \
+         hydro_availability(14))",
+    );
+    let variables: Vec<_> = relation.terms.into_iter().map(|(v, _)| v).collect();
+    assert_eq!(
+        variables,
+        [
+            hg(14),
+            VariableRef::HydroAvailability {
+                hydro_id: EntityId(14),
+                block_id: None,
+            },
+        ]
+    );
+}
+
+/// An unknown name is refused in a condition as it is in an expression, not as an LP variable.
+#[test]
+fn an_unknown_name_in_a_condition_is_refused_as_it_is_in_an_expression() {
+    for call in ["foo(3)", "foo()", "foo(3, 1)"] {
+        let body = constraint_rejection(&[], &format!("hydro_generation(14) + {call} <= 1"));
+        let message = body
+            .strip_prefix(&format!("`{call}`: "))
+            .unwrap_or_else(|| panic!("{body}"));
+        for rejection in [
+            activation_rejection(&[], &format!("{call} > 1")),
+            activation_rejection(&[], &format!("bus_load_value(7) > 1 & 2 * {call} > 1")),
+            constraint_rejection(
+                &[],
+                &format!("hydro_generation(14) <= if({call} > 1, 1, 2)"),
+            ),
+        ] {
+            assert_eq!(rejection, format!("`{call}`: {message}"));
+        }
+    }
+    let unknown = "`foo(3)`: unknown variable name \"foo\": not a recognised LP variable name";
+    assert_eq!(activation_rejection(&[], "foo(3) > 1"), unknown);
+    assert_eq!(rendered_rejection("@a * foo(3)"), unknown);
+}
+
+/// A condition side is faulted at its first term in source order that a condition cannot read,
+/// as an `if()` condition and as an activation condition alike: a capacity before a variable or
+/// an unknown name, whatever follows it, and a variable, a named expression reading one, or an
+/// unknown name before a capacity.
+#[test]
+fn a_condition_side_is_faulted_at_its_first_refused_term() {
+    let decls = [("RSUL", "hydro_generation(14) + 1")];
+    let capacity = format!("`hydro_availability(14)`: {CAPACITY_IN_CONDITION}");
+    let in_if = |lhs: &str| {
+        let src = format!("hydro_generation(14) <= if({lhs} > 1, 1, 2)");
+        constraint_rejection(&decls, &src)
+    };
+    let in_activation = |lhs: &str| activation_rejection(&decls, &format!("{lhs} > 1"));
+    let side_reads_a_variable =
+        |lhs: &str| format!("`{lhs}`: an if() condition may read only data, not an LP variable");
+    let unknown = "`foo(1)`: unknown variable name \"foo\": not a recognised LP variable name";
+
+    for lhs in [
+        "hydro_availability(14) + hydro_generation(14)",
+        "hydro_availability(14) * hydro_generation(14)",
+        "2 / hydro_availability(14)",
+        "hydro_availability(14) + foo(1)",
+        "hydro_availability(14) + @RSUL",
+    ] {
+        assert_eq!(in_if(lhs), capacity, "{lhs}");
+        assert_eq!(in_activation(lhs), capacity, "{lhs}");
+    }
+    for (lhs, activation) in [
+        (
+            "hydro_generation(14) + hydro_availability(14)",
+            "`hydro_generation(14)`: an LP variable cannot appear in a scalar-parameter \
+             expression",
+        ),
+        (
+            "2 * hydro_generation(14) - 3 * hydro_availability(14, 2)",
+            "`hydro_generation(14)`: an LP variable cannot appear in a scalar-parameter \
+             expression",
+        ),
+        (
+            "@RSUL + hydro_availability(14)",
+            "`@RSUL`: unknown scalar parameter \"@RSUL\"; a named expression cannot appear in a \
+             scalar-parameter expression",
+        ),
+    ] {
+        assert_eq!(in_if(lhs), side_reads_a_variable(lhs), "{lhs}");
+        assert_eq!(in_activation(lhs), activation, "{lhs}");
+    }
+    let lhs = "foo(1) + hydro_availability(14)";
+    assert_eq!(in_if(lhs), unknown);
+    assert_eq!(in_activation(lhs), unknown);
+
+    let nested = "if(hydro_generation(14) > 0, 1, 2) + hydro_availability(14)";
+    assert_eq!(in_if(nested), side_reads_a_variable("hydro_generation(14)"));
+    assert_eq!(
+        in_activation(nested),
+        "`hydro_generation(14)`: an LP variable cannot appear in a scalar-parameter expression"
+    );
+}
+
+/// derived: the inner `if()` is lowered before the outer one, so it takes id 30 and the outer
+/// selector, id 31, takes it as its `then`.
+#[test]
+fn nested_conditionals_number_the_inner_selector_first() {
+    let relation = constraint_relation(
+        &[],
+        "hydro_generation(14) <= if(bus_load_value(7) <= 1, if(bus_load_value(7) <= 2, 3, 4), 5)",
+    );
+    assert_eq!(relation.upper, Some(lit(0.0) + param(31)));
+    assert_eq!(
+        relation.selectors,
+        [
+            (
+                EntityId(30),
+                selector(
+                    compare(param(21), CompareOp::Le, lit(2.0)),
+                    lit(3.0),
+                    lit(4.0)
+                )
+            ),
+            (
+                EntityId(31),
+                selector(
+                    compare(param(21), CompareOp::Le, lit(1.0)),
+                    param(30),
+                    lit(5.0)
+                )
+            ),
+        ]
+    );
+}
+
+/// derived: `&` binds tighter than `|`; the loads of buses 3 and 7 are parameters 20 and 21, and
+/// `@b` and `@a` are parameters 8 and 7.
+#[test]
+fn a_condition_reads_loads_data_terms_and_parameters() {
+    let relation = constraint_relation(
+        &[],
+        "hydro_generation(14) <= if(@b > 1 & bus_load_value(7) <= @a | bus_load_value(3) == 3, 1, 2)",
+    );
+    let expected = ResolvedCondition::Or(
+        Box::new(ResolvedCondition::And(
+            Box::new(compare(param(8), CompareOp::Gt, lit(1.0))),
+            Box::new(compare(param(21), CompareOp::Le, param(7))),
+        )),
+        Box::new(compare(param(20), CompareOp::Eq, lit(3.0))),
+    );
+    assert_eq!(relation.selectors.len(), 1);
+    assert_eq!(relation.selectors[0].1.cond, expected);
+}
+
+#[test]
+fn selector_ids_run_out_at_the_largest_id() {
+    let one = "hydro_generation(14) <= if(bus_load_value(7) <= 1, 1, 2)";
+    let two = "hydro_generation(14) <= if(bus_load_value(7) <= 1, 1, 2) + if(bus_load_value(7) <= 2, 3, 4)";
+    let lower_from_max = |src: &str| {
+        with_constraint_scope(&[], |scope| {
+            lower_relation_from(src, scope, EntityId(i32::MAX))
+        })
+    };
+    assert_eq!(
+        lower_from_max(one).unwrap().selectors[0].0,
+        EntityId(i32::MAX)
+    );
+    assert_around_conditional(
+        &lower_from_max(two).unwrap_err().message,
+        "the scalar-parameter ids leave no room for the ",
+        "() selectors of this constraint",
+    );
+}
+
+/// derived: the body `E` is lowered once, so its selector is created once and both uses read
+/// parameter 30: `@E + @E` is `2 * h14 + (p30 + p30)` and the bound is `10 - (p30 + p30)`.
+#[test]
+fn a_named_expression_with_a_conditional_creates_its_selector_once() {
+    let relation = constraint_relation(
+        &[(
+            "E",
+            "if(bus_load_value(7) <= 1, hydro_generation(14) + 1, hydro_generation(14) + 2)",
+        )],
+        "@E + @E <= 10",
+    );
+    assert_eq!(relation.terms, [(hg(14), lit(2.0))]);
+    assert_eq!(relation.upper, Some(lit(10.0) - (param(30) + param(30))));
+    assert_eq!(relation.selectors.len(), 1);
+}
+
+/// derived: `restriction_405_formula` is `h14 - 5` and `FNS` is `h14`, against `2 * h14`, so the
+/// coefficient selects 1 or 2 (parameter 30) and, for `restriction_405_formula`, the constant
+/// selects -5 or 0 (parameter 31), which `@E <= 10` moves to the bound `10 - p31`.
+#[test]
+fn a_named_body_whose_conditional_branch_reads_a_reference_is_accepted_at_declaration() {
+    let cond = || compare(param(21), CompareOp::Le, lit(1.0));
+    let restriction = constraint_relation(
+        &[
+            ("restriction_405_formula", "hydro_generation(14) - 5"),
+            (
+                "E",
+                "if(bus_load_value(7) <= 1, @restriction_405_formula, 2 * hydro_generation(14))",
+            ),
+        ],
+        "@E <= 10",
+    );
+    assert_eq!(restriction.terms, [(hg(14), param(30))]);
+    assert_eq!(restriction.upper, Some(lit(10.0) - param(31)));
+    assert_eq!(
+        restriction.selectors,
+        [
+            (EntityId(30), selector(cond(), lit(1.0), lit(2.0))),
+            (EntityId(31), selector(cond(), lit(-5.0), lit(0.0))),
+        ]
+    );
+
+    let expression = constraint_relation(
+        &[
+            ("FNS", "hydro_generation(14)"),
+            (
+                "E",
+                "if(bus_load_value(7) <= 1, @FNS, 2 * hydro_generation(14))",
+            ),
+        ],
+        "@E <= 10",
+    );
+    assert_eq!(expression.terms, [(hg(14), param(30))]);
+    assert_eq!(expression.upper, Some(lit(10.0)));
+    assert_eq!(
+        expression.selectors,
+        [(EntityId(30), selector(cond(), lit(1.0), lit(2.0)))]
+    );
+}
+
+#[test]
+fn a_reference_in_a_conditional_branch_over_different_variables_is_rejected_at_the_constraint() {
+    let composed =
+        format!("{BRANCHES_DIFFER} (composing \"@E\", the named expression at expressions[1])");
+    let restriction = [
+        ("restriction_405_formula", "hydro_generation(14, 1) - 5"),
+        (
+            "E",
+            "if(bus_load_value(7) <= 1, @restriction_405_formula, 2 * hydro_generation(14))",
+        ),
+    ];
+    assert_around_conditional(
+        &constraint_rejection(&restriction, "@E <= 10"),
+        "`@E`: the branches of ",
+        &composed,
+    );
+    let expression = [
+        ("FNS", "hydro_generation(14, 1)"),
+        (
+            "E",
+            "if(bus_load_value(7) <= 1, @FNS, 2 * hydro_generation(14))",
+        ),
+    ];
+    assert_around_conditional(
+        &constraint_rejection(&expression, "@E <= 10"),
+        "`@E`: the branches of ",
+        &composed,
+    );
+    let inline = "if(bus_load_value(7) <= 1, @FNS, 2 * hydro_generation(14)) <= 10";
+    assert_around_conditional(
+        &constraint_rejection(&expression, inline),
+        "`if(bus_load_value(7) <= 1, @FNS, 2 * hydro_generation(14))`: the branches of ",
+        BRANCHES_DIFFER,
+    );
+}
+
+#[test]
+fn a_named_body_whose_conditional_branches_read_different_variables_is_rejected_at_declaration() {
+    with_data_ids(|data_ids, params, line_index| {
+        let (j, diagnostic) = NamedTable::declare(
+            &[
+                ("FNS", "hydro_generation(14)"),
+                (
+                    "E",
+                    "if(bus_load_value(7) <= 1, hydro_generation(14, 1), 2 * hydro_generation(14))",
+                ),
+            ],
+            params,
+            line_index,
+            data_ids,
+        )
+        .unwrap_err();
+        assert_eq!(j, 1);
+        assert_around_conditional(&diagnostic.message, "the branches of ", BRANCHES_DIFFER);
+    });
+}
+
+#[test]
+fn a_reference_cycle_between_linear_expressions_is_rejected_at_lowering() {
+    assert_eq!(
+        constraint_rejection(
+            &[
+                ("A", "@B + hydro_generation(14)"),
+                ("B", "@A + hydro_generation(14)")
+            ],
+            "@A <= 1"
+        ),
+        "`@A`: named-expression reference cycle detected"
+    );
+}
+
+/// derived: `K` is `p20 - p8` (the load of bus 3 minus `@b`), so `h14 <= @K` has the bound
+/// `0.0 + (p20 - p8)`, as with the body written in parentheses.
+#[test]
+fn a_body_without_a_variable_is_a_data_term_in_the_bound() {
+    let decls = [("K", "bus_load_value(3) - @b")];
+    let relation = constraint_relation(&decls, "hydro_generation(14) <= @K");
+    assert_eq!(relation.terms, [(hg(14), lit(1.0))]);
+    assert_eq!(relation.upper, Some(lit(0.0) + (param(20) - param(8))));
+    assert_eq!(
+        relation,
+        constraint_relation(&decls, "hydro_generation(14) <= (bus_load_value(3) - @b)")
+    );
+}
+
+/// derived: `C_NRed_cMMGD` is `K = (p20 - p9) - p8` and `@q` is parameter 11, so the constant of
+/// `FNXG` is `(p11 - K) + p10` and `@FNXG <= 1000` has the bound `1000 - ((p11 - K) + p10)`; at
+/// the load 100 or 250 with `p8..=p11` at 1, 2, 3 and 4 it is
+/// `1000 - ((4 - ((100 - 2) - 1)) + 3)` or the same with 250, whatever the declaration order.
+#[test]
+fn a_data_only_expression_composes_into_another_as_written_in_place() {
+    let expression = (
+        "FNXG",
+        "@Ger_NRed + @q - @C_NRed_cMMGD + @p - line_flow(source_bus=3, target_bus=7) \
+         + line_flow(source_bus=7, target_bus=3)",
+    );
+    let generation = ("Ger_NRed", "hydro_generation(14) + hydro_generation(14, 1)");
+    let data = ("C_NRed_cMMGD", "bus_load_value(3) - @c - @b");
+    let relation = constraint_relation(&[expression, generation, data], "@FNXG <= 1000");
+
+    let line = |direct| {
+        let line_id = EntityId(5);
+        if direct {
+            VariableRef::LineDirect {
+                line_id,
+                block_id: None,
+            }
+        } else {
+            VariableRef::LineReverse {
+                line_id,
+                block_id: None,
+            }
+        }
+    };
+    assert_eq!(
+        relation.terms,
+        [
+            (hg(14), lit(1.0)),
+            (hg_block(14, 1), lit(1.0)),
+            (line(true), lit(-1.0)),
+            (line(false), lit(1.0)),
+        ]
+    );
+    let k = (param(20) - param(9)) - param(8);
+    assert_eq!(
+        relation.upper,
+        Some(lit(1000.0) - ((param(11) - k) + param(10)))
+    );
+    let bound = relation.upper.as_ref().unwrap();
+    for load in [100.0, 250.0] {
+        let value = bound.evaluate(|id| match id.0 {
+            20 => load,
+            8..=11 => f64::from(id.0 - 7),
+            other => panic!("unexpected parameter {other}"),
+        });
+        let expected = 1000.0_f64 - ((4.0 - ((load - 2.0) - 1.0)) + 3.0);
+        assert_eq!(value.to_bits(), expected.to_bits(), "load {load}");
+    }
+
+    assert_eq!(
+        constraint_relation(&[data, generation, expression], "@FNXG <= 1000"),
+        relation
+    );
+    let inline = (
+        "FNXG",
+        "@Ger_NRed + @q - (bus_load_value(3) - @c - @b) + @p \
+         - line_flow(source_bus=3, target_bus=7) + line_flow(source_bus=7, target_bus=3)",
+    );
+    assert_eq!(
+        constraint_relation(&[inline, generation], "@FNXG <= 1000"),
+        relation
+    );
+}
+
+/// derived: `K` is `p20 - p8`; it scales and divides a form as its body would, so `@K * h14`
+/// has the coefficient `p20 - p8` and `h14 / @K` the coefficient `1 / (p20 - p8)`. `K2`,
+/// declared before the `K` it reads, is data-only too.
+#[test]
+fn a_data_only_expression_is_a_coefficient_and_a_linear_one_still_is_not() {
+    let decls = [
+        ("K2", "2 * @K"),
+        ("K", "bus_load_value(3) - @b"),
+        ("E", "hydro_generation(14)"),
+    ];
+    let scaled = constraint_relation(&decls, "@K * hydro_generation(14) <= 1");
+    assert_eq!(scaled.terms, [(hg(14), param(20) - param(8))]);
+    for (named, inline) in [
+        (
+            "@K2 * hydro_generation(14) <= 1",
+            "(2 * (bus_load_value(3) - @b)) * hydro_generation(14) <= 1",
+        ),
+        (
+            "@K * hydro_generation(14) <= 1",
+            "(bus_load_value(3) - @b) * hydro_generation(14) <= 1",
+        ),
+        (
+            "hydro_generation(14) / @K <= 1",
+            "hydro_generation(14) / (bus_load_value(3) - @b) <= 1",
+        ),
+        (
+            "@E * @K <= @K",
+            "@E * (bus_load_value(3) - @b) <= (bus_load_value(3) - @b)",
+        ),
+    ] {
+        assert_eq!(
+            constraint_relation(&decls, named),
+            constraint_relation(&decls, inline),
+            "{named}"
+        );
+    }
+    assert_eq!(
+        constraint_rejection(&decls, "@E * @E <= 1"),
+        "`@E * @E`: product of LP variables is not linear (\"@E\" is the named expression at \
+         expressions[2], which contains LP variables)"
+    );
+    assert_eq!(
+        constraint_rejection(&decls, "@K / @E <= 1"),
+        "`@K / @E`: division by an expression containing LP variables (\"@E\" is the named \
+         expression at expressions[2], which contains LP variables)"
+    );
+}
+
+/// derived: a relation over data-only expressions alone has no term, as its inline form has.
+#[test]
+fn a_relation_over_data_only_expressions_keeps_its_inline_form() {
+    let decls = [("K", "bus_load_value(3) - @b")];
+    let relation = constraint_relation(&decls, "@K <= 5");
+    assert!(relation.terms.is_empty());
+    assert_eq!(
+        relation,
+        constraint_relation(&decls, "(bus_load_value(3) - @b) <= 5")
+    );
+}
+
+/// derived: in an `if()` condition and in an activation condition `K` reads as `p20 - p8`; the
+/// load of bus 7 is parameter 21.
+#[test]
+fn a_data_only_expression_reads_as_its_body_in_a_condition() {
+    let decls = [("K", "bus_load_value(3) - @b")];
+    let k = || param(20) - param(8);
+    let relation = constraint_relation(&decls, "hydro_generation(14) <= if(@K > 0, 1, 2)");
+    assert_eq!(
+        relation.selectors,
+        [(
+            EntityId(30),
+            selector(compare(k(), CompareOp::Gt, lit(0.0)), lit(1.0), lit(2.0))
+        )]
+    );
+    assert_eq!(
+        relation,
+        constraint_relation(
+            &decls,
+            "hydro_generation(14) <= if(bus_load_value(3) - @b > 0, 1, 2)"
+        )
+    );
+
+    let condition = parse_condition("@K > 0 | bus_load_value(7) <= 5").unwrap();
+    let rule = with_constraint_scope(&decls, |scope| {
+        lower_activation_condition(&condition, scope)
+    });
+    assert_eq!(
+        rule.unwrap(),
+        ResolvedCondition::Or(
+            Box::new(compare(k(), CompareOp::Gt, lit(0.0))),
+            Box::new(compare(param(21), CompareOp::Le, lit(5.0))),
+        )
+    );
+
+    let src = "@S > 0";
+    let rejection = with_constraint_scope(&[("S", "if(@b > 1, 1, 2)")], |scope| {
+        lower_activation_condition(&parse_condition(src).unwrap(), scope)
+    });
+    assert_around_conditional(
+        &rejection.unwrap_err().render(src),
+        "`@S`: an activation condition cannot use ",
+        "() (composing \"@S\", the named expression at expressions[0])",
+    );
+}
+
+/// derived: `Z` folds to `0` only once `K` is composed into a constraint, so the declarations
+/// are accepted and `1 / @Z` is a division by zero at the reference.
+#[test]
+fn a_data_only_reference_folds_only_once_a_constraint_composes_it() {
+    let decls = [("K", "1 / @Z"), ("Z", "0")];
+    assert_eq!(
+        constraint_rejection(&decls, "hydro_generation(14) <= @K"),
+        "`@K`: division by zero (composing \"@K\", the named expression at expressions[0])"
+    );
+    with_data_ids(|data_ids, params, line_index| {
+        let (j, diagnostic) = NamedTable::declare(
+            &[("K", "bus_load_value(3) / 0")],
+            params,
+            line_index,
+            data_ids,
+        )
+        .unwrap_err();
+        assert_eq!((j, diagnostic.message.as_str()), (0, "division by zero"));
+    });
+}
+
+#[test]
+fn a_reference_cycle_through_data_only_expressions_is_rejected_at_lowering() {
+    assert_eq!(
+        constraint_rejection(
+            &[("A", "@B + bus_load_value(3)"), ("B", "@A - 1")],
+            "hydro_generation(14) <= @A"
+        ),
+        "`@A`: named-expression reference cycle detected"
+    );
+}
+
+/// derived: `D{k}` holds `2^(k+1) - 1` operations, so `D16`, at 131071, is the first past the
+/// budget of 100000.
+#[test]
+fn a_doubling_chain_of_data_only_expressions_is_refused_by_the_budget() {
+    let mut decls = vec![("D0".to_owned(), "bus_load_value(3)".to_owned())];
+    for k in 1..=20 {
+        decls.push((format!("D{k}"), format!("@D{0} + @D{0}", k - 1)));
+    }
+    let decls = borrowed(&decls);
+    assert_eq!(
+        constraint_rejection(&decls, "hydro_generation(14) <= @D20"),
+        "`@D20`: named-expression reference \"@D20\" expands to more than 100000 coefficient \
+         operations; this indicates an exponential reference pattern (e.g. a doubling chain \
+         \"@e = @prev + @prev\")"
     );
 }

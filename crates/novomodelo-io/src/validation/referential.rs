@@ -7,11 +7,13 @@
 //!
 //! The primary entry point is `validate_referential_integrity`.
 
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use novomodelo_core::ScalarExpr;
+use novomodelo_core::{EntityId, ScalarExpr};
 
 use super::{ValidationContext, rules, schema::ParsedData};
+use crate::constraints::scenario::DataAtom;
 
 // ── validate_referential_integrity ───────────────────────────────────────────
 
@@ -62,6 +64,7 @@ pub(crate) fn validate_referential_integrity(data: &ParsedData, ctx: &mut Valida
     check_penalty_override_references(data, ctx, &ids.bus, &ids.hydro, &ids.line, &ids.ncs);
     check_load_factor_references(data, ctx, &ids.bus);
     check_generic_constraint_expression_references(data, ctx, &ids);
+    check_generic_scenario_references(data, ctx, &ids);
     check_generic_constraint_bounds_validity(data, ctx);
     check_ncs_bounds_and_factors(data, ctx, &ids.ncs);
 }
@@ -893,17 +896,86 @@ fn check_load_factor_references(
 }
 
 /// `GenericConstraint` expression entity ID existence.
+///
+/// A dangling reference is an `ErrorKind::InvalidReference` error for every
+/// modeled entity type. `Contract` is the sole remaining stub (data-complete but
+/// contributing no LP variables), so a dangling `Contract` reference is downgraded
+/// to an `ErrorKind::UnusedEntity` warning, not an error.
 fn check_generic_constraint_expression_references(
     data: &ParsedData,
     ctx: &mut ValidationContext,
     ids: &LookupSets,
 ) {
+    let file = "constraints/generic_constraints.json";
     for constraint in &data.generic_constraints {
         let gc_label = format!("GenericConstraint {}", constraint.id.0);
         for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
+            let Some(fault) = validate_variable_ref_entity(&term.variable, ids) else {
+                continue;
+            };
             let label = format!("{gc_label} term[{term_idx}]");
-            validate_variable_ref_entity(&term.variable, &label, ids, ctx);
+            match fault {
+                TermFault::Undeclared(entity, id) => emit_undeclared_term_entity(
+                    ctx,
+                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
+                    file,
+                    &label,
+                    &entity,
+                    id,
+                ),
+                TermFault::BusWithoutUnitGroup { hydro_id, bus_id } => ctx.emit(
+                    &rules::REFERENTIAL_GENERIC_TERM_BUS_WITHOUT_UNIT_GROUP,
+                    file,
+                    Some(&label),
+                    format!(
+                        "{label} references bus {bus_id}, on which Hydro {hydro_id} has no unit group, via field 'bus_id'; a bus selector names one side of a split plant, not any bus in the system"
+                    ),
+                ),
+                TermFault::UndeclaredContract(contract_id) => ctx.emit(
+                    &rules::REFERENTIAL_GENERIC_TERM_STUB_CONTRACT,
+                    file,
+                    Some(&label),
+                    format!(
+                        "{label} references Contract {contract_id} which is a stub entity with no LP effect"
+                    ),
+                ),
+            }
         }
+    }
+}
+
+/// Entity existence of the bus loads and plant capacities the generic constraints read as data.
+///
+/// The scenario layer does not keep which constraint reads an atom, so each undeclared entity is
+/// one error on the file, named by the term that reads it, in entity and then id order.
+fn check_generic_scenario_references(
+    data: &ParsedData,
+    ctx: &mut ValidationContext,
+    ids: &LookupSets,
+) {
+    let scenario = &data.generic_scenario;
+    let bus_reads = scenario
+        .data_atoms
+        .iter()
+        .map(|(_, DataAtom::BusLoadValue { bus_id, .. })| bus_id.0)
+        .filter(|id| !ids.bus.contains(id))
+        .map(|id| ("Bus", id, "data term bus_load_value"));
+    let capacity_reads = scenario
+        .availability_atoms
+        .iter()
+        .map(|(_, atom)| atom.hydro_id.0)
+        .filter(|id| !ids.hydro.contains(id))
+        .map(|id| ("Hydro", id, "hydro_availability"));
+    let undeclared: BTreeSet<(&str, i32, &str)> = bus_reads.chain(capacity_reads).collect();
+    for (entity, id, term) in undeclared {
+        emit_undeclared_term_entity(
+            ctx,
+            &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
+            "constraints/generic_constraints.json",
+            &format!("{term}({id})"),
+            entity,
+            id,
+        );
     }
 }
 
@@ -1061,22 +1133,45 @@ fn check_ncs_bounds_and_factors(
     }
 }
 
-/// Validate that a [`VariableRef`](novomodelo_core::VariableRef) references an existing entity.
-///
-/// A dangling reference is an `ErrorKind::InvalidReference` error for every
-/// modeled entity type. `Contract` is the sole remaining stub (data-complete but
-/// contributing no LP variables), so a dangling `Contract` reference is downgraded
-/// to an `ErrorKind::UnusedEntity` warning, not an error.
+fn emit_undeclared_term_entity(
+    ctx: &mut ValidationContext,
+    rule: &rules::ValidationRule,
+    file: &'static str,
+    label: &str,
+    entity: &str,
+    id: i32,
+) {
+    ctx.emit(
+        rule,
+        file,
+        Some(label),
+        format!("{label} references non-existent {entity} {id}"),
+    );
+}
+
+/// A reference of a term to an entity the case does not declare.
+enum TermFault {
+    /// The entity, as a diagnostic names it, and its id; a unit group is `unit group <g> of Hydro`
+    /// with the id of its plant.
+    Undeclared(Cow<'static, str>, i32),
+    /// A `bus` selector naming a bus on which the plant has no unit group.
+    BusWithoutUnitGroup { hydro_id: i32, bus_id: i32 },
+    /// A contract, which generic constraints report as a stub rather than an error.
+    UndeclaredContract(i32),
+}
+
+/// The reference of `var` to an entity the case does not declare, if any. A plant the case does
+/// not declare is the only fault of a term that also selects a bus or a unit group of it.
 fn validate_variable_ref_entity(
     var: &novomodelo_core::VariableRef,
-    label: &str,
     ids: &LookupSets,
-    ctx: &mut ValidationContext,
-) {
+) -> Option<TermFault> {
     use novomodelo_core::VariableRef;
 
-    let file = "constraints/generic_constraints.json";
-    match var {
+    let undeclared = |declared: &HashSet<i32>, entity: &'static str, id: EntityId| {
+        (!declared.contains(&id.0)).then_some(TermFault::Undeclared(entity.into(), id.0))
+    };
+    match *var {
         VariableRef::HydroStorage { hydro_id, .. }
         | VariableRef::HydroEvaporation { hydro_id, .. }
         | VariableRef::HydroWithdrawal { hydro_id, .. }
@@ -1090,121 +1185,64 @@ fn validate_variable_ref_entity(
         | VariableRef::HydroUsefulVolumeFinal { hydro_id, .. }
         | VariableRef::HydroOutflowVolume { hydro_id, .. }
         | VariableRef::HydroDiversionVolume { hydro_id, .. } => {
-            if !ids.hydro.contains(&hydro_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!("{label} references non-existent Hydro {}", hydro_id.0),
-                );
-            }
+            undeclared(&ids.hydro, "Hydro", hydro_id)
         }
         VariableRef::HydroTurbined {
             hydro_id, bus_id, ..
         }
         | VariableRef::HydroGeneration {
             hydro_id, bus_id, ..
-        } => {
-            if !ids.hydro.contains(&hydro_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!("{label} references non-existent Hydro {}", hydro_id.0),
-                );
-            } else if let Some(b) = bus_id
-                && !ids
-                    .hydro_group_bus
-                    .get(&hydro_id.0)
-                    .is_some_and(|buses| buses.contains(&b.0))
-            {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_BUS_WITHOUT_UNIT_GROUP,
-                    file,
-                    Some(label.to_string()),
-                    format!(
-                        "{label} references bus {}, on which Hydro {} has no unit group, via field 'bus_id'; a bus selector names one side of a split plant, not any bus in the system",
-                        b.0, hydro_id.0
-                    ),
-                );
-            }
-        }
+        } => undeclared(&ids.hydro, "Hydro", hydro_id).or_else(|| {
+            let bus_id = bus_id?;
+            (!ids
+                .hydro_group_bus
+                .get(&hydro_id.0)
+                .is_some_and(|buses| buses.contains(&bus_id.0)))
+            .then_some(TermFault::BusWithoutUnitGroup {
+                hydro_id: hydro_id.0,
+                bus_id: bus_id.0,
+            })
+        }),
+        VariableRef::HydroGroupGeneration {
+            hydro_id, group_id, ..
+        } => undeclared(&ids.hydro, "Hydro", hydro_id).or_else(|| {
+            (!ids
+                .hydro_unit_group
+                .get(&hydro_id.0)
+                .is_some_and(|groups| groups.contains(&group_id.0)))
+            .then(|| {
+                TermFault::Undeclared(
+                    format!("unit group {} of Hydro", group_id.0).into(),
+                    hydro_id.0,
+                )
+            })
+        }),
         VariableRef::ThermalGeneration { thermal_id, .. }
         | VariableRef::AnticipatedDecision { thermal_id, .. } => {
-            if !ids.thermal.contains(&thermal_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!("{label} references non-existent Thermal {}", thermal_id.0),
-                );
-            }
+            undeclared(&ids.thermal, "Thermal", thermal_id)
         }
         VariableRef::LineDirect { line_id, .. }
         | VariableRef::LineReverse { line_id, .. }
-        | VariableRef::LineExchange { line_id, .. } => {
-            if !ids.line.contains(&line_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!("{label} references non-existent Line {}", line_id.0),
-                );
-            }
-        }
+        | VariableRef::LineExchange { line_id, .. } => undeclared(&ids.line, "Line", line_id),
         VariableRef::BusDeficit { bus_id, .. } | VariableRef::BusExcess { bus_id, .. } => {
-            if !ids.bus.contains(&bus_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!("{label} references non-existent Bus {}", bus_id.0),
-                );
-            }
+            undeclared(&ids.bus, "Bus", bus_id)
         }
         VariableRef::PumpingFlow { station_id, .. }
         | VariableRef::PumpingPower { station_id, .. }
         | VariableRef::PumpingVolume { station_id, .. } => {
-            if !ids.pumping.contains(&station_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!(
-                        "{label} references non-existent PumpingStation {}",
-                        station_id.0
-                    ),
-                );
-            }
+            undeclared(&ids.pumping, "PumpingStation", station_id)
         }
         VariableRef::ContractImport { contract_id, .. }
         | VariableRef::ContractExport { contract_id, .. } => {
-            if !ids.contract.contains(&contract_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_STUB_CONTRACT,
-                    file,
-                    Some(label.to_string()),
-                    format!(
-                        "{label} references Contract {} which is a stub entity with no LP effect",
-                        contract_id.0
-                    ),
-                );
-            }
+            (!ids.contract.contains(&contract_id.0))
+                .then_some(TermFault::UndeclaredContract(contract_id.0))
         }
         VariableRef::NonControllableGeneration { source_id, .. }
         | VariableRef::NonControllableCurtailment { source_id, .. } => {
-            if !ids.ncs.contains(&source_id.0) {
-                ctx.emit(
-                    &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
-                    file,
-                    Some(label.to_string()),
-                    format!(
-                        "{label} references non-existent NonControllableSource {}",
-                        source_id.0
-                    ),
-                );
-            }
+            undeclared(&ids.ncs, "NonControllableSource", source_id)
         }
+        // Unchecked: a plant capacity is never a term.
+        VariableRef::HydroAvailability { .. } => None,
     }
 }
 
@@ -1232,7 +1270,7 @@ mod tests {
         constraints::{
             BusPenaltyOverrideRow, GenericConstraintBoundsRow, HydroBoundsRow,
             HydroUnitGroupBoundsRow, LineBoundsRow, NcsBoundsRow, NcsPenaltyOverrideRow,
-            ThermalBoundsRow,
+            ScenarioLayer, ThermalBoundsRow, scenario::AvailabilityAtom,
         },
         extensions::HydroGeometryRow,
         scenarios::{
@@ -1240,8 +1278,8 @@ mod tests {
             NcsFactorEntry,
         },
         test_support::{
-            make_bus_with_deficit, make_hydro, make_minimal_case, make_pumping_station,
-            make_thermal, make_unit_group,
+            make_bus_with_deficit, make_data, make_hydro, make_minimal_case, make_pumping_station,
+            make_stages, make_thermal, make_unit_group,
         },
         validation::{
             ErrorKind,
@@ -3530,5 +3568,381 @@ mod tests {
                 entry.message
             );
         }
+    }
+
+    /// Buses 0 and 1 and plant 0, with `layer` as the scenario layer of the generic constraints.
+    fn scenario_case(layer: ScenarioLayer) -> ParsedData {
+        let mut data = make_data(
+            vec![make_hydro(0, None)],
+            vec![],
+            vec![],
+            make_stages(vec![1]),
+            vec![],
+            vec![],
+        );
+        data.buses = vec![make_bus_with_deficit(0, 0.0), make_bus_with_deficit(1, 0.0)];
+        data.generic_scenario = layer;
+        data
+    }
+
+    /// The entity and message of each diagnostic the referential layer reports for `data`, after
+    /// checking that every one is an `InvalidReference` error on the generic constraints file.
+    fn scenario_errors(data: &ParsedData) -> Vec<(Option<String>, String)> {
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(data, &mut ctx);
+        assert!(ctx.warnings().is_empty(), "{:?}", ctx.warnings());
+        ctx.errors()
+            .into_iter()
+            .map(|entry| {
+                assert_eq!(entry.kind, ErrorKind::InvalidReference, "{entry:?}");
+                assert_eq!(
+                    entry.file,
+                    std::path::Path::new("constraints/generic_constraints.json"),
+                    "{entry:?}"
+                );
+                (entry.entity.clone(), entry.message.clone())
+            })
+            .collect()
+    }
+
+    fn bus_load_value(bus_id: i32, block_id: Option<usize>) -> DataAtom {
+        DataAtom::BusLoadValue {
+            bus_id: EntityId(bus_id),
+            block_id,
+        }
+    }
+
+    fn capacity(hydro_id: i32) -> AvailabilityAtom {
+        AvailabilityAtom {
+            hydro_id: EntityId(hydro_id),
+            block_id: None,
+        }
+    }
+
+    #[test]
+    fn a_data_term_must_name_a_declared_bus() {
+        let layer = ScenarioLayer {
+            data_atoms: vec![
+                (EntityId(0), bus_load_value(97, None)),
+                (EntityId(1), bus_load_value(97, Some(1))),
+            ],
+            ..ScenarioLayer::default()
+        };
+
+        let errors = scenario_errors(&scenario_case(layer));
+
+        assert_eq!(
+            errors,
+            [(
+                Some("data term bus_load_value(97)".to_string()),
+                "data term bus_load_value(97) references non-existent Bus 97".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn an_availability_term_must_name_a_declared_hydro() {
+        let layer = ScenarioLayer {
+            availability_atoms: vec![(EntityId(0), capacity(99))],
+            ..ScenarioLayer::default()
+        };
+
+        let errors = scenario_errors(&scenario_case(layer));
+
+        assert_eq!(
+            errors,
+            [(
+                Some("hydro_availability(99)".to_string()),
+                "hydro_availability(99) references non-existent Hydro 99".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn declared_reads_have_no_finding() {
+        let layer = ScenarioLayer {
+            data_atoms: vec![
+                (EntityId(0), bus_load_value(1, None)),
+                (EntityId(1), bus_load_value(0, None)),
+            ],
+            availability_atoms: vec![(EntityId(2), capacity(0))],
+            ..ScenarioLayer::default()
+        };
+
+        let errors = scenario_errors(&scenario_case(layer));
+
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn scenario_findings_come_in_entity_then_id_order() {
+        let layer = ScenarioLayer {
+            data_atoms: vec![
+                (EntityId(0), bus_load_value(98, None)),
+                (EntityId(1), bus_load_value(97, None)),
+            ],
+            availability_atoms: vec![(EntityId(2), capacity(99)), (EntityId(3), capacity(96))],
+            ..ScenarioLayer::default()
+        };
+
+        let messages: Vec<String> = scenario_errors(&scenario_case(layer))
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect();
+
+        assert_eq!(
+            messages,
+            [
+                "data term bus_load_value(97) references non-existent Bus 97",
+                "data term bus_load_value(98) references non-existent Bus 98",
+                "hydro_availability(96) references non-existent Hydro 96",
+                "hydro_availability(99) references non-existent Hydro 99",
+            ]
+        );
+    }
+
+    /// Generic constraint `id` summing `variables` with coefficient 1.
+    fn generic_constraint(
+        id: i32,
+        variables: Vec<novomodelo_core::VariableRef>,
+    ) -> novomodelo_core::GenericConstraint {
+        novomodelo_core::GenericConstraint {
+            id: EntityId(id),
+            name: format!("constraint_{id}"),
+            description: None,
+            expression: novomodelo_core::ConstraintExpression {
+                terms: variables
+                    .into_iter()
+                    .map(|variable| novomodelo_core::LinearTerm::literal(1.0, variable))
+                    .collect(),
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
+    /// `make_data` with plant 14, whose unit groups 0 and 1 sit on bus 1, the bus 1, and
+    /// `constraints` and `layer` as the generic constraints and their scenario layer.
+    fn plant_14_case(
+        constraints: Vec<novomodelo_core::GenericConstraint>,
+        layer: ScenarioLayer,
+    ) -> ParsedData {
+        let mut hydro = make_hydro(14, None);
+        hydro.unit_groups = vec![
+            make_unit_group(0, 1, 0.0, 100.0, 0.0, 100.0),
+            make_unit_group(1, 1, 0.0, 100.0, 0.0, 100.0),
+        ];
+        let mut data = make_data(
+            vec![hydro],
+            vec![],
+            vec![],
+            make_stages(vec![1]),
+            vec![],
+            vec![],
+        );
+        data.generic_constraints = constraints;
+        data.generic_scenario = layer;
+        data
+    }
+
+    #[test]
+    fn generic_terms_must_name_declared_entities() {
+        use novomodelo_core::VariableRef;
+
+        let constraint = generic_constraint(
+            7,
+            vec![
+                VariableRef::HydroGeneration {
+                    hydro_id: EntityId(99),
+                    block_id: None,
+                    bus_id: None,
+                },
+                VariableRef::ThermalGeneration {
+                    thermal_id: EntityId(98),
+                    block_id: None,
+                },
+                VariableRef::BusDeficit {
+                    bus_id: EntityId(97),
+                    block_id: None,
+                },
+            ],
+        );
+
+        let messages: Vec<String> =
+            scenario_errors(&plant_14_case(vec![constraint], ScenarioLayer::default()))
+                .into_iter()
+                .map(|(_, message)| message)
+                .collect();
+
+        assert_eq!(
+            messages,
+            [
+                "GenericConstraint 7 term[0] references non-existent Hydro 99",
+                "GenericConstraint 7 term[1] references non-existent Thermal 98",
+                "GenericConstraint 7 term[2] references non-existent Bus 97",
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_unit_group_terms_must_name_declared_groups() {
+        use novomodelo_core::VariableRef;
+
+        let group = |hydro_id: i32, group_id: i32| VariableRef::HydroGroupGeneration {
+            hydro_id: EntityId(hydro_id),
+            group_id: EntityId(group_id),
+            block_id: None,
+        };
+        let messages = |variables| -> Vec<String> {
+            scenario_errors(&plant_14_case(
+                vec![generic_constraint(7, variables)],
+                ScenarioLayer::default(),
+            ))
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect()
+        };
+
+        assert_eq!(
+            messages(vec![group(14, 7), group(99, 0)]),
+            [
+                "GenericConstraint 7 term[0] references non-existent unit group 7 of Hydro 14",
+                "GenericConstraint 7 term[1] references non-existent Hydro 99",
+            ]
+        );
+        assert!(messages(vec![group(14, 0)]).is_empty());
+    }
+
+    /// Every entity named — by a term of each kind and by each kind of data read — is declared, so
+    /// the referential layer reports nothing at all.
+    #[test]
+    fn generic_constraints_naming_declared_entities_add_no_diagnostic() {
+        use novomodelo_core::VariableRef;
+
+        let constraint = generic_constraint(
+            7,
+            vec![
+                VariableRef::HydroGeneration {
+                    hydro_id: EntityId(14),
+                    block_id: None,
+                    bus_id: Some(EntityId(1)),
+                },
+                VariableRef::HydroGroupGeneration {
+                    hydro_id: EntityId(14),
+                    group_id: EntityId(1),
+                    block_id: None,
+                },
+            ],
+        );
+        let layer = ScenarioLayer {
+            data_atoms: vec![(EntityId(500), bus_load_value(1, None))],
+            availability_atoms: vec![(EntityId(501), capacity(14))],
+            ..ScenarioLayer::default()
+        };
+
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&plant_14_case(vec![constraint], layer), &mut ctx);
+
+        assert!(ctx.errors().is_empty(), "{:?}", ctx.errors());
+        assert!(ctx.warnings().is_empty(), "{:?}", ctx.warnings());
+    }
+
+    /// A term is a finding wherever it stands, so an entity two terms name is reported twice, and a
+    /// data read is one finding on the file however many constraints read it. A contract stays a
+    /// stub warning, and a `bus` selector off the plant's unit groups names the bus.
+    #[test]
+    fn generic_findings_are_one_per_term_and_one_per_read_entity() {
+        use novomodelo_core::VariableRef;
+
+        let bus_deficit_97 = VariableRef::BusDeficit {
+            bus_id: EntityId(97),
+            block_id: None,
+        };
+        let constraint_7 = generic_constraint(
+            7,
+            vec![
+                VariableRef::HydroGeneration {
+                    hydro_id: EntityId(99),
+                    block_id: None,
+                    bus_id: None,
+                },
+                VariableRef::ContractImport {
+                    contract_id: EntityId(5),
+                    block_id: None,
+                },
+                VariableRef::HydroStorage {
+                    hydro_id: EntityId(99),
+                },
+                VariableRef::HydroGeneration {
+                    hydro_id: EntityId(14),
+                    block_id: None,
+                    bus_id: Some(EntityId(5)),
+                },
+                bus_deficit_97,
+                VariableRef::NonControllableGeneration {
+                    source_id: EntityId(4),
+                    block_id: None,
+                },
+            ],
+        );
+        let constraint_8 = generic_constraint(8, vec![bus_deficit_97]);
+        let layer = ScenarioLayer {
+            data_atoms: vec![
+                (EntityId(500), bus_load_value(97, None)),
+                (EntityId(501), bus_load_value(1, None)),
+            ],
+            availability_atoms: vec![(EntityId(502), capacity(98))],
+            ..ScenarioLayer::default()
+        };
+
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(
+            &plant_14_case(vec![constraint_7, constraint_8], layer),
+            &mut ctx,
+        );
+
+        let file = std::path::Path::new("constraints/generic_constraints.json");
+        let errors: Vec<&str> = ctx
+            .errors()
+            .into_iter()
+            .map(|entry| {
+                assert_eq!(entry.kind, ErrorKind::InvalidReference, "{entry:?}");
+                assert_eq!(entry.file, file, "{entry:?}");
+                entry.message.as_str()
+            })
+            .collect();
+        let c7 = "GenericConstraint 7 term";
+        assert_eq!(
+            errors,
+            [
+                format!("{c7}[0] references non-existent Hydro 99"),
+                format!("{c7}[2] references non-existent Hydro 99"),
+                format!(
+                    "{c7}[3] references bus 5, on which Hydro 14 has no unit group, via field \
+                     'bus_id'; a bus selector names one side of a split plant, not any bus in the \
+                     system"
+                ),
+                format!("{c7}[4] references non-existent Bus 97"),
+                format!("{c7}[5] references non-existent NonControllableSource 4"),
+                "GenericConstraint 8 term[0] references non-existent Bus 97".to_string(),
+                "data term bus_load_value(97) references non-existent Bus 97".to_string(),
+                "hydro_availability(98) references non-existent Hydro 98".to_string(),
+            ]
+        );
+        let warnings: Vec<&str> = ctx
+            .warnings()
+            .into_iter()
+            .map(|entry| {
+                assert_eq!(entry.file, file, "{entry:?}");
+                entry.message.as_str()
+            })
+            .collect();
+        assert_eq!(
+            warnings,
+            [format!(
+                "{c7}[1] references Contract 5 which is a stub entity with no LP effect"
+            )]
+        );
     }
 }

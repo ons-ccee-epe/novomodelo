@@ -1,0 +1,4862 @@
+{
+  "formula_with_bounds": {
+    "echo": [
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 401,
+        "constraint_name": "constraint_401",
+        "term_index": 0,
+        "variable_kind": "line_direct",
+        "variable": "line_direct(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": "-50.0",
+        "bound_upper": "80.0",
+        "derived_shape": "band",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 401,
+        "constraint_name": "constraint_401",
+        "term_index": 1,
+        "variable_kind": "line_reverse",
+        "variable": "line_reverse(id=0, block=all)",
+        "coefficient": "-1.0",
+        "bound_lower": "-50.0",
+        "bound_upper": "80.0",
+        "derived_shape": "band",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 401,
+        "constraint_name": "constraint_401",
+        "term_index": 0,
+        "variable_kind": "line_direct",
+        "variable": "line_direct(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "60.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 401,
+        "constraint_name": "constraint_401",
+        "term_index": 1,
+        "variable_kind": "line_reverse",
+        "variable": "line_reverse(id=0, block=all)",
+        "coefficient": "-1.0",
+        "bound_lower": null,
+        "bound_upper": "60.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 411,
+        "constraint_name": "constraint_411",
+        "term_index": 0,
+        "variable_kind": "line_direct",
+        "variable": "line_direct(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "band",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": true,
+        "upper_per_solve": true,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 411,
+        "constraint_name": "constraint_411",
+        "term_index": 1,
+        "variable_kind": "line_reverse",
+        "variable": "line_reverse(id=0, block=all)",
+        "coefficient": "-1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "band",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": true,
+        "upper_per_solve": true,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 411,
+        "constraint_name": "constraint_411",
+        "term_index": 0,
+        "variable_kind": "line_direct",
+        "variable": "line_direct(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "band",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": true,
+        "upper_per_solve": true,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 411,
+        "constraint_name": "constraint_411",
+        "term_index": 1,
+        "variable_kind": "line_reverse",
+        "variable": "line_reverse(id=0, block=all)",
+        "coefficient": "-1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "band",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": true,
+        "upper_per_solve": true,
+        "has_active_when": false
+      }
+    ],
+    "stages": [
+      {
+        "scenario_id": 0,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 0,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 0,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 1,
+        "violations": [
+          [
+            401,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            411,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            411,
+            0,
+            true,
+            "-540.0",
+            "460.0"
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "0.01"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ]
+        ]
+      }
+    ]
+  },
+  "inequalities_and_horizon": {
+    "echo": [
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 501,
+        "constraint_name": "constraint_501",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": "1000.0",
+        "bound_upper": null,
+        "derived_shape": "floor",
+        "slack_enabled": true,
+        "slack_penalty": "2000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 502,
+        "constraint_name": "constraint_502",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "120.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 502,
+        "constraint_name": "constraint_502",
+        "term_index": 1,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "120.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 502,
+        "constraint_name": "constraint_502",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "130.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 502,
+        "constraint_name": "constraint_502",
+        "term_index": 1,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "130.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 503,
+        "constraint_name": "constraint_503",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": "25.0",
+        "bound_upper": "25.0",
+        "derived_shape": "equality",
+        "slack_enabled": false,
+        "slack_penalty": null,
+        "slack_penalty_basis": null,
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 503,
+        "constraint_name": "constraint_503",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": "25.0",
+        "bound_upper": "25.0",
+        "derived_shape": "equality",
+        "slack_enabled": false,
+        "slack_penalty": null,
+        "slack_penalty_basis": null,
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      }
+    ],
+    "stages": [
+      {
+        "scenario_id": 0,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 0,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 0,
+        "violations": [
+          [
+            501,
+            0,
+            "974.9999999999999",
+            "1423499999.9999998"
+          ],
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "1423499999.9999998"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 1,
+        "violations": [
+          [
+            502,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            503,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      }
+    ]
+  },
+  "range_overrides": {
+    "echo": [
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 6011,
+        "constraint_name": "constraint_601_1",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "400.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "1500.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 6011,
+        "constraint_name": "constraint_601_1",
+        "term_index": 1,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "400.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "1500.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 1,
+        "constraint_id": 6011,
+        "constraint_name": "constraint_601_1",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "400.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "1500.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 1,
+        "constraint_id": 6011,
+        "constraint_name": "constraint_601_1",
+        "term_index": 1,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "400.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "1500.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 6012,
+        "constraint_name": "constraint_601_2",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "200.0",
+        "derived_shape": "cap",
+        "slack_enabled": false,
+        "slack_penalty": null,
+        "slack_penalty_basis": null,
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 1,
+        "constraint_id": 6013,
+        "constraint_name": "constraint_601_3",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=0, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "300.0",
+        "derived_shape": "cap",
+        "slack_enabled": false,
+        "slack_penalty": null,
+        "slack_penalty_basis": null,
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 6021,
+        "constraint_name": "constraint_602_1",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "250.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 1,
+        "constraint_id": 6021,
+        "constraint_name": "constraint_602_1",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "250.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 6022,
+        "constraint_name": "constraint_602_2",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "350.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 1,
+        "constraint_id": 6022,
+        "constraint_name": "constraint_602_2",
+        "term_index": 0,
+        "variable_kind": "thermal_generation",
+        "variable": "thermal_generation(id=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "350.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      }
+    ],
+    "stages": [
+      {
+        "scenario_id": 0,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 0,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 0,
+        "violations": [
+          [
+            6011,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6011,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6021,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 1,
+        "violations": [
+          [
+            6012,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6013,
+            1,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            6022,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "10.0"
+          ],
+          [
+            0,
+            1,
+            "10.0"
+          ]
+        ]
+      }
+    ]
+  },
+  "gated_and_selected": {
+    "echo": [
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 701,
+        "constraint_name": "constraint_701",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "1000000.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": true
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 701,
+        "constraint_name": "constraint_701",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "1000000.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": true
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 702,
+        "constraint_name": "constraint_702",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": true,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 702,
+        "constraint_name": "constraint_702",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": true,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 703,
+        "constraint_name": "constraint_703",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "floor",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": true,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 703,
+        "constraint_name": "constraint_703",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": null,
+        "derived_shape": "floor",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": true,
+        "upper_per_solve": false,
+        "has_active_when": false
+      }
+    ],
+    "stages": [
+      {
+        "scenario_id": 0,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.784485064626106",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 0,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.6939017210031957",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.784485064626106",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            false,
+            null,
+            null
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "800.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "4.676639961111211",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            false,
+            null,
+            null
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "800.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "4.182340470526879",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.9763603503240335",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            false,
+            null,
+            null
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "800.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "5.435702749129532",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            false,
+            null,
+            null
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "800.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "4.676639961111211",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            false,
+            null,
+            null
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "800.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "5.435702749129532",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.3684440539928526",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            false,
+            null,
+            null
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "800.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "5.435702749129532",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.9763603503240335",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.784485064626106",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.9763603503240335",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 0,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.784485064626106",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 1,
+        "violations": [
+          [
+            701,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            702,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            703,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [
+          [
+            701,
+            0,
+            true,
+            null,
+            "1000000.0"
+          ],
+          [
+            702,
+            0,
+            true,
+            null,
+            "600.0"
+          ],
+          [
+            703,
+            0,
+            true,
+            "3.9763603503240335",
+            null
+          ]
+        ],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      }
+    ]
+  },
+  "unit_group": {
+    "echo": [
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 901,
+        "constraint_name": "constraint_901",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, unit_group=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 1,
+        "constraint_id": 901,
+        "constraint_name": "constraint_901",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, unit_group=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 901,
+        "constraint_name": "constraint_901",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, unit_group=1, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      }
+    ],
+    "stages": [
+      {
+        "scenario_id": 0,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 0,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 0,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ],
+          [
+            901,
+            1,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "1000.0"
+          ],
+          [
+            0,
+            1,
+            "999.9999999999998"
+          ],
+          [
+            1,
+            0,
+            "1000.0"
+          ],
+          [
+            1,
+            1,
+            "1000.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 1,
+        "violations": [
+          [
+            901,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "200.0"
+          ],
+          [
+            1,
+            0,
+            "199.99"
+          ]
+        ]
+      }
+    ]
+  },
+  "capacity_as_data": {
+    "echo": [
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 951,
+        "constraint_name": "constraint_951",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 0,
+        "block_id": 0,
+        "constraint_id": 951,
+        "constraint_name": "constraint_951",
+        "term_index": null,
+        "variable_kind": "hydro_availability",
+        "variable": "hydro_availability(id=0, block=all)",
+        "coefficient": null,
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": "50.0",
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 951,
+        "constraint_name": "constraint_951",
+        "term_index": 0,
+        "variable_kind": "hydro_generation",
+        "variable": "hydro_generation(id=0, bus=all, block=all)",
+        "coefficient": "1.0",
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": null,
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      },
+      {
+        "stage_id": 1,
+        "block_id": 0,
+        "constraint_id": 951,
+        "constraint_name": "constraint_951",
+        "term_index": null,
+        "variable_kind": "hydro_availability",
+        "variable": "hydro_availability(id=0, block=all)",
+        "coefficient": null,
+        "bound_lower": null,
+        "bound_upper": "50.0",
+        "derived_shape": "cap",
+        "slack_enabled": true,
+        "slack_penalty": "10000.0",
+        "slack_penalty_basis": "per_hour",
+        "value": "50.0",
+        "lower_per_solve": false,
+        "upper_per_solve": false,
+        "has_active_when": false
+      }
+    ],
+    "stages": [
+      {
+        "scenario_id": 0,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 0,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 1,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 2,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 3,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 4,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 5,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 6,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 0,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      },
+      {
+        "scenario_id": 7,
+        "stage_id": 1,
+        "violations": [
+          [
+            951,
+            0,
+            "0.0",
+            "0.0"
+          ]
+        ],
+        "activation": [],
+        "violation_cost": [
+          [
+            null,
+            "0.0"
+          ]
+        ],
+        "spot_price": [
+          [
+            0,
+            0,
+            "50.0"
+          ]
+        ]
+      }
+    ]
+  }
+}

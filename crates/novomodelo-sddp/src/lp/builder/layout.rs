@@ -30,10 +30,10 @@ use super::hydro_state::{
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
-    GenericConstraintRowEntry, ResolvedTailraceLateral,
+    GenericConstraintRowEntry, ResolvedTailraceLateral, RowOrigin,
 };
 use crate::block_clock::BlockClock;
-use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};
+use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 
 /// Pre-resolved bound, penalty, and factor tables shared across all stages.
@@ -400,8 +400,8 @@ pub(crate) struct ConstraintRows {
     /// matching deposit in [`super::entries`]'s arc-release fill is dropped
     /// there, not misdirected to another row). Length `state.n_buckets`.
     pub(crate) transit_bucket_row_pos: Vec<Option<usize>>,
-    /// Start of generic constraint rows (one per active `(constraint, block)` pair),
-    /// after operational-violation rows.
+    /// Start of the generic-constraint row family
+    /// ([`StageLayout::generic_constraint_rows`]), after operational-violation rows.
     pub(crate) row_generic_start: usize,
     /// Total row count.
     pub(crate) num_rows: usize,
@@ -480,8 +480,8 @@ pub(crate) struct StageLayout<'a> {
     /// Per-hydro effective withdrawal (m³/s, length `n_h`), the owner of what the
     /// water-balance RHS reads; see [`effective_withdrawals`].
     pub(crate) effective_withdrawal_m3s: Vec<f64>,
-    /// Per-row metadata for active generic constraint rows, one per active
-    /// `(constraint, block)` pair in constraint-index-major order.
+    /// Per-row metadata for the generic-constraint row family: the active
+    /// rows in constraint-index-major order.
     pub(crate) generic_constraint_rows: Vec<GenericConstraintRowEntry>,
 }
 
@@ -492,6 +492,8 @@ struct GenericConstraintLayout {
     n_generic_rows: usize,
     n_generic_slack_cols: usize,
     generic_constraint_rows: Vec<GenericConstraintRowEntry>,
+    per_solve_rows: Vec<PerSolveRow>,
+    hard_constraint_ids: Vec<i32>,
 }
 
 /// For each entry of `column_order` (global bucket index `slot`, `(plant, lag)`),
@@ -961,10 +963,11 @@ fn allocate_generic_slack_cols(
 /// per-block columns. Classifying it block-independent would collapse a multi-block
 /// expression to one mis-priced stage-level row reading upstream columns at a single
 /// arbitrary block, silently dropping the other blocks. [`VariableRef::PumpingFlow`] /
-/// [`VariableRef::PumpingPower`] are block-level for the same reason. The stub kinds
-/// (withdrawal, contracts, non-controllable) resolve to no columns and are
-/// conservatively block-level, so only *provably* block-independent variables enable
-/// the single-row collapse.
+/// [`VariableRef::PumpingPower`], the contract kinds and
+/// [`VariableRef::NonControllableGeneration`] are block-level for the same reason.
+/// A kind that resolves to no column (withdrawal, curtailment) is conservatively
+/// block-level, so only *provably* block-independent variables enable the single-row
+/// collapse.
 ///
 /// The match is exhaustive (no wildcard): a future variant forces a compile error
 /// here, defaulting nothing to block-independent by omission.
@@ -999,7 +1002,9 @@ pub(super) fn variable_ref_is_block_independent(var_ref: &VariableRef) -> bool {
         | VariableRef::ContractImport { .. }
         | VariableRef::ContractExport { .. }
         | VariableRef::NonControllableGeneration { .. }
-        | VariableRef::NonControllableCurtailment { .. } => false,
+        | VariableRef::NonControllableCurtailment { .. }
+        | VariableRef::HydroAvailability { .. }
+        | VariableRef::HydroGroupGeneration { .. } => false,
     }
 }
 
@@ -1025,20 +1030,6 @@ fn constraint_collapses_to_stage_level(
 ) -> bool {
     expression_is_block_independent(&constraint.expression)
         && !coefficients.is_block_varying(constraint_idx)
-}
-
-/// Fold a generic-constraint endpoint's parquet base with its resolved bound
-/// remainder: a present remainder SHIFTS the base rather than replacing it, so
-/// `(Some(base), Some(remainder))` folds to `base + remainder`, never `remainder`
-/// alone. A `(None, None)` endpoint is untargeted and stays `None` (the open LP
-/// direction), never shifted.
-fn fold_endpoint(base: Option<f64>, remainder: Option<f64>) -> Option<f64> {
-    match (base, remainder) {
-        (None, None) => None,
-        (Some(base), None) => Some(base),
-        (None, Some(remainder)) => Some(remainder),
-        (Some(base), Some(remainder)) => Some(base + remainder),
-    }
 }
 
 /// Sum of `resolved_coeff * V_lo` over `constraint`'s `HydroUsefulVolume{Initial,
@@ -1090,17 +1081,21 @@ fn useful_volume_bound_shift(
 ///
 /// One [`GenericConstraintRowEntry`] per active `(constraint, block)` pair, except
 /// a `block_id = None` bound that [`constraint_collapses_to_stage_level`] collapses
-/// to a single stage-level row.
+/// to a single stage-level row. A row whose bounds each solve writes is also
+/// listed, at its row from `row_generic_start`.
 fn enumerate_generic_constraint_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
     stage_idx: usize,
     n_blks: usize,
+    row_generic_start: usize,
     col_generic_slack_start: usize,
 ) -> GenericConstraintLayout {
     let mut n_generic_rows: usize = 0;
     let mut n_generic_slack_cols: usize = 0;
     let mut generic_constraint_rows: Vec<GenericConstraintRowEntry> = Vec::new();
+    let mut per_solve_rows: Vec<PerSolveRow> = Vec::new();
+    let mut hard_constraint_ids: Vec<i32> = Vec::new();
     let coefficients = ctx.resolved.resolved_generic_coefficients;
 
     for (constraint_idx, constraint) in ctx.generic_constraints.iter().enumerate() {
@@ -1119,6 +1114,7 @@ fn enumerate_generic_constraint_rows(
 
         let collapse_stage_level =
             constraint_collapses_to_stage_level(constraint, constraint_idx, coefficients);
+        let first_row = generic_constraint_rows.len();
 
         for entry in bound_entries {
             #[expect(
@@ -1133,29 +1129,36 @@ fn enumerate_generic_constraint_rows(
             for block_idx in block_start..block_start + block_count {
                 // The folded pair drives both the row bound and, below, the
                 // two-sided slack shape.
-                let mut effective_lower = fold_endpoint(
+                let endpoints = coefficients.endpoints(
+                    constraint_idx,
+                    stage_idx,
+                    block_idx,
                     entry.bound_lower,
-                    coefficients.bound_value(
-                        constraint_idx,
-                        BoundSide::Lower,
-                        stage_idx,
-                        block_idx,
-                    ),
-                );
-                let mut effective_upper = fold_endpoint(
                     entry.bound_upper,
-                    coefficients.bound_value(
-                        constraint_idx,
-                        BoundSide::Upper,
-                        stage_idx,
-                        block_idx,
-                    ),
                 );
-                if let Some(shift) =
-                    useful_volume_bound_shift(constraint, constraint_idx, ctx, stage_idx, block_idx)
-                {
+                let (mut effective_lower, mut effective_upper) = (endpoints.lower, endpoints.upper);
+                let volume_shift = useful_volume_bound_shift(
+                    constraint,
+                    constraint_idx,
+                    ctx,
+                    stage_idx,
+                    block_idx,
+                );
+                if let Some(shift) = volume_shift {
                     effective_lower = effective_lower.map(|v| v + shift);
                     effective_upper = effective_upper.map(|v| v + shift);
+                }
+                if endpoints.per_solve {
+                    per_solve_rows.push(PerSolveRow {
+                        row: row_generic_start + generic_constraint_rows.len(),
+                        constraint_idx,
+                        constraint_id: constraint.id.0,
+                        block_idx,
+                        is_stage_level,
+                        base_lower: entry.bound_lower,
+                        base_upper: entry.bound_upper,
+                        volume_shift,
+                    });
                 }
                 let (slack_plus_col, slack_minus_col) = allocate_generic_slack_cols(
                     constraint.slack,
@@ -1166,7 +1169,7 @@ fn enumerate_generic_constraint_rows(
                 );
                 n_generic_rows += 1;
                 generic_constraint_rows.push(GenericConstraintRowEntry {
-                    constraint_idx,
+                    origin: RowOrigin::Generic { constraint_idx },
                     entity_id: constraint.id.0,
                     block_idx,
                     is_stage_level,
@@ -1178,12 +1181,18 @@ fn enumerate_generic_constraint_rows(
                 });
             }
         }
+        if constraint.slack.is_none() && generic_constraint_rows.len() > first_row {
+            hard_constraint_ids.push(constraint.id.0);
+        }
     }
+    hard_constraint_ids.sort_unstable();
 
     GenericConstraintLayout {
         n_generic_rows,
         n_generic_slack_cols,
         generic_constraint_rows,
+        per_solve_rows,
+        hard_constraint_ids,
     }
 }
 
@@ -1326,7 +1335,7 @@ fn allocate_evaporation(
     (evap_hydro_indices, evap_indices)
 }
 
-/// Read the slack-column start, enumerate the active generic-constraint rows
+/// Read the row and slack-column starts, enumerate the active generic-constraint rows
 /// and their slack columns, then allocate the generic slack columns and the
 /// generic rows — still last in each of their respective cursor chains.
 fn allocate_generic_constraints(
@@ -1337,9 +1346,8 @@ fn allocate_generic_constraints(
     stage_idx: usize,
     n_blks: usize,
 ) -> (GenericConstraintLayout, Range<usize>) {
-    let col_generic_slack_start = col.pos();
     let generic =
-        enumerate_generic_constraint_rows(ctx, stage, stage_idx, n_blks, col_generic_slack_start);
+        enumerate_generic_constraint_rows(ctx, stage, stage_idx, n_blks, row.pos(), col.pos());
     col.alloc(generic.n_generic_slack_cols);
     let generic_rows = row.alloc(generic.n_generic_rows);
     (generic, generic_rows)
@@ -1384,6 +1392,8 @@ impl StageGeometry {
             fpha_slack: 0..0,
             plant_max_turbine: 0..0,
             plant_max_generation: 0..0,
+            per_solve_rows: Vec::new(),
+            hard_constraint_ids: Vec::new(),
             n_blks,
             storage_internal_start: 0,
             block_mode,
@@ -1532,6 +1542,8 @@ impl<'a> StageLayout<'a> {
 
         let (generic, generic_rows) =
             allocate_generic_constraints(&mut col, &mut row, ctx, stage, stage_idx, n_blks);
+        geometry.per_solve_rows = generic.per_solve_rows;
+        geometry.hard_constraint_ids = generic.hard_constraint_ids;
 
         // σ_fill, σ^{v-}, then `fpha_slack` close the column chain; `fpha_slack` last
         // (sized by FPHA cell × block, empty without FPHA) so it shifts no other
@@ -2014,6 +2026,26 @@ impl StageLayout<'_> {
     }
 }
 
+/// A generic-constraint row whose bounds each solve writes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerSolveRow {
+    /// Row index in this stage's LP.
+    pub row: usize,
+    /// Position in `System::generic_constraints()`.
+    pub constraint_idx: usize,
+    pub constraint_id: i32,
+    /// `0` on a stage-level row.
+    pub block_idx: usize,
+    pub is_stage_level: bool,
+    /// Lower endpoint the bounds table gives.
+    pub base_lower: Option<f64>,
+    /// Upper endpoint the bounds table gives.
+    pub base_upper: Option<f64>,
+    /// Useful-volume shift of the row; `None`, never `0.0`, when absent, since
+    /// adding `0.0` turns `-0.0` into `+0.0`.
+    pub volume_shift: Option<f64>,
+}
+
 /// Per-stage equipment geometry for simulation extraction: the stage-correct
 /// column/row `Range`s, identity lists, and block count for every block-major
 /// family, each computed from **this** stage's `StageLayout`.
@@ -2128,6 +2160,12 @@ pub struct StageGeometry {
     pub plant_max_turbine: Range<usize>,
     /// Hard plant max-generation row range (one row per plant-cap hydro per block).
     pub plant_max_generation: Range<usize>,
+    /// Generic-constraint rows whose bounds each solve writes, in ascending
+    /// `row` order.
+    pub per_solve_rows: Vec<PerSolveRow>,
+    /// Ids of the generic constraints with a row without slack at this stage, ascending: the
+    /// candidates an infeasible stage LP is reported with.
+    pub hard_constraint_ids: Vec<i32>,
     /// Number of operating blocks (K) at this stage — the block-major stride for
     /// every equipment family.
     pub n_blks: usize,
@@ -2572,5 +2610,224 @@ mod collapse_stage_level_tests {
                 + ScalarExpr::literal(0.5) * ScalarExpr::param(EntityId(42)),
         );
         assert!(!collapses(&constraint));
+    }
+}
+
+#[cfg(test)]
+mod per_solve_row_tests {
+    use std::collections::HashMap;
+
+    use novomodelo_core::{
+        Block, ConstraintExpression, EntityId, GenericConstraint, PenaltyBasis,
+        ResolvedGenericConstraintBounds, ResolvedHydroUnitGroupBounds, ScalarExpr, SlackConfig,
+        StageId,
+    };
+    use novomodelo_io::constraints::ScenarioLayer;
+    use novomodelo_io::constraints::scenario::DataAtom;
+
+    use super::{PerSolveRow, StageLayout};
+    use crate::policy::resolved_generic_coefficients::{
+        LoadBuses, ResolvedGenericCoefficients, ScenarioSources,
+    };
+    use crate::resolved_parameters::ResolvedParameters;
+    use crate::test_support::builders::{self, StageSpec};
+    use crate::test_support::ctx_fixture::CtxFixture;
+
+    /// derived: the upper bound of constraint 5 reads the load of bus 1 at the row's block, so it
+    /// holds a row per block, each keeping the table's lower 5 and an open upper, two-sided for
+    /// its slack; constraint 6, bounded by the table alone, collapses to one row and is not
+    /// listed.
+    #[test]
+    fn a_per_solve_side_stays_present_and_open_in_the_template() {
+        let constraint = |id: i32, bound_upper| GenericConstraint {
+            id: EntityId(id),
+            name: format!("c{id}"),
+            description: None,
+            expression: ConstraintExpression { terms: vec![] },
+            slack: Some(SlackConfig {
+                penalty: 10.0,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
+            bound_lower: None,
+            bound_upper,
+        };
+        let constraints = [
+            constraint(5, Some(ScalarExpr::param(EntityId(900)))),
+            constraint(6, None),
+        ];
+        let bus_1 = [EntityId(1)];
+        let owner = ResolvedGenericCoefficients::build_with_scenario(
+            &constraints,
+            &ScenarioSources {
+                layer: &ScenarioLayer {
+                    data_atoms: vec![(
+                        EntityId(900),
+                        DataAtom::BusLoadValue {
+                            bus_id: EntityId(1),
+                            block_id: None,
+                        },
+                    )],
+                    ..ScenarioLayer::default()
+                },
+                hydros: &[],
+                group_bounds: &ResolvedHydroUnitGroupBounds::default(),
+                loads: LoadBuses {
+                    buses_with_load: &bus_1,
+                    noise_members: &bus_1,
+                    bus_ids: &bus_1,
+                },
+            },
+            &ResolvedParameters::default(),
+            &[StageId(0)],
+            &[2],
+        )
+        .expect("the load of bus 1 resolves per solve");
+        let mut fixture = CtxFixture::default();
+        let id_map: HashMap<i32, usize> = [(5, 0), (6, 1)].into_iter().collect();
+        fixture.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
+            &id_map,
+            [
+                (5, 0, None, Some(5.0), None),
+                (6, 0, None, Some(1.0), Some(2.0)),
+            ]
+            .into_iter(),
+        );
+        let mut ctx = fixture.ctx();
+        ctx.generic_constraints = &constraints;
+        ctx.resolved.resolved_generic_coefficients = &owner;
+        let block = |index: usize| Block {
+            index,
+            name: format!("B{index}"),
+            duration_hours: 372.0,
+        };
+        let stage = builders::make_stage(
+            0,
+            StageSpec {
+                blocks: vec![block(0), block(1)],
+                ..StageSpec::default()
+            },
+        );
+
+        let layout = StageLayout::new(&ctx, &stage, 0);
+
+        let rows = &layout.generic_constraint_rows;
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.entity_id, row.block_idx, row.is_stage_level))
+                .collect::<Vec<_>>(),
+            [(5, 0, false), (5, 1, false), (6, 0, true)]
+        );
+        for row in &rows[..2] {
+            assert_eq!(row.bound_lower, Some(5.0));
+            assert_eq!(row.bound_upper, Some(f64::INFINITY));
+            assert!(row.slack_plus_col.is_some() && row.slack_minus_col.is_some());
+        }
+        assert_eq!(
+            (rows[2].bound_lower, rows[2].bound_upper),
+            (Some(1.0), Some(2.0))
+        );
+        let start = layout.rows.row_generic_start;
+        let listed = |block_idx: usize| PerSolveRow {
+            row: start + block_idx,
+            constraint_idx: 0,
+            constraint_id: 5,
+            block_idx,
+            is_stage_level: false,
+            base_lower: Some(5.0),
+            base_upper: None,
+            volume_shift: None,
+        };
+        assert_eq!(layout.geometry.per_solve_rows, [listed(0), listed(1)]);
+    }
+
+    fn constraint(id: i32, slack: Option<SlackConfig>) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(id),
+            name: format!("c{id}"),
+            description: None,
+            expression: ConstraintExpression { terms: vec![] },
+            slack,
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
+    /// `(id, stage, block, lower, upper)`.
+    type BoundsRow = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
+
+    /// The `(id, has no slack)` of each generic row and the `hard_constraint_ids` of the two-block
+    /// stage-0 layout of `constraints`, in that order, under the bounds rows `bounds`.
+    fn rows_and_hard_ids(
+        constraints: &[GenericConstraint],
+        bounds: &[BoundsRow],
+    ) -> (Vec<(i32, bool)>, Vec<i32>) {
+        let owner = ResolvedGenericCoefficients::build(
+            constraints,
+            &ResolvedParameters::default(),
+            &[StageId(0)],
+            &[2],
+        )
+        .expect("the constraints read no parameter");
+        let mut fixture = CtxFixture::default();
+        let id_map: HashMap<i32, usize> = constraints
+            .iter()
+            .enumerate()
+            .map(|(idx, constraint)| (constraint.id.0, idx))
+            .collect();
+        fixture.resolved_generic_bounds =
+            ResolvedGenericConstraintBounds::new(&id_map, bounds.iter().copied());
+        let mut ctx = fixture.ctx();
+        ctx.generic_constraints = constraints;
+        ctx.resolved.resolved_generic_coefficients = &owner;
+        let block = |index: usize| Block {
+            index,
+            name: format!("B{index}"),
+            duration_hours: 372.0,
+        };
+        let stage = builders::make_stage(
+            0,
+            StageSpec {
+                blocks: vec![block(0), block(1)],
+                ..StageSpec::default()
+            },
+        );
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let rows = layout
+            .generic_constraint_rows
+            .iter()
+            .map(|row| (row.entity_id, row.slack.is_none()))
+            .collect();
+        (rows, layout.geometry.hard_constraint_ids)
+    }
+
+    /// derived: constraint 5 has no slack and a row at each of the two blocks, constraint 3 has
+    /// slack, so the stage lists 5 once and not 3.
+    #[test]
+    fn the_geometry_lists_the_generic_constraints_without_slack() {
+        let soft = SlackConfig {
+            penalty: 10.0,
+            penalty_basis: PenaltyBasis::PerHour,
+        };
+        let (rows, hard_ids) = rows_and_hard_ids(
+            &[constraint(5, None), constraint(3, Some(soft))],
+            &[
+                (5, 0, Some(0), Some(1.0), None),
+                (5, 0, Some(1), Some(1.0), None),
+                (3, 0, None, Some(1.0), Some(2.0)),
+            ],
+        );
+
+        assert_eq!(rows, [(5, true), (5, true), (3, false)]);
+        assert_eq!(hard_ids, [5]);
+    }
+
+    #[test]
+    fn the_generic_constraints_without_slack_are_listed_in_ascending_id_order() {
+        let (_, hard_ids) = rows_and_hard_ids(
+            &[constraint(9, None), constraint(4, None)],
+            &[(9, 0, None, Some(1.0), None), (4, 0, None, Some(1.0), None)],
+        );
+
+        assert_eq!(hard_ids, [4, 9]);
     }
 }

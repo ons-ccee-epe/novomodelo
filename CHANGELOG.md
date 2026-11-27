@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Case files
+
+- `active_when` in `constraints/generic_constraints.json`: a condition tested
+  per stage, block and scenario; where it is false the constraint does not
+  hold. It reads only data, compared with `<`, `<=`, `>`, `>=` or `==` and
+  joined by `&` and `|`; a condition reading an LP variable is refused.
+- `constraints/generic_constraints.json` expressions read scenario data:
+  `bus_load_value(n)` and `bus_load_value(n, k)` are the load of bus `n`, and
+  `if(cond, a, b)` picks by a data-only condition. Reading a bus
+  with no load, or a block its stage does not have, is refused.
+- `hydro_availability(h)` in `constraints/generic_constraints.json`: the sum of
+  the maximum generation of plant `h`'s unit groups at each stage and block,
+  read as data into the constraint's bounds. A condition may not read it.
+- `hydro_generation(h, unit_group=g)` in `constraints/generic_constraints.json`:
+  the generation of unit group `g` of plant `h`. A group sharing its bus with
+  another group of the plant is refused.
+- `line_flow(source_bus=, target_bus=)` in
+  `constraints/generic_constraints.json`: the flow on the line from
+  `source_bus` to `target_bus`.
+
+#### Results and outputs
+
+- `simulation/generic_activation/`: for each generic constraint with
+  `active_when` or a bound that reads scenario data, whether it holds at each
+  stage, block and scenario, and the bounds it took.
+- A stage LP found infeasible logs the ids of its generic constraints without
+  slack.
+
+### Changed
+
+- **BREAKING:** `generic_constraints/resolved_echo.parquet` gains `value`,
+  `lower_per_solve`, `upper_per_solve` and `has_active_when` after
+  `slack_penalty_basis`. Update readers of the file.
+- A `constraints/generic_constraints.json` expression without a relational
+  operator may have a constant and data part, which shifts each endpoint
+  `constraints/generic_constraint_bounds.parquet` gives. It adds none.
+
+### Fixed
+
+- **BREAKING:** a term of `constraints/generic_constraints.json` naming a block
+  its stage does not have is refused at load. It used to constrain another
+  variable.
+- `non_controllable_generation(...)` in `constraints/generic_constraints.json`
+  had no effect on the dispatch; it now constrains the plant's generation.
+  Results change for cases that use it.
+
 ## [0.22.0] - 2026-11-24
 
 ### Added

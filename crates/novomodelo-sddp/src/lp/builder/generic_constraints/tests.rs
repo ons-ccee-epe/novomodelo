@@ -32,7 +32,7 @@ use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
     ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment, EnergyContract,
     EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds,
-    LinearTerm, PumpingBlockBounds, PumpingStation, ResolvedBounds,
+    LinearTerm, NonControllableSource, PumpingBlockBounds, PumpingStation, ResolvedBounds,
     ResolvedGenericConstraintBounds, Stage, StageStateConfig, Thermal, ThermalBlockBounds,
     VariableRef,
 };
@@ -1154,6 +1154,134 @@ fn resolve_generation_bus_selector_maps_to_the_cells_fpha_column() {
     );
 }
 
+// ── HydroGroupGeneration tests ────────────────────────────────────────────
+
+/// The padding plant of [`bus_selector_hydros`] plus a plant whose unit groups 0 and 1
+/// sit on buses 10 and 20 (cells 1 and 2), K=3 blocks.
+fn group_generation_fixture(
+    generation_model: HydroGenerationModel,
+    production_models: ProductionModelSet,
+) -> ResolverFixture {
+    let plant = geometry_hydro_with_groups(
+        1,
+        vec![
+            make_unit_group(EntityId(0), EntityId(10), 0.0, 100.0, 0.0, 50.0),
+            make_unit_group(EntityId(1), EntityId(20), 0.0, 200.0, 0.0, 80.0),
+        ],
+        generation_model,
+    );
+    ResolverFixture::new(
+        vec![geometry_hydro(0), plant],
+        vec![],
+        vec![],
+        vec![],
+        3,
+        production_models,
+        EvaporationModelSet::new(vec![EvaporationModel::None; 2]),
+        vec![],
+        vec![],
+        vec![],
+    )
+}
+
+/// `HydroGroupGeneration` of group 1 is the `HydroGeneration` of the cell on group 1's
+/// bus (20): that cell's turbine column at the plant's `ρ = 0.9`.
+#[test]
+fn group_generation_on_constant_productivity_is_the_generation_of_its_bus_cell() {
+    let mut fx = group_generation_fixture(
+        HydroGenerationModel::ConstantProductivity,
+        constant_productivity_models(2, 0.9),
+    );
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    let hydro_id = ctx.hydros[1].id;
+
+    let group = call(
+        VariableRef::HydroGroupGeneration {
+            hydro_id,
+            group_id: EntityId(1),
+            block_id: None,
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+    let cell = call(
+        VariableRef::HydroGeneration {
+            hydro_id,
+            block_id: None,
+            bus_id: Some(EntityId(20)),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(group, cell);
+    assert_eq!(
+        group,
+        vec![(
+            layout.geometry.turbine.start + 2 * layout.clock.n_blks() + 0,
+            0.9
+        )]
+    );
+}
+
+/// On an FPHA plant, group 1 at an explicit block 1 resolves to the generation column
+/// of the plant's second FPHA cell (bus 20) at block 1, whatever the caller's block.
+#[test]
+fn group_generation_on_fpha_is_the_generation_column_of_its_bus_cell_at_its_block() {
+    let mut fx = group_generation_fixture(
+        HydroGenerationModel::Fpha,
+        fpha_bus_selector_production_models(),
+    );
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    let group = call(
+        VariableRef::HydroGroupGeneration {
+            hydro_id: ctx.hydros[1].id,
+            group_id: EntityId(1),
+            block_id: Some(1),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(
+        group,
+        vec![(
+            layout.geometry.generation.start + 1 * layout.clock.n_blks() + 1,
+            1.0
+        )]
+    );
+}
+
+#[test]
+fn group_generation_of_an_unknown_group_or_plant_resolves_to_nothing() {
+    let mut fx = group_generation_fixture(
+        HydroGenerationModel::ConstantProductivity,
+        constant_productivity_models(2, 0.9),
+    );
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    for (hydro_id, group_id) in [(ctx.hydros[1].id, EntityId(9)), (EntityId(99), EntityId(1))] {
+        let result = call(
+            VariableRef::HydroGroupGeneration {
+                hydro_id,
+                group_id,
+                block_id: None,
+            },
+            0,
+            &ctx,
+            &layout,
+        );
+        assert!(result.is_empty(), "{hydro_id:?}/{group_id:?}: {result:?}");
+    }
+}
+
 // ── HydroEvaporation tests ────────────────────────────────────────────────
 
 /// Dedicated evap-hydro geom (evap hydro at pos 0):
@@ -1456,6 +1584,7 @@ fn pumping_no_stations_returns_empty() {
         ctx.buses.iter().map(|b| b.id),
         [],
         ctx.contracts.iter().map(|c| c.id),
+        ctx.non_controllable_sources.iter().map(|n| n.id),
     );
     ctx.positions = &positions_no_stations;
 
@@ -1582,17 +1711,70 @@ fn contract_unknown_id_returns_empty() {
     assert!(result.is_empty());
 }
 
-// ── Stub entity tests ─────────────────────────────────────────────────────
+// ── NonControllableGeneration tests ───────────────────────────────────────
+
+/// N=0 hydros, B=1 bus, K=2 blocks, two non-controllable sources: id 3 at
+/// position 0 and id 7 at position 1.
+fn ncs_fixture() -> ResolverFixture {
+    let mut fx = ResolverFixture::new(
+        vec![],
+        vec![],
+        vec![],
+        vec![make_bus(100, 1)],
+        2,
+        ProductionModelSet::new(vec![], &[], 1),
+        EvaporationModelSet::new(vec![]),
+        vec![],
+        vec![],
+        vec![],
+    );
+    let source = |id| NonControllableSource {
+        id: EntityId(id),
+        name: String::new(),
+        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+        bus_id: EntityId(100),
+        entry_stage_id: None,
+        exit_stage_id: None,
+        max_generation_mw: 0.0,
+        allow_curtailment: false,
+        curtailment_cost: 0.0,
+    };
+    fx.base.non_controllable_sources = vec![source(3), source(7)];
+    fx
+}
+
+/// Source 7 is NCS position 1 of a K=2 stage: `ncs_start + 1*2 + blk`, at the
+/// current block for `block_id = None` and at block 0 for `Some(0)`.
+#[test]
+fn non_controllable_generation_resolves_to_its_generation_column() {
+    let mut fx = ncs_fixture();
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    let ncs_start = layout.geometry.ncs_generation.start;
+    let source_7 = |block_id| VariableRef::NonControllableGeneration {
+        source_id: EntityId(7),
+        block_id,
+    };
+
+    assert_eq!(
+        call(source_7(None), 1, &ctx, &layout),
+        vec![(ncs_start + 1 * 2 + 1, 1.0)]
+    );
+    assert_eq!(
+        call(source_7(Some(0)), 1, &ctx, &layout),
+        vec![(ncs_start + 1 * 2 + 0, 1.0)]
+    );
+}
 
 #[test]
-fn non_controllable_generation_returns_empty() {
-    let mut fx = default_fixture();
+fn unknown_non_controllable_source_resolves_to_nothing() {
+    let mut fx = ncs_fixture();
     let ctx = fx.base.ctx();
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
 
     let result = call(
         VariableRef::NonControllableGeneration {
-            source_id: EntityId(7),
+            source_id: EntityId(999),
             block_id: None,
         },
         0,
@@ -1602,6 +1784,8 @@ fn non_controllable_generation_returns_empty() {
 
     assert!(result.is_empty());
 }
+
+// ── Stub entity tests ─────────────────────────────────────────────────────
 
 /// `HydroWithdrawal` resolves to an empty vec: withdrawal carries no LP
 /// decision column (a schedule fixed by bounds, not a decision variable), so
@@ -1632,10 +1816,10 @@ fn hydro_withdrawal_returns_empty() {
     );
 }
 
-/// `NonControllableCurtailment` resolves to an empty vec: non-controllable
-/// sources carry no decision column, so a generic-constraint term referencing
-/// curtailment contributes no `(column, coefficient)` pair — the same
-/// deliberate stub contract as `NonControllableGeneration`. `EntityId(999)` is
+/// `NonControllableCurtailment` resolves to an empty vec: curtailment has no
+/// decision column of its own, so a generic-constraint term referencing it
+/// contributes no `(column, coefficient)` pair — the same deliberate stub
+/// contract as `HydroWithdrawal`. `EntityId(999)` is
 /// in no position map, confirming the empty return is unconditional, not a
 /// missing-id fall-through.
 #[test]

@@ -70,6 +70,7 @@ impl SolveInputs {
             cumulative_discount_factors: self.stage_data.time_value.cumulative_discount_factors(),
             stage_lag_transitions: &self.stage_data.stage_lag_transitions,
             noise_group_ids: &self.stage_data.noise_group_ids,
+            generic_rows: &self.stage_data.generic_rows,
         }
     }
 

@@ -6,12 +6,26 @@
 //! # Syntax
 //!
 //! An operand is a number, a `@name` reference to a scalar parameter or a named expression, a
-//! catalog variable call such as `hydro_generation(0)` or `hydro_turbined(5, bus=2)`, or a
-//! parenthesized expression. A number is a finite, non-negative literal; a sign is a unary
-//! operator. The operators are `+`, `-`, `*`, `/` and the unary signs `+` and `-`: a unary sign
-//! binds tightest, `*` and `/` bind tighter than `+` and `-`, and every binary operator is
-//! left-associative. An expression carries at most one relational operator, `<=`, `>=` or
-//! `==`, outside any parentheses.
+//! catalog variable call such as `hydro_generation(0)`, `hydro_turbined(5, bus=2)`,
+//! `hydro_generation(5, unit_group=2)` or `line_flow(source_bus=3, target_bus=7)`, a conditional
+//! `if(cond, X, Y)`, or a parenthesized expression. A number is a finite, non-negative literal; a
+//! sign is a unary operator. The operators are `+`, `-`, `*`, `/` and the unary signs `+` and `-`:
+//! a unary sign binds tightest, `*` and `/` bind tighter than `+` and `-`, and every binary
+//! operator is left-associative. An expression carries at most one relational operator, `<=`, `>=`
+//! or `==`, outside any parentheses.
+//!
+//! # Conditions
+//!
+//! A condition is a disjunction of conjunctions of comparisons. A comparison relates two
+//! expressions with `<`, `<=`, `>`, `>=` or `==` and is neither parenthesized nor chained. `&`
+//! joins comparisons and binds tighter than `|`, and both fold to the left, so
+//! `@a <= 1 & @b <= 2 | @c <= 3` reads as `(@a <= 1 & @b <= 2) | @c <= 3`. `&`, `|`, `<` and
+//! `>` are not part of the linear-expression grammar and are rejected there, except in the
+//! condition of `if()`.
+//!
+//! `if(cond, X, Y)` takes the value of `X` when the condition holds and of `Y` otherwise. It
+//! takes exactly three arguments: a condition and two expressions. Parsing only builds the node.
+//! A constraint lowers it to a selector; the body of a scalar parameter rejects it.
 //!
 //! # Typing
 //!
@@ -29,15 +43,27 @@
 //!
 //! # Named expressions
 //!
-//! A file's `expressions` array binds names to linear forms, each reading at least one LP
-//! variable. A `@name` reference lowers to its body's form, each body at most once per
-//! constraint, and a reference cycle is rejected at load.
+//! A file's `expressions` array binds names to expressions. A `@name` reference lowers to its
+//! body's form, each body at most once per constraint, and a reference cycle is rejected at
+//! load. A body that reads no LP variable is data: a reference to it lowers as its body written
+//! in place, so its value moves into the bounds.
+//!
+//! # Scenario data
+//!
+//! A constraint scope resolves data terms. A data term such as `bus_load_value(1)` is a scalar
+//! parameter standing for a scenario value. The body of a scalar parameter reads no scenario
+//! data.
+//!
+//! `if(cond, X, Y)` lowers to a selector, a scalar parameter numbered by the caller that stands
+//! for the branch the condition picks. The condition reads only data. A branch that reads LP
+//! variables must read the same ones as the other, so a selector replaces only a coefficient or
+//! a constant and the structure of the constraint does not depend on the condition.
 //!
 //! # Budgets
 //!
-//! Nesting of parentheses and unary operators is capped at [`parser::MAX_NESTING_DEPTH`]. A
-//! form whose programs would hold more than [`lower::MAX_INLINED_OPS`] operations is refused,
-//! which bounds named-expression expansion.
+//! Nesting of parentheses, unary operators, `if()` calls and chained `&`/`|` connectives is
+//! capped at [`parser::MAX_NESTING_DEPTH`]. A form whose programs would hold more than
+//! [`lower::MAX_INLINED_OPS`] operations is refused, which bounds named-expression expansion.
 
 use std::ops::Range;
 

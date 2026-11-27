@@ -24,9 +24,13 @@ pub(crate) enum TokenKind {
     Comma,
     /// The `=` of a named argument such as `bus=`.
     Equals,
+    Lt,
+    Gt,
     Le,
     Ge,
     EqEq,
+    Amp,
+    Pipe,
     /// A finite, non-negative literal; the lexer never emits a sign.
     Number(f64),
     Ident(String),
@@ -53,29 +57,11 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Diagnostic> {
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             ',' => TokenKind::Comma,
-            '=' => {
-                if chars.next_if(|&(_, next)| next == '=').is_some() {
-                    TokenKind::EqEq
-                } else {
-                    TokenKind::Equals
-                }
-            }
-            '<' | '>' => {
-                if chars.next_if(|&(_, next)| next == '=').is_none() {
-                    return Err(Diagnostic {
-                        span: start..start + c.len_utf8(),
-                        message: format!(
-                            "bare '{c}' at position {} is not a valid operator; use '{c}=' for a relational bound",
-                            char_position(src, start)
-                        ),
-                    });
-                }
-                if c == '<' {
-                    TokenKind::Le
-                } else {
-                    TokenKind::Ge
-                }
-            }
+            '=' => eq_variant(&mut chars, TokenKind::EqEq, TokenKind::Equals),
+            '<' => eq_variant(&mut chars, TokenKind::Le, TokenKind::Lt),
+            '>' => eq_variant(&mut chars, TokenKind::Ge, TokenKind::Gt),
+            '&' => TokenKind::Amp,
+            '|' => TokenKind::Pipe,
             '@' => {
                 let Some((_, first)) = chars.next_if(|&(_, next)| is_ident_start(next)) else {
                     return Err(Diagnostic {
@@ -141,6 +127,14 @@ fn is_ident_start(c: char) -> bool {
 
 fn is_ident_continue(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+fn eq_variant(chars: &mut Chars<'_>, with_eq: TokenKind, without_eq: TokenKind) -> TokenKind {
+    if chars.next_if(|&(_, next)| next == '=').is_some() {
+        with_eq
+    } else {
+        without_eq
+    }
 }
 
 /// Collects `first` and every following character `continues` accepts given the text so far.
@@ -255,6 +249,66 @@ mod tests {
     }
 
     #[test]
+    fn tokenize_recognises_strict_comparisons_and_boolean_connectives() {
+        let ident = |name: &str| TokenKind::Ident(name.to_owned());
+        assert_eq!(kinds("a < b"), vec![ident("a"), TokenKind::Lt, ident("b")]);
+        assert_eq!(kinds("a > b"), vec![ident("a"), TokenKind::Gt, ident("b")]);
+        assert_eq!(
+            kinds("a & b | c"),
+            vec![
+                ident("a"),
+                TokenKind::Amp,
+                ident("b"),
+                TokenKind::Pipe,
+                ident("c")
+            ]
+        );
+        assert_eq!(
+            kinds("82000 < load & load <= 95000"),
+            vec![
+                TokenKind::Number(82000.0),
+                TokenKind::Lt,
+                ident("load"),
+                TokenKind::Amp,
+                ident("load"),
+                TokenKind::Le,
+                TokenKind::Number(95000.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_disambiguates_strict_from_non_strict_without_whitespace() {
+        let ident = |name: &str| TokenKind::Ident(name.to_owned());
+        for (src, op) in [
+            ("x<1", TokenKind::Lt),
+            ("x<=1", TokenKind::Le),
+            ("x>1", TokenKind::Gt),
+            ("x>=1", TokenKind::Ge),
+        ] {
+            assert_eq!(
+                kinds(src),
+                vec![ident("x"), op, TokenKind::Number(1.0)],
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tokenize_emits_byte_spans_for_strict_comparisons_and_connectives() {
+        let src = "ç<=1 < 2 > 3 & 4|5";
+        let fragments: Vec<&str> = tokenize(src)
+            .unwrap()
+            .iter()
+            .map(|token| src.get(token.span.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            fragments,
+            ["ç", "<=", "1", "<", "2", ">", "3", "&", "4", "|", "5"]
+        );
+    }
+
+    #[test]
     fn tokenize_number_forms() {
         for (src, expected) in [
             ("2", 2.0_f64),
@@ -288,16 +342,6 @@ mod tests {
     #[test]
     fn tokenize_keeps_the_lexical_messages() {
         for (src, fragment, message) in [
-            (
-                "x < 3",
-                "<",
-                "bare '<' at position 2 is not a valid operator; use '<=' for a relational bound",
-            ),
-            (
-                "vazão > 3",
-                ">",
-                "bare '>' at position 6 is not a valid operator; use '>=' for a relational bound",
-            ),
             (
                 "ação + @",
                 "@",

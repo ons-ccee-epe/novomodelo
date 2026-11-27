@@ -7,13 +7,15 @@ use crate::lp::indexer::{
 /// Pre-allocated row-bound and column-bound patch arrays for one SDDP stage LP solve.
 ///
 /// Reused across all iterations. The row-bound region (`indices`/`lower`/`upper`,
-/// length `M*B + R`) holds only the load and inflow patches; state
-/// fixing (storage, travel-time buckets, anticipated state) is applied
-/// exclusively via column bounds and lives in the column-bound region
-/// (`col_indices`/`col_lower`/`col_upper`), one slot per state dimension that has
-/// an LP column: length `N + n_buckets + A*K`; the lag slice has no LP column.
+/// length `M*B + R + L`) holds the load, inflow and listed-row patches,
+/// contiguous and filled in that order; state fixing (storage, travel-time
+/// buckets, anticipated state) is applied exclusively via column bounds and
+/// lives in the column-bound region (`col_indices`/`col_lower`/`col_upper`),
+/// one slot per state dimension that has an LP column: length
+/// `N + n_buckets + A*K`; the lag slice has no LP column.
 /// `N` is the hydro count, `M` the stochastic-load-bus count, `B` the max block
-/// count, `R` the most rows any stage's inflow coupling touches, `n_buckets` the
+/// count, `R` the most rows any stage's inflow coupling touches, `L` the longest stage's
+/// [`StageGeometry::per_solve_rows`] list, `n_buckets` the
 /// travel-time bucket count, and `A*K` the anticipated-thermal state count. For
 /// equality constraints each entry's lower == upper.
 ///
@@ -45,6 +47,9 @@ pub struct PatchBuffer {
     /// Maximum block count across all stages (B).
     max_blocks: usize,
 
+    /// Longest [`StageGeometry::per_solve_rows`] across all stages (L).
+    max_row_list_patches: usize,
+
     /// Number of load patches from the most recent [`fill_load_patches`] call
     /// (`load_bus_count * n_blocks`); zero before any call or when
     /// `load_bus_count == 0`.
@@ -58,6 +63,12 @@ pub struct PatchBuffer {
     /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
     active_inflow_patches: usize,
 
+    /// Number of listed-row patches from the most recent
+    /// [`fill_row_list_patches`] call; zero before any call.
+    ///
+    /// [`fill_row_list_patches`]: PatchBuffer::fill_row_list_patches
+    active_row_list_patches: usize,
+
     /// Number of pins from the most recent [`fill_col_state_patches`] call; zero
     /// before any call.
     ///
@@ -66,23 +77,28 @@ pub struct PatchBuffer {
 }
 
 impl PatchBuffer {
-    /// Construct a [`PatchBuffer`] sized to `M*B + R` row patches and one column
-    /// patch per state dimension that has an LP column
+    /// Construct a [`PatchBuffer`] sized to `M*B + R + L` row patches and one
+    /// column patch per state dimension that has an LP column
     /// ([`StateRegion::has_lp_columns`]), zero-initialised, from its owners:
     /// `N`, `n_buckets`, `A`, and `K` come from `state`; `M` is
-    /// `load_bus_indices.len()`; `B` is [`StageGeometry::max_blocks`] over
-    /// `geometry_per_stage`; `R` is the most distinct rows any one stage's
-    /// coupling touches, and `0` for `&[]`.
+    /// `load_bus_indices.len()`; `B` is [`StageGeometry::max_blocks`] and `L`
+    /// the longest [`StageGeometry::per_solve_rows`] over `geometry_per_stage`;
+    /// `R` is the most distinct rows any one stage's coupling touches, and `0`
+    /// for `&[]`.
     ///
     /// The row region holds load patches at `[0, M*B)` followed by `R` inflow
-    /// patches, populated before each LP solve via [`fill_load_patches`] and
-    /// [`fill_inflow_shift_patches`]; the column region is populated by
-    /// `fill_col_state_patches`. Pass `&[]` for `load_bus_indices` when there is no
-    /// stochastic load and `&[]` for `geometry_per_stage` when there is no
-    /// stochastic load or the caller has no geometry to size from.
+    /// patches and up to `L` listed-row patches, populated in that order before
+    /// each LP solve via [`fill_load_patches`], [`fill_inflow_shift_patches`]
+    /// and [`fill_row_list_patches`], each region's offset being the sum of the
+    /// counts before it; the column region is populated by
+    /// `fill_col_state_patches`. Pass `&[]` for `load_bus_indices` when there is
+    /// no stochastic load and `&[]` for `geometry_per_stage` when there is no
+    /// stochastic load or listed row, or the caller has no geometry to size
+    /// from.
     ///
     /// [`fill_load_patches`]: PatchBuffer::fill_load_patches
     /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
+    /// [`fill_row_list_patches`]: PatchBuffer::fill_row_list_patches
     #[must_use]
     pub fn new(
         state: &StateSpace,
@@ -97,7 +113,12 @@ impl PatchBuffer {
             .map(|coupling| coupling.touched_rows().len())
             .max()
             .unwrap_or(0);
-        let capacity = n_load_buses * max_blocks + inflow_patch_capacity;
+        let max_row_list_patches = geometry_per_stage
+            .iter()
+            .map(|g| g.per_solve_rows.len())
+            .max()
+            .unwrap_or(0);
+        let capacity = n_load_buses * max_blocks + inflow_patch_capacity + max_row_list_patches;
         let col_capacity: usize = REGION_ORDER
             .into_iter()
             .filter(|&region| region.has_lp_columns())
@@ -112,8 +133,10 @@ impl PatchBuffer {
             col_upper: vec![0.0; col_capacity],
             load_bus_count: n_load_buses,
             max_blocks,
+            max_row_list_patches,
             active_load_patches: 0,
             active_inflow_patches: 0,
+            active_row_list_patches: 0,
             active_state_col_patches: 0,
         }
     }
@@ -363,12 +386,64 @@ impl PatchBuffer {
         self.active_inflow_patches = n_rows;
     }
 
-    /// Active row-patch count (load + inflow, from [`Self::fill_inflow_shift_patches`])
-    /// for the full forward-pass slice passed to `set_row_bounds`.
+    /// Fill one patch per row of `rows`, in the order given, with bounds
+    /// `lower[i]`/`upper[i]` prescaled by `row_scale[row]` when `row_scale` is
+    /// non-empty (pass `&[]` for no scaling); an infinite bound stays infinite.
+    ///
+    /// Must be called after [`fill_inflow_shift_patches`] (whose count, with
+    /// `active_load_patches`, sets this region's offset) and before
+    /// `set_row_bounds`.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `lower` or `upper` does not hold one bound per
+    /// row of `rows`, or if `rows` is longer than the longest stage's
+    /// [`StageGeometry::per_solve_rows`].
+    ///
+    /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
+    #[inline]
+    pub fn fill_row_list_patches(
+        &mut self,
+        rows: impl ExactSizeIterator<Item = usize>,
+        lower: &[f64],
+        upper: &[f64],
+        row_scale: &[f64],
+    ) {
+        let n = rows.len();
+        debug_assert!(
+            lower.len() == n && upper.len() == n,
+            "lower {lo} / upper {up} must hold one bound per listed row ({n})",
+            lo = lower.len(),
+            up = upper.len(),
+        );
+        debug_assert!(
+            n <= self.max_row_list_patches,
+            "{n} listed rows exceed max_row_list_patches {max}",
+            max = self.max_row_list_patches,
+        );
+
+        let row_list_start = self.active_load_patches + self.active_inflow_patches;
+
+        for (slot, ((row, &lo), &up)) in (row_list_start..).zip(rows.zip(lower).zip(upper)) {
+            let (lo, up) = if row_scale.is_empty() {
+                (lo, up)
+            } else {
+                (lo * row_scale[row], up * row_scale[row])
+            };
+            self.indices[slot] = row;
+            self.lower[slot] = lo;
+            self.upper[slot] = up;
+        }
+
+        self.active_row_list_patches = n;
+    }
+
+    /// Active row-patch count (load + inflow + listed rows) for the full
+    /// forward-pass slice passed to `set_row_bounds`.
     #[must_use]
     #[inline]
     pub fn forward_patch_count(&self) -> usize {
-        self.active_load_patches + self.active_inflow_patches
+        self.active_load_patches + self.active_inflow_patches + self.active_row_list_patches
     }
 
     /// Column-bound region capacity: one incoming-state pin per state dimension
@@ -394,9 +469,10 @@ impl PatchBuffer {
     reason = "test docs name LP symbols that are not code identifiers"
 )]
 mod tests {
-    use super::{InflowCoupling, PatchBuffer, StateBox, StateSpace};
+    use super::{InflowCoupling, PatchBuffer, StageGeometry, StateBox, StateSpace};
     use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
     use crate::lp::builder::inflow_coupling::InflowCouplingSink;
+    use crate::lp::builder::layout::PerSolveRow;
     use crate::lp::indexer::{BlockGrid, BlockRowFamily, HydroSys, StateDim};
     use crate::test_support::{
         bits, constant_lead_resolution, equipment_free_geometry, inflow_coupling_with_entries,
@@ -761,6 +837,84 @@ mod tests {
         let state_load = state_layout(3, 2);
         let buf_load = PatchBuffer::new(&state_load, &[0, 1], &geometry, &[]);
         assert_eq!(buf_load.indices.len(), 6);
+    }
+
+    fn listed_rows(rows: &[usize]) -> Vec<PerSolveRow> {
+        rows.iter()
+            .map(|&row| PerSolveRow {
+                row,
+                constraint_idx: 0,
+                constraint_id: 0,
+                block_idx: 0,
+                is_stage_level: true,
+                base_lower: None,
+                base_upper: None,
+                volume_shift: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn row_region_reserves_the_widest_stage_row_list() {
+        let geometry: Vec<StageGeometry> = equipment_free_geometry(&[2, 2])
+            .into_iter()
+            .zip([listed_rows(&[7]), listed_rows(&[3, 8, 12])])
+            .map(|(base, per_solve_rows)| StageGeometry {
+                per_solve_rows,
+                ..base
+            })
+            .collect();
+
+        let buf = PatchBuffer::new(&state_layout(0, 0), &[0, 1], &geometry, &[]);
+
+        for (label, len) in [
+            ("indices", buf.indices.len()),
+            ("lower", buf.lower.len()),
+            ("upper", buf.upper.len()),
+        ] {
+            assert_eq!(len, 2 * 2 + 3, "{label}");
+        }
+    }
+
+    #[test]
+    fn row_list_patches_follow_the_inflow_patches_scaled_per_row() {
+        let geometry: Vec<StageGeometry> = equipment_free_geometry(&[2])
+            .into_iter()
+            .map(|base| StageGeometry {
+                per_solve_rows: listed_rows(&[7, 11]),
+                ..base
+            })
+            .collect();
+        let coupling = inflow_coupling_with_entries(2, &[(0, 3), (1, 5)]);
+        let mut buf = PatchBuffer::new(
+            &state_layout(2, 0),
+            &[0, 1],
+            &geometry,
+            std::slice::from_ref(&coupling),
+        );
+        let mut row_scale = vec![1.0_f64; 24];
+        row_scale[7] = 2.0;
+        row_scale[11] = 0.5;
+        buf.fill_load_patches(
+            BlockRowFamily::per_block(20..24),
+            BlockGrid::new(2, 1),
+            &[300.0, 280.0, 500.0, 450.0],
+            &[0, 1],
+            &row_scale,
+        );
+        buf.fill_inflow_shift_patches(&coupling, &[0.1, 0.2], &row_scale);
+
+        buf.fill_row_list_patches(
+            [7, 11].into_iter(),
+            &[1.0, f64::NEG_INFINITY],
+            &[5.0, 7.0],
+            &row_scale,
+        );
+
+        assert_eq!(buf.indices[..8], [20, 21, 22, 23, 3, 5, 7, 11]);
+        assert_eq!(buf.lower[6..8], [2.0, f64::NEG_INFINITY]);
+        assert_eq!(buf.upper[6..8], [10.0, 3.5]);
+        assert_eq!(buf.forward_patch_count(), 8);
     }
 
     /// Load-balance row indices follow `row = load_rows.start() + bus_positions[i] * n_blocks + blk`.

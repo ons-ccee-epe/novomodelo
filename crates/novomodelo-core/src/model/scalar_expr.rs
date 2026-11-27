@@ -3,8 +3,8 @@
 //! A [`ScalarExpr`] is a flat postfix program over literals and scalar-parameter
 //! ids. A value can only be built through [`ScalarExpr::literal`],
 //! [`ScalarExpr::param`] and the `std::ops` operators, and only
-//! [`ScalarExpr::evaluate`] runs one, so a program's bits never depend on who
-//! evaluates it.
+//! [`ScalarExpr::evaluate_in`] runs one ([`ScalarExpr::evaluate`] delegates to
+//! it), so a program's bits never depend on who evaluates it.
 //!
 //! The program runs left to right on a value stack: a leaf pushes a value, a
 //! unary op replaces the top, and a binary op pops the right operand, then the
@@ -27,7 +27,7 @@ pub fn is_exact_zero(v: f64) -> bool {
 ///
 /// Built by [`ScalarExpr::literal`], [`ScalarExpr::param`] and the `Neg`, `Add`,
 /// `Sub`, `Mul` and `Div` operators, which append to the left operand's program
-/// and fold literal-only operands. [`ScalarExpr::evaluate`] is the single
+/// and fold literal-only operands. [`ScalarExpr::evaluate_in`] is the single
 /// evaluator.
 ///
 /// # Examples
@@ -82,12 +82,31 @@ impl ScalarExpr {
     /// Returns `NaN` for a malformed stack, which no constructed program produces.
     #[must_use]
     pub fn evaluate(&self, leaf: impl Fn(EntityId) -> f64) -> f64 {
+        self.evaluate_in(&mut Vec::new(), leaf)
+    }
+
+    /// [`evaluate`](Self::evaluate) on the caller's value stack, which it
+    /// clears first: the bits are the same, and a `stack` with room for
+    /// [`op_count`](Self::op_count) values is never reallocated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use novomodelo_core::{EntityId, ScalarExpr};
+    ///
+    /// let expr = ScalarExpr::literal(2.0) * ScalarExpr::param(EntityId(7));
+    /// let mut stack = Vec::with_capacity(expr.op_count());
+    /// assert_eq!(expr.evaluate_in(&mut stack, |_| 3.0), 6.0);
+    /// ```
+    #[must_use]
+    pub fn evaluate_in(&self, stack: &mut Vec<f64>, leaf: impl Fn(EntityId) -> f64) -> f64 {
         match self.ops.as_slice() {
             [ScalarOp::Literal(v)] => return *v,
             [ScalarOp::Param(id)] => return leaf(*id),
             _ => {}
         }
-        let mut stack: Vec<f64> = Vec::with_capacity(self.op_count());
+        stack.clear();
+        stack.reserve(self.op_count());
         for op in &self.ops {
             let value = match *op {
                 ScalarOp::Literal(v) => v,
@@ -335,6 +354,34 @@ mod tests {
             scaled.evaluate(values).to_bits(),
             ((2.0 * 5.0) * 3.0_f64).to_bits()
         );
+    }
+
+    #[test]
+    fn evaluate_in_matches_evaluate_and_reuses_the_stack() {
+        let programs = [
+            lit(2.5),
+            par(A),
+            -par(A),
+            ((par(A) + lit(1.5)) * (par(B) - par(C))) / -par(B),
+            (lit(0.0) - par(A)) / (par(C) * lit(3.0) + par(B)),
+        ];
+        let mut stack = Vec::new();
+        for expr in &programs {
+            assert_eq!(
+                expr.evaluate_in(&mut stack, values).to_bits(),
+                expr.evaluate(values).to_bits(),
+                "{expr:?}"
+            );
+        }
+        let footprint = (stack.as_ptr(), stack.capacity());
+        for expr in &programs {
+            assert_eq!(
+                expr.evaluate_in(&mut stack, values).to_bits(),
+                expr.evaluate(values).to_bits(),
+                "{expr:?}"
+            );
+            assert_eq!((stack.as_ptr(), stack.capacity()), footprint, "{expr:?}");
+        }
     }
 
     /// derived: `2 * 3` folds to the literal 6, `5 - 2` to 3; `1 / 0` folds to infinity; a
@@ -645,9 +692,13 @@ mod tests {
         /// tree, folded or not, has the same bits.
         #[test]
         fn evaluation_matches_reference_tree(tree in trees(true), values in leaf_arrays()) {
-            let actual = build(&tree).evaluate(|id| leaf_value(&values, id));
+            let expr = build(&tree);
+            let actual = expr.evaluate(|id| leaf_value(&values, id));
             let expected = eval_tree(&tree, &values);
             prop_assert!(same_bits(actual, expected), "program {actual:?}, tree {expected:?}");
+            let mut stack = vec![f64::NAN; 3];
+            let reused = expr.evaluate_in(&mut stack, |id| leaf_value(&values, id));
+            prop_assert!(same_bits(reused, expected), "reused stack {reused:?}, tree {expected:?}");
         }
 
         /// derived: a tree without a parameter folds node by node with the same

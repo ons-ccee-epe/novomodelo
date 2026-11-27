@@ -461,6 +461,38 @@ pub(crate) fn generic_violations_schema() -> Arc<Schema> {
     Arc::clone(&GENERIC_VIOLATIONS_SCHEMA)
 }
 
+fn build_generic_activation_schema() -> Schema {
+    let mut fields = simulation_row_prefix();
+    fields.extend([
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("constraint_id", DataType::Int32, false),
+        Field::new("active", DataType::Boolean, false),
+        Field::new("bound_lower", DataType::Float64, true),
+        Field::new("bound_upper", DataType::Float64, true),
+    ]);
+    Schema::new(fields)
+}
+
+static GENERIC_ACTIVATION_SCHEMA: LazyLock<Arc<Schema>> =
+    LazyLock::new(|| Arc::new(build_generic_activation_schema()));
+
+/// Schema of the per-scenario generic constraint activation, keyed
+/// `(stage, block, constraint)`.
+///
+/// Row invariant:
+/// - one row per `(stage, block, constraint)` for every generic constraint row
+///   whose bounds the solve writes: the constraint has `active_when`, or one of
+///   its bounds reads scenario data;
+/// - a constraint with neither a condition nor a scenario-dependent bound has
+///   no row;
+/// - `block_id` is null on a row that holds for every block of the stage;
+/// - `active` is `false` where `active_when` does not hold, and both bounds are
+///   then null;
+/// - on an active row, a bound is null where the row has no such side.
+pub(crate) fn generic_activation_schema() -> Arc<Schema> {
+    Arc::clone(&GENERIC_ACTIVATION_SCHEMA)
+}
+
 /// Schema of the per-scenario node-path trace.
 ///
 /// Run-level and unpartitioned (never Hive-partitioned): exactly the
@@ -625,15 +657,17 @@ pub(crate) fn row_selection_schema() -> Schema {
     ])
 }
 
-/// Schema for the resolved generic-constraint echo — one row per
-/// `(constraint, stage, block, term)`.
+/// Schema for the resolved generic-constraint echo — one row per term or plant-capacity read
+/// of each `(constraint, stage, block)`.
 ///
 /// `bound_lower`/`bound_upper` are the resolved interval endpoints (min before
-/// max), each `None` where unbounded on that side; `derived_shape` labels the
-/// shape those endpoints imply. The per-term columns (`term_index`,
-/// `variable_kind`, `variable`, `coefficient`) are `None` on a term-less
-/// constraint's placeholder row, and `slack_penalty`/`slack_penalty_basis` are
-/// `None` when slack is off.
+/// max), each `None` where unbounded on that side or evaluated per solve
+/// (`lower_per_solve`/`upper_per_solve` tell which); `derived_shape` labels the shape of the
+/// sides the row carries. `term_index` and `coefficient` are `None` on a capacity read, whose
+/// `value` is the capacity in MW, and `value` is `None` elsewhere. The per-term columns
+/// (`term_index`, `variable_kind`, `variable`, `coefficient`) are `None` on the placeholder row
+/// of a constraint with neither a term nor a capacity read, and
+/// `slack_penalty`/`slack_penalty_basis` are `None` when slack is off.
 pub(crate) fn generic_constraint_echo_schema() -> Schema {
     Schema::new(vec![
         Field::new("stage_id", DataType::Int32, false),
@@ -650,6 +684,10 @@ pub(crate) fn generic_constraint_echo_schema() -> Schema {
         Field::new("slack_enabled", DataType::Boolean, false),
         Field::new("slack_penalty", DataType::Float64, true),
         Field::new("slack_penalty_basis", DataType::Utf8, true),
+        Field::new("value", DataType::Float64, true),
+        Field::new("lower_per_solve", DataType::Boolean, false),
+        Field::new("upper_per_solve", DataType::Boolean, false),
+        Field::new("has_active_when", DataType::Boolean, false),
     ])
 }
 
@@ -851,6 +889,11 @@ pub(crate) const OUTPUT_SCHEMAS: &[SchemaRegistryEntry] = &[
         schema_fn: build_generic_violations_schema,
     },
     SchemaRegistryEntry {
+        name: "generic_activation",
+        csv_label: Some("generic_activation"),
+        schema_fn: build_generic_activation_schema,
+    },
+    SchemaRegistryEntry {
         name: "paths",
         csv_label: Some("paths"),
         schema_fn: paths_schema,
@@ -970,6 +1013,18 @@ mod tests {
             .field_with_name(name)
             .unwrap_or_else(|_| panic!("field '{name}' not found in schema"))
             .is_nullable()
+    }
+
+    #[track_caller]
+    fn assert_fields_match(schema: &Schema, expected: &[(&str, DataType, bool)]) {
+        assert_eq!(
+            field_names(schema),
+            expected.iter().map(|(name, ..)| *name).collect::<Vec<_>>()
+        );
+        for (name, dtype, nullable) in expected {
+            assert_eq!(field_type(schema, name), *dtype, "{name} type");
+            assert_eq!(is_nullable(schema, name), *nullable, "{name} nullability");
+        }
     }
 
     #[test]
@@ -1436,6 +1491,22 @@ mod tests {
     }
 
     #[test]
+    fn generic_activation_schema_names_types_and_nullability() {
+        let schema = generic_activation_schema();
+        let expected: &[(&str, DataType, bool)] = &[
+            ("scenario_id", DataType::Int32, false),
+            ("stage_id", DataType::Int32, false),
+            ("node_id", DataType::Int32, false),
+            ("block_id", DataType::Int32, true),
+            ("constraint_id", DataType::Int32, false),
+            ("active", DataType::Boolean, false),
+            ("bound_lower", DataType::Float64, true),
+            ("bound_upper", DataType::Float64, true),
+        ];
+        assert_fields_match(&schema, expected);
+    }
+
+    #[test]
     fn paths_schema_is_three_non_null_int32_axis_columns() {
         let schema = paths_schema();
         let names = field_names(&schema);
@@ -1688,6 +1759,7 @@ mod tests {
             (inflow_lags_schema(), "inflow_lags"),
             (in_transit_schema(), "in_transit"),
             (generic_violations_schema(), "generic_violations"),
+            (generic_activation_schema(), "generic_activation"),
             (Arc::new(paths_schema()), "paths"),
             (Arc::new(convergence_schema()), "convergence"),
             (Arc::new(iteration_timing_schema()), "iteration_timing"),
@@ -1722,13 +1794,14 @@ mod tests {
             ("inflow_lags", 6),
             ("in_transit", 7),
             ("generic_violations", 7),
+            ("generic_activation", 8),
             ("paths", 3),
             ("convergence", 16),
             ("iteration_timing", 19),
             ("cut_selection", 13),
             ("solver_iterations", 20),
             ("retry_histogram", 5),
-            ("generic_constraint_echo", 14),
+            ("generic_constraint_echo", 18),
         ];
         for ((name, actual), (_, exp)) in counts.iter().zip(expected.iter()) {
             assert_eq!(
@@ -1790,7 +1863,7 @@ mod tests {
     /// the same change.
     #[test]
     fn output_schema_registry_has_no_duplicate_or_missing_rows() {
-        const EXPECTED_SCHEMA_COUNT: usize = 32;
+        const EXPECTED_SCHEMA_COUNT: usize = 33;
         assert_eq!(
             OUTPUT_SCHEMAS.len(),
             EXPECTED_SCHEMA_COUNT,
@@ -1819,42 +1892,6 @@ mod tests {
                 entry.name
             );
             seen_names.push(entry.name);
-        }
-    }
-
-    #[test]
-    fn generic_constraint_echo_schema_field_count_and_names() {
-        let schema = generic_constraint_echo_schema();
-        assert_eq!(
-            schema.fields().len(),
-            14,
-            "generic_constraint_echo schema must have 14 fields"
-        );
-        let expected: &[(&str, DataType, bool)] = &[
-            ("stage_id", DataType::Int32, false),
-            ("block_id", DataType::Int32, true),
-            ("constraint_id", DataType::Int32, false),
-            ("constraint_name", DataType::Utf8, false),
-            ("term_index", DataType::Int32, true),
-            ("variable_kind", DataType::Utf8, true),
-            ("variable", DataType::Utf8, true),
-            ("coefficient", DataType::Float64, true),
-            ("bound_lower", DataType::Float64, true),
-            ("bound_upper", DataType::Float64, true),
-            ("derived_shape", DataType::Utf8, false),
-            ("slack_enabled", DataType::Boolean, false),
-            ("slack_penalty", DataType::Float64, true),
-            ("slack_penalty_basis", DataType::Utf8, true),
-        ];
-        for (i, (name, dtype, nullable)) in expected.iter().enumerate() {
-            let field = &schema.fields()[i];
-            assert_eq!(field.name(), name, "field {i} name mismatch");
-            assert_eq!(field.data_type(), dtype, "field {i} ({name}) type mismatch");
-            assert_eq!(
-                field.is_nullable(),
-                *nullable,
-                "field {i} ({name}) nullability mismatch"
-            );
         }
     }
 }

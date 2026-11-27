@@ -215,6 +215,7 @@ pub(crate) fn run_pipeline_with_artifacts(
         hydro_energy_productivity: data.hydro_energy_productivity_rows,
         fpha_hyperplanes: data.fpha_hyperplanes,
         scalar_parameters: data.scalar_parameters,
+        generic_scenario: data.generic_scenario,
         tailrace_curves,
     };
 

@@ -19,9 +19,8 @@
 //!
 //! `PumpingPower` aliases the SAME flow column as `PumpingFlow`, scaled by the
 //! station's `consumption_mw_per_m3s` — power is affine in flow, so a column of its
-//! own would be an unconstrained free variable. Variables referencing entity types
-//! with no LP columns (contracts, non-controllable sources, withdrawal) return an
-//! empty vec.
+//! own would be an unconstrained free variable. Withdrawal, non-controllable
+//! curtailment and plant availability have no LP column and return an empty vec.
 
 use novomodelo_core::{ContractType, EntityId, PumpingStation, VariableRef};
 
@@ -30,8 +29,8 @@ use super::hydro_state::resolve_shortcircuit_target;
 use super::layout::{StageLayout, TemplateBuildCtx, contract_family_slot, evaporation_slot};
 use crate::hydro_models::ResolvedProductionModel;
 use crate::indexer::{
-    BlockIdx, Boundary, BusSys, EvapLocal, FphaCellLocal, HydroCell, HydroSys, LineSys, PumpingSys,
-    ThermalSys,
+    BlockIdx, Boundary, BusSys, EvapLocal, FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys,
+    PumpingSys, ThermalSys,
 };
 
 /// Map a [`VariableRef`] and block index to LP column indices with multipliers.
@@ -47,10 +46,10 @@ use crate::indexer::{
 ///
 /// # Returns
 ///
-/// An empty vec when the entity ID is absent from the relevant position map
-/// (defense-in-depth past referential validation), or when the variable references
-/// a stub entity with no LP columns (contracts, non-controllable sources,
-/// withdrawal).
+/// An empty vec when the entity ID is absent from the relevant position map or a
+/// plant has no unit group of that ID (defense-in-depth past validation), or when
+/// the variable has no LP column (withdrawal, non-controllable curtailment, plant
+/// availability).
 #[must_use]
 pub(super) fn resolve_variable_ref(
     var_ref: &VariableRef,
@@ -108,6 +107,19 @@ pub(super) fn resolve_variable_ref(
             block_id,
             bus_id,
         } => resolve_hydro_generation(*hydro_id, *bus_id, at(*block_id), stage_idx, ctx, layout),
+
+        VariableRef::HydroGroupGeneration {
+            hydro_id,
+            group_id,
+            block_id,
+        } => resolve_hydro_group_generation(
+            *hydro_id,
+            *group_id,
+            at(*block_id),
+            stage_idx,
+            ctx,
+            layout,
+        ),
 
         VariableRef::ThermalGeneration {
             thermal_id,
@@ -188,11 +200,22 @@ pub(super) fn resolve_variable_ref(
             layout,
         ),
 
+        VariableRef::NonControllableGeneration {
+            source_id,
+            block_id,
+        } => resolve_block_column(ctx.positions.ncs(*source_id), |pos| {
+            layout
+                .geometry
+                .ncs_generation_col(NcsSys::new(pos), at(*block_id))
+        }),
+
         // Registered in the data model but no LP decision column: withdrawal is a
-        // schedule fixed by bounds; non-controllable sources carry no decision column.
+        // schedule fixed by bounds; curtailment is availability minus generation;
+        // plant availability is data: a bound reads it as a setup value, and setup
+        // rejects a term that reads it.
         VariableRef::HydroWithdrawal { .. }
-        | VariableRef::NonControllableGeneration { .. }
-        | VariableRef::NonControllableCurtailment { .. } => vec![],
+        | VariableRef::NonControllableCurtailment { .. }
+        | VariableRef::HydroAvailability { .. } => vec![],
     }
 }
 
@@ -613,6 +636,31 @@ fn resolve_hydro_generation(
             resolve_turbine_cells(hydro_id, bus_id, blk, *productivity, ctx, layout)
         }
     }
+}
+
+/// Resolve `HydroGroupGeneration` to the `HydroGeneration` of the cell on the bus of
+/// unit group `group_id`, which is that group's generation only because setup rejects
+/// a group sharing its bus with another group of the plant. Returns an empty vec on an
+/// `EntityPositions::hydro` miss or when the plant has no unit group `group_id`.
+fn resolve_hydro_group_generation(
+    hydro_id: EntityId,
+    group_id: EntityId,
+    blk: BlockIdx,
+    stage_idx: usize,
+    ctx: &TemplateBuildCtx<'_>,
+    layout: &StageLayout<'_>,
+) -> Vec<(usize, f64)> {
+    let Some(pos) = ctx.positions.hydro(hydro_id) else {
+        return vec![];
+    };
+    let Some(group) = ctx.hydros[pos]
+        .unit_groups
+        .iter()
+        .find(|group| group.id == group_id)
+    else {
+        return vec![];
+    };
+    resolve_hydro_generation(hydro_id, Some(group.bus_id), blk, stage_idx, ctx, layout)
 }
 
 /// Resolve `LineExchange` (net = forward − reverse) to two columns with signs.

@@ -1625,6 +1625,60 @@ mod tests {
     }
 
     #[test]
+    fn test_generic_constraint_bounds_duplicate_column_rejected() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.generic_constraint_bounds = vec![
+            generic_constraint_row(1, 0, Some(1)),
+            GenericConstraintBoundsRow {
+                bound_upper: Some(20.0),
+                ..generic_constraint_row(1, 0, Some(1))
+            },
+            GenericConstraintBoundsRow {
+                bound_lower: Some(0.0),
+                bound_upper: None,
+                ..generic_constraint_row(2, 1, None)
+            },
+            GenericConstraintBoundsRow {
+                bound_lower: Some(5.0),
+                bound_upper: None,
+                ..generic_constraint_row(2, 1, None)
+            },
+        ];
+
+        let errors: Vec<(String, Option<String>, String)> = duplicate_errors(&data)
+            .into_iter()
+            .map(|e| (e.file.to_string_lossy().into_owned(), e.entity, e.message))
+            .collect();
+        let file = "constraints/generic_constraint_bounds.parquet".to_owned();
+        assert_eq!(
+            errors,
+            [
+                (
+                    file.clone(),
+                    Some("constraint_id=1, stage_id=0".to_owned()),
+                    "GenericConstraint 1: generic_constraint_bounds sets bound_upper twice for \
+                     stage_id=0, block_id=1"
+                        .to_owned()
+                ),
+                (
+                    file,
+                    Some("constraint_id=2, stage_id=1".to_owned()),
+                    "GenericConstraint 2: generic_constraint_bounds sets bound_lower twice for \
+                     stage_id=1, stage-wide"
+                        .to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn test_stage_wide_and_block_row_on_same_column_accepted() {
         let mut data = make_data(
             vec![],

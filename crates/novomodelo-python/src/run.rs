@@ -998,6 +998,7 @@ pub(crate) fn build_study_setup(
         StudyParams::from_config(&config, Vec::new()).map_err(|e| setup_phase_error(e, None))?;
     construction.boundary = boundary_requirements;
     construction.scalar_parameters = artifacts.scalar_parameters;
+    construction.generic_scenario = artifacts.generic_scenario;
     let setup = StudySetup::from_broadcast_params(
         &system,
         result.stochastic,

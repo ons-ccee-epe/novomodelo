@@ -19,6 +19,7 @@
 //!   in_transit/scenario_id=0000/data.parquet
 //!   transit_seed/scenario_id=0000/data.parquet
 //!   violations/generic/scenario_id=0000/data.parquet
+//!   generic_activation/scenario_id=0000/data.parquet
 //!   anticipated_lanes/scenario_id=0000/data.parquet
 //! ```
 //!
@@ -26,8 +27,11 @@
 //! system declares a travel-time arc; a non-travel-time study writes neither
 //! directory nor file. The `anticipated_lanes/` partition is present only when
 //! the system declares post-study stages; without them, no such directory or
-//! file is written. [`SIMULATION_FAMILIES`] is the single table of every
-//! family and the condition that declares it.
+//! file is written. The `generic_activation/` partition appears only for a
+//! scenario that carries activation records, and its directory is created by
+//! the first partition written.
+//! [`SIMULATION_FAMILIES`] is the single table of every family and the
+//! condition that declares it.
 //!
 //! Every record's `node_id` below is the declared node visited at that stage —
 //! the degenerate per-stage id on a chain — and must never be gated on whether
@@ -60,9 +64,9 @@ use crate::output::error::OutputError;
 use crate::output::results_writer::SIMULATION_METADATA_FILE;
 use crate::output::schemas::{
     anticipated_lanes_schema, buses_schema, contracts_schema, costs_schema, exchanges_schema,
-    generic_violations_schema, hydro_bus_generation_schema, hydros_schema, in_transit_schema,
-    inflow_lags_schema, non_controllables_schema, paths_schema, pumping_stations_schema,
-    scenario_summary_schema, thermals_schema, transit_seed_schema,
+    generic_activation_schema, generic_violations_schema, hydro_bus_generation_schema,
+    hydros_schema, in_transit_schema, inflow_lags_schema, non_controllables_schema, paths_schema,
+    pumping_stations_schema, scenario_summary_schema, thermals_schema, transit_seed_schema,
 };
 use crate::output::solver_stats_writer::{
     SIMULATION_SOLVER_DIR, SOLVER_ITERATIONS_FILE, SOLVER_RETRY_HISTOGRAM_FILE,
@@ -450,6 +454,26 @@ pub struct GenericViolationWriteRecord {
     pub slack_cost: f64,
 }
 
+/// Generic constraint activation for one (stage, block, constraint) tuple.
+#[derive(Debug)]
+pub struct GenericActivationWriteRecord {
+    /// Stage index (0-based).
+    pub stage_id: u32,
+    /// Declared node id visited at this stage.
+    pub node_id: i32,
+    /// Block index, or `None` for a row that holds for every block of the stage.
+    pub block_id: Option<u32>,
+    /// Generic constraint entity ID.
+    pub constraint_id: i32,
+    /// Whether the constraint is active; `false` where its activation
+    /// condition does not hold.
+    pub active: bool,
+    /// Lower bound, if the row carries one.
+    pub bound_lower: Option<f64>,
+    /// Upper bound, if the row carries one.
+    pub bound_upper: Option<f64>,
+}
+
 /// One post-horizon commitment lane result for one declared window, one
 /// terminal scenario — keyed `(thermal_id, delivery_date)`.
 #[derive(Debug)]
@@ -499,6 +523,8 @@ pub struct StageWritePayload {
     pub transit_buckets: Vec<TransitBucketWriteRecord>,
     /// Generic constraint violation records for this stage.
     pub generic_violations: Vec<GenericViolationWriteRecord>,
+    /// Generic constraint activation records for this stage.
+    pub generic_activation: Vec<GenericActivationWriteRecord>,
     /// Post-horizon commitment lane records for this stage.
     pub anticipated_lanes: Vec<AnticipatedLaneWriteRecord>,
 }
@@ -787,6 +813,13 @@ fn family_has_generic_constraints(system: &System) -> bool {
     !system.generic_constraints().is_empty()
 }
 
+/// A family whose rows come from data resolved outside `System` has no
+/// predicate that can declare it up front: the family directory is created by
+/// its first partition.
+fn family_declared_by_its_rows(_system: &System) -> bool {
+    false
+}
+
 fn family_declares_post_study(system: &System) -> bool {
     system
         .post_study_stages()
@@ -1047,6 +1080,30 @@ fn scenario_batch_generic_violations(
     Ok(Some(batch))
 }
 
+fn scenario_batch_generic_activation(
+    _writer: &SimulationParquetWriter,
+    result: &ScenarioWritePayload,
+    scenario_id: i32,
+) -> Result<Option<RecordBatch>, OutputError> {
+    let n: usize = result
+        .stages
+        .iter()
+        .map(|s| s.generic_activation.len())
+        .sum();
+    if n == 0 {
+        return Ok(None);
+    }
+    let batch = build_generic_activation_batch(
+        result
+            .stages
+            .iter()
+            .flat_map(|s| s.generic_activation.iter()),
+        scenario_id,
+        n,
+    )?;
+    Ok(Some(batch))
+}
+
 fn scenario_batch_anticipated_lanes(
     _writer: &SimulationParquetWriter,
     result: &ScenarioWritePayload,
@@ -1140,6 +1197,11 @@ const SIMULATION_FAMILIES: &[SimulationFamily] = &[
         subpath: "violations/generic",
         declared: family_has_generic_constraints,
         build: scenario_batch_generic_violations,
+    },
+    SimulationFamily {
+        subpath: "generic_activation",
+        declared: family_declared_by_its_rows,
+        build: scenario_batch_generic_activation,
     },
     SimulationFamily {
         subpath: "anticipated_lanes",
@@ -2281,6 +2343,50 @@ fn build_generic_violations_batch<'a>(
 }
 
 #[allow(clippy::cast_possible_wrap)]
+fn build_generic_activation_batch<'a>(
+    records: impl IntoIterator<Item = &'a GenericActivationWriteRecord>,
+    scenario_id: i32,
+    n: usize,
+) -> Result<RecordBatch, OutputError> {
+    let schema = generic_activation_schema();
+
+    let mut scenario_id_col = Int32Builder::with_capacity(n);
+    let mut stage_id = Int32Builder::with_capacity(n);
+    let mut node_id = Int32Builder::with_capacity(n);
+    let mut block_id = Int32Builder::with_capacity(n);
+    let mut constraint_id = Int32Builder::with_capacity(n);
+    let mut active = BooleanBuilder::with_capacity(n);
+    let mut bound_lower = Float64Builder::with_capacity(n);
+    let mut bound_upper = Float64Builder::with_capacity(n);
+
+    for r in records {
+        scenario_id_col.append_value(scenario_id);
+        stage_id.append_value(r.stage_id as i32);
+        node_id.append_value(r.node_id);
+        block_id.append_option(r.block_id.map(|b| b as i32));
+        constraint_id.append_value(r.constraint_id);
+        active.append_value(r.active);
+        bound_lower.append_option(r.bound_lower);
+        bound_upper.append_option(r.bound_upper);
+    }
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(scenario_id_col.finish()),
+            Arc::new(stage_id.finish()),
+            Arc::new(node_id.finish()),
+            Arc::new(block_id.finish()),
+            Arc::new(constraint_id.finish()),
+            Arc::new(active.finish()),
+            Arc::new(bound_lower.finish()),
+            Arc::new(bound_upper.finish()),
+        ],
+    )
+    .map_err(|e| OutputError::serialization("generic_activation", e.to_string()))
+}
+
+#[allow(clippy::cast_possible_wrap)]
 fn build_anticipated_lanes_batch<'a>(
     records: impl IntoIterator<Item = &'a AnticipatedLaneWriteRecord>,
     scenario_id: i32,
@@ -2547,6 +2653,7 @@ mod tests {
                 inflow_lags: vec![],
                 transit_buckets: vec![],
                 generic_violations: vec![],
+                generic_activation: vec![],
                 anticipated_lanes: vec![],
             })
             .collect();
@@ -3177,6 +3284,7 @@ mod tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
         let payload = ScenarioWritePayload {
@@ -3695,6 +3803,7 @@ mod tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
         writer
@@ -3759,6 +3868,7 @@ mod tests {
                 },
             ],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
         writer
@@ -3891,6 +4001,7 @@ mod tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
         writer
@@ -3974,6 +4085,7 @@ mod tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
         let stage1 = StageWritePayload {
@@ -3999,6 +4111,7 @@ mod tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
         writer
@@ -4064,15 +4177,115 @@ mod tests {
         );
     }
 
+    #[test]
+    fn generic_activation_partition_holds_its_records_with_a_null_block() {
+        use arrow::array::{BooleanArray, Float64Array, Int32Array};
+
+        let tmp = tempfile::tempdir().expect("tempdir must succeed");
+        std::fs::create_dir_all(tmp.path().join("simulation")).unwrap();
+        let system = make_test_system();
+        let mut writer =
+            SimulationParquetWriter::new(tmp.path(), &system).expect("new must succeed");
+
+        let mut payload = make_scenario_payload(3, 2);
+        payload.stages[0].generic_activation = vec![GenericActivationWriteRecord {
+            stage_id: 0,
+            node_id: 0,
+            block_id: Some(1),
+            constraint_id: 701,
+            active: true,
+            bound_lower: None,
+            bound_upper: Some(50.0),
+        }];
+        payload.stages[1].generic_activation = vec![GenericActivationWriteRecord {
+            stage_id: 1,
+            node_id: 1,
+            block_id: None,
+            constraint_id: 702,
+            active: false,
+            bound_lower: None,
+            bound_upper: None,
+        }];
+        writer
+            .write_scenario(payload)
+            .expect("write_scenario must succeed");
+
+        let activation = read_first_batch(
+            &tmp.path()
+                .join("simulation/generic_activation/scenario_id=0003/data.parquet"),
+        );
+        assert_eq!(
+            activation.schema().fields(),
+            generic_activation_schema().fields()
+        );
+        assert_eq!(activation.num_rows(), 2);
+
+        let i32_col = |name: &str| -> Vec<Option<i32>> {
+            activation
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("{name} column must exist"))
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap_or_else(|| panic!("{name} must be Int32Array"))
+                .iter()
+                .collect()
+        };
+        let f64_col = |name: &str| -> Vec<Option<f64>> {
+            activation
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("{name} column must exist"))
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap_or_else(|| panic!("{name} must be Float64Array"))
+                .iter()
+                .collect()
+        };
+        let active: Vec<Option<bool>> = activation
+            .column_by_name("active")
+            .expect("active column must exist")
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("active must be BooleanArray")
+            .iter()
+            .collect();
+
+        assert_eq!(i32_col("scenario_id"), [Some(3), Some(3)]);
+        assert_eq!(i32_col("stage_id"), [Some(0), Some(1)]);
+        assert_eq!(i32_col("node_id"), [Some(0), Some(1)]);
+        assert_eq!(i32_col("block_id"), [Some(1), None]);
+        assert_eq!(i32_col("constraint_id"), [Some(701), Some(702)]);
+        assert_eq!(active, [Some(true), Some(false)]);
+        assert_eq!(f64_col("bound_lower"), [None, None]);
+        assert_eq!(f64_col("bound_upper"), [Some(50.0), None]);
+    }
+
+    #[test]
+    fn no_generic_activation_partition_without_records() {
+        let tmp = tempfile::tempdir().expect("tempdir must succeed");
+        std::fs::create_dir_all(tmp.path().join("simulation")).unwrap();
+        let system = make_test_system();
+        let mut writer =
+            SimulationParquetWriter::new(tmp.path(), &system).expect("new must succeed");
+
+        writer
+            .write_scenario(make_scenario_payload(3, 2))
+            .expect("write_scenario must succeed");
+
+        assert!(
+            !tmp.path().join("simulation/generic_activation").exists(),
+            "simulation/generic_activation must not exist without activation records"
+        );
+    }
+
     /// `SIMULATION_FAMILIES` must list every entity family exactly once: the
-    /// 13 `Vec` fields of `StageWritePayload` plus `ScenarioWritePayload`'s own
+    /// 14 `Vec` fields of `StageWritePayload` plus `ScenarioWritePayload`'s own
     /// scenario-level `transit_seed`. This count is a manual pin, not a
     /// reflection-derived count (Rust has no runtime enumeration of a struct's
     /// fields) — adding or removing a family must add or remove its row and
     /// update this count in the same change.
     #[test]
     fn simulation_family_table_has_no_duplicate_or_missing_rows() {
-        const EXPECTED_FAMILY_COUNT: usize = 14;
+        const EXPECTED_FAMILY_COUNT: usize = 15;
         assert_eq!(
             SIMULATION_FAMILIES.len(),
             EXPECTED_FAMILY_COUNT,
@@ -4102,6 +4315,7 @@ mod tests {
             "hydro_bus_generation",
             "in_transit",
             "transit_seed",
+            "generic_activation",
             "anticipated_lanes",
         ] {
             assert!(
@@ -4125,6 +4339,7 @@ mod tests {
             "costs/scenario_id=0000/data.parquet",
             "pumping_stations/scenario_id=0003/data.parquet",
             "violations/generic/scenario_id=0001/data.parquet",
+            "generic_activation/scenario_id=0001/data.parquet",
             "solver/iterations.parquet",
             "solver/retry_histogram.parquet",
             "paths.parquet",
@@ -4144,10 +4359,12 @@ mod tests {
 
         remove_simulation_outputs(tmp.path()).expect("every seeded output is removable");
 
-        for relative in removed
-            .iter()
-            .chain(&["costs", "pumping_stations", "violations"])
-        {
+        for relative in removed.iter().chain(&[
+            "costs",
+            "pumping_stations",
+            "violations",
+            "generic_activation",
+        ]) {
             assert!(
                 !sim.join(relative).exists(),
                 "simulation/{relative} must be removed"

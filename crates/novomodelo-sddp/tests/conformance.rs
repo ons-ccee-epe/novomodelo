@@ -1069,6 +1069,8 @@ fn build_geometry(
         fpha_slack,
         plant_max_turbine: 0..0,
         plant_max_generation: 0..0,
+        per_solve_rows: Vec::new(),
+        hard_constraint_ids: Vec::new(),
         n_blks,
         storage_internal_start: 0,
         block_mode: BlockMode::Parallel,

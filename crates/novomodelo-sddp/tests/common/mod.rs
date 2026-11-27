@@ -32,6 +32,8 @@ use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
 pub use novomodelo_sddp::test_support::builders;
+pub mod constraint_oracle;
+pub mod constraint_oracle_cases;
 pub mod determinism_gates;
 pub mod expanded_solve;
 pub mod forward_replay;
@@ -255,10 +257,11 @@ pub fn build_setup_for_case_with_boundary(
     let mut construction = StudyParams::from_config(config, Vec::new())
         .expect("StudyParams::from_config must succeed");
     construction.boundary = boundary;
-    construction.scalar_parameters = novomodelo_io::load_case_with_artifacts(case_dir)
+    let artifacts = novomodelo_io::load_case_with_artifacts(case_dir)
         .expect("load_case_with_artifacts must succeed")
-        .artifacts
-        .scalar_parameters;
+        .artifacts;
+    construction.scalar_parameters = artifacts.scalar_parameters;
+    construction.generic_scenario = artifacts.generic_scenario;
 
     StudySetup::from_broadcast_params(
         system,
@@ -446,7 +449,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 
 /// Copies `case_dir` into a temporary directory and sets `field` to `value` on
 /// every `stages.json` stage.
-fn copy_case_with_stage_field(
+pub fn copy_case_with_stage_field(
     case_dir: &Path,
     field: &str,
     value: &serde_json::Value,

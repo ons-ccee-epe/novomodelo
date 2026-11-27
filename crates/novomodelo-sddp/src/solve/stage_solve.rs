@@ -205,6 +205,7 @@ fn finish_solve<'ws>(
     solved.map_err(|e| {
         map_solver_error(
             e,
+            inputs.stage_context,
             inputs.stage_index.0,
             inputs.scenario_index,
             inputs.iteration,
@@ -215,21 +216,56 @@ fn finish_solve<'ws>(
 /// Map a [`SolverError`] to a [`SddpError`] with stage/scenario context.
 ///
 /// `Infeasible` is wrapped with the full context fields so the caller can
-/// report which stage/scenario triggered the infeasibility.  All other
-/// variants are wrapped by the `From<SolverError>` impl (i.e. `SddpError::Solver`).
+/// report which stage/scenario triggered the infeasibility, after logging the
+/// stage's generic constraints without slack through
+/// [`report_hard_generic_constraints`].  All other variants become
+/// `SddpError::Solver`.
 fn map_solver_error(
     e: SolverError,
+    ctx: &StageContext<'_>,
     stage: usize,
     scenario: usize,
     iteration: Option<u64>,
 ) -> SddpError {
     match e {
-        SolverError::Infeasible => SddpError::Infeasible {
-            stage,
-            iteration: iteration.unwrap_or(0),
-            scenario,
-        },
+        SolverError::Infeasible => {
+            let iteration = iteration.unwrap_or(0);
+            report_hard_generic_constraints(
+                &ctx.geometry_per_stage[stage].hard_constraint_ids,
+                stage,
+                scenario,
+                iteration,
+            );
+            SddpError::Infeasible {
+                stage,
+                iteration,
+                scenario,
+            }
+        }
         other => SddpError::Solver(other),
+    }
+}
+
+/// Log at `error` the ids `ids` of the generic constraints without slack of study stage `stage`,
+/// whose LP is infeasible at `scenario` and `iteration`; nothing when `ids` is empty.
+///
+/// A constraint without slack is the study's choice, so a scenario that cannot meet it stops the
+/// study. The solver does not isolate the row at fault, so the log names every such constraint
+/// of the stage as a candidate. Runs only on the error path.
+pub(crate) fn report_hard_generic_constraints(
+    ids: &[i32],
+    stage: usize,
+    scenario: usize,
+    iteration: u64,
+) {
+    if !ids.is_empty() {
+        tracing::error!(
+            stage,
+            scenario,
+            iteration,
+            constraints = ?ids,
+            "the infeasible stage LP holds generic constraints without slack: {ids:?}"
+        );
     }
 }
 
@@ -1193,6 +1229,7 @@ mod tests {
                 col_basic: 4000,
                 row_basic: 383,
             },
+            &StageContextFixture::new(&[], &[], &[]).ctx(),
             0,
             3,
             Some(5),

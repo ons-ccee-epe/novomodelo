@@ -452,8 +452,10 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         .policy
         .check_dir(&config_path, output_dir, config.policy_dir_intent())
         .map_err(ValidateFailure::ConfigLoad)?;
-    let params = StudyParams::from_config(config, std::mem::take(&mut artifacts.scalar_parameters))
-        .map_err(at(PrepPhase::Config))?;
+    let mut params =
+        StudyParams::from_config(config, std::mem::take(&mut artifacts.scalar_parameters))
+            .map_err(at(PrepPhase::Config))?;
+    params.generic_scenario = std::mem::take(&mut artifacts.generic_scenario);
     let training_source = config
         .training_scenario_source(&config_path)
         .map_err(ValidateFailure::ConfigLoad)?;
@@ -486,6 +488,9 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
             &hydro_models,
             &params.scalar_parameters,
             params.cost_scale_factor,
+            &params.generic_scenario,
+            &prepared.stochastic.entity_order()
+                [prepared.stochastic.class_dimensions().load_bus_range()],
         )
         .map_err(at(PrepPhase::GenericConstraints))?;
         PrepPhase::StudySetup

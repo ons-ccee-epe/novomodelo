@@ -162,6 +162,15 @@ pub(crate) const OUTPUT_FILES: &[FileRegistryEntry] = &[
         schema: "generic_violations",
     },
     FileRegistryEntry {
+        path: "simulation/generic_activation",
+        layout: FileLayout::Hive {
+            partition_by: "scenario_id",
+        },
+        format: FileFormat::Parquet,
+        phase: WritePhase::Simulation,
+        schema: "generic_activation",
+    },
+    FileRegistryEntry {
         path: "simulation/paths.parquet",
         layout: FileLayout::File,
         format: FileFormat::Parquet,
@@ -375,7 +384,7 @@ mod tests {
 
     #[test]
     fn every_output_file_names_a_registry_schema_and_every_schema_backs_a_file() {
-        const EXPECTED_FILE_COUNT: usize = 34;
+        const EXPECTED_FILE_COUNT: usize = 35;
         let mut problems: Vec<String> = Vec::new();
         if OUTPUT_FILES.len() != EXPECTED_FILE_COUNT {
             problems.push(format!(

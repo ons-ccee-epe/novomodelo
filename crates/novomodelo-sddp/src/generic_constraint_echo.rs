@@ -2,17 +2,19 @@
 //!
 //! Projects `Vec<GenericConstraintEchoRow>` from the data the LP builder actually
 //! consumed: the per-stage row entries (bounds, block, slack), the resolved
-//! generic coefficients (term values), and the system's generic constraints
-//! (LHS terms). One row per resolved LHS term per active `(stage, block)`; a term-less
-//! constraint contributes a single placeholder row. Output is in canonical
-//! `(constraint, stage, block, term)` order and declaration-order invariant.
+//! generic coefficients (term values, per-solve sides, conditions, plant capacities read), and
+//! the system's generic constraints (LHS terms). One row per resolved LHS term of each active
+//! `(stage, block)` row, then one per plant capacity its constraint reads; a row with neither
+//! contributes a single placeholder row. Output is in canonical `(constraint, stage, block)`
+//! order, a row's terms by term index before its capacity reads, and declaration-order
+//! invariant.
 
 use novomodelo_core::{EntityId, GenericConstraint, PenaltyBasis, System, VariableRef};
 use novomodelo_io::GenericConstraintEchoRow;
 
 use crate::StudySetup;
-use crate::lp::builder::GenericConstraintRowEntry;
-use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
+use crate::lp::builder::{GenericConstraintRowEntry, RowOrigin};
+use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};
 
 /// Build the resolved generic-constraint echo rows for `setup`/`system` in
 /// canonical `(constraint, stage, block, term)` order.
@@ -28,7 +30,7 @@ pub fn build_generic_constraint_echo_rows(
             .stage_templates
             .generic_constraint_row_entries,
         &setup.inputs.study_stage_ids,
-        &setup.resolved_generic_coefficients,
+        &setup.inputs.stage_data.generic_rows,
         system.generic_constraints(),
     )
 }
@@ -36,7 +38,7 @@ pub fn build_generic_constraint_echo_rows(
 /// Assemble the echo rows from the raw parts (slices in, canonically-ordered `Vec`
 /// out) — decoupled from `StudySetup` so the assembly is unit-testable without a
 /// full setup. `entries_per_stage` is indexed `[stage][row]`; `stage_ids[s]` is
-/// the study stage id; `constraints` is joined by `entry.constraint_idx`.
+/// the study stage id; `constraints` is joined by a row's `constraint_idx`.
 // Rationale (cast lints): block and term indices are stage-local counts far below
 // i32::MAX; the echo's i32 columns are Parquet Int32.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
@@ -51,71 +53,89 @@ fn build_echo_rows_from_parts(
     for (stage_idx, entries) in entries_per_stage.iter().enumerate() {
         let stage_id = stage_ids[stage_idx];
         for entry in entries {
-            let constraint = &constraints[entry.constraint_idx];
+            let RowOrigin::Generic { constraint_idx } = entry.origin;
+            let constraint = &constraints[constraint_idx];
             let block_id = if entry.is_stage_level {
                 None
             } else {
                 Some(entry.block_idx as i32)
             };
-            let shape = derived_shape(entry.bound_lower, entry.bound_upper);
-            let slack_penalty = entry.slack.map(|s| s.penalty);
-            let slack_penalty_basis = entry.slack.map(|s| penalty_basis_label(s.penalty_basis));
-
-            if constraint.expression.terms.is_empty() {
-                rows.push(GenericConstraintEchoRow {
-                    stage_id,
-                    block_id,
-                    constraint_id: constraint.id.0,
-                    constraint_name: constraint.name.clone(),
-                    term_index: None,
-                    variable_kind: None,
-                    variable: None,
-                    coefficient: None,
-                    bound_lower: entry.bound_lower,
-                    bound_upper: entry.bound_upper,
-                    derived_shape: shape.to_string(),
-                    slack_enabled: entry.slack.is_some(),
-                    slack_penalty,
-                    slack_penalty_basis: slack_penalty_basis.map(str::to_string),
-                });
-                continue;
-            }
+            let lower_per_solve = entry.bound_lower.is_some()
+                && coefficients.side_is_per_solve(constraint_idx, BoundSide::Lower);
+            let upper_per_solve = entry.bound_upper.is_some()
+                && coefficients.side_is_per_solve(constraint_idx, BoundSide::Upper);
+            let marker = GenericConstraintEchoRow {
+                stage_id,
+                block_id,
+                constraint_id: constraint.id.0,
+                constraint_name: constraint.name.clone(),
+                term_index: None,
+                variable_kind: None,
+                variable: None,
+                coefficient: None,
+                bound_lower: entry.bound_lower.filter(|_| !lower_per_solve),
+                bound_upper: entry.bound_upper.filter(|_| !upper_per_solve),
+                // From the layout's endpoints, where a per-solve side is the infinity of its side.
+                derived_shape: derived_shape(entry.bound_lower, entry.bound_upper).to_string(),
+                slack_enabled: entry.slack.is_some(),
+                slack_penalty: entry.slack.map(|s| s.penalty),
+                slack_penalty_basis: entry
+                    .slack
+                    .map(|s| penalty_basis_label(s.penalty_basis).to_string()),
+                value: None,
+                lower_per_solve,
+                upper_per_solve,
+                has_active_when: coefficients.is_gated(constraint_idx),
+            };
+            let first = rows.len();
 
             for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
                 let (kind, rendered) = render_variable(&term.variable);
                 rows.push(GenericConstraintEchoRow {
-                    stage_id,
-                    block_id,
-                    constraint_id: constraint.id.0,
-                    constraint_name: constraint.name.clone(),
                     term_index: Some(term_idx as i32),
                     variable_kind: Some(kind.to_string()),
                     variable: Some(rendered),
                     coefficient: Some(coefficients.term_value(
-                        entry.constraint_idx,
+                        constraint_idx,
                         term_idx,
                         stage_idx,
                         entry.block_idx,
                     )),
-                    bound_lower: entry.bound_lower,
-                    bound_upper: entry.bound_upper,
-                    derived_shape: shape.to_string(),
-                    slack_enabled: entry.slack.is_some(),
-                    slack_penalty,
-                    slack_penalty_basis: slack_penalty_basis.map(str::to_string),
+                    ..marker.clone()
                 });
+            }
+            for &(atom, id) in coefficients.capacity_reads(constraint_idx) {
+                let (kind, rendered) = render_variable(&VariableRef::HydroAvailability {
+                    hydro_id: atom.hydro_id,
+                    block_id: atom.block_id,
+                });
+                let value = coefficients.setup_value(id, stage_idx, entry.block_idx);
+                debug_assert!(
+                    value.is_some(),
+                    "a capacity a constraint reads has no setup value"
+                );
+                rows.push(GenericConstraintEchoRow {
+                    variable_kind: Some(kind.to_string()),
+                    variable: Some(rendered),
+                    value,
+                    ..marker.clone()
+                });
+            }
+            if rows.len() == first {
+                rows.push(marker);
             }
         }
     }
 
     // Canonical order is a function of the resolved model, so it does not depend on
-    // the stage-major walk order — the declaration-order-invariance guarantee.
+    // the stage-major walk order — the declaration-order-invariance guarantee. The sort is
+    // stable, so a row's capacity reads keep their order after its terms.
     rows.sort_by_key(|r| {
         (
             r.constraint_id,
             r.stage_id,
             r.block_id.unwrap_or(-1),
-            r.term_index.unwrap_or(-1),
+            r.term_index.unwrap_or(i32::MAX),
         )
     });
     rows
@@ -156,6 +176,9 @@ fn penalty_basis_label(basis: PenaltyBasis) -> &'static str {
 /// Return `(kind_tag, rendered_label)` for a variable reference — the `"kind"`
 /// discriminant and the `"kind(args)"` display string. The exhaustive `match`
 /// makes a new [`VariableRef`] variant a compile error.
+// Rationale: one exhaustive match over the variable catalog; splitting would scatter the
+// catalog and drop the compile-time exhaustiveness check.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn render_variable(v: &VariableRef) -> (&'static str, String) {
     let (kind, args) = match *v {
         VariableRef::HydroStorage { hydro_id } => ("hydro_storage", format!("id={}", hydro_id.0)),
@@ -305,6 +328,23 @@ pub(crate) fn render_variable(v: &VariableRef) -> (&'static str, String) {
         VariableRef::PumpingVolume { station_id } => {
             ("pumping_volume", format!("id={}", station_id.0))
         }
+        VariableRef::HydroAvailability { hydro_id, block_id } => (
+            "hydro_availability",
+            format!("id={}, block={}", hydro_id.0, block_label(block_id)),
+        ),
+        VariableRef::HydroGroupGeneration {
+            hydro_id,
+            group_id,
+            block_id,
+        } => (
+            "hydro_generation",
+            format!(
+                "id={}, unit_group={}, block={}",
+                hydro_id.0,
+                group_id.0,
+                block_label(block_id)
+            ),
+        ),
     };
     (kind, format!("{kind}({args})"))
 }
@@ -322,9 +362,18 @@ fn bus_label(bus_id: Option<EntityId>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use novomodelo_core::{ConstraintExpression, LinearTerm, ScalarExpr, SlackConfig, StageId};
+    use novomodelo_core::test_support::{HydroSpec, make_hydro};
+    use novomodelo_core::{
+        ConstraintExpression, HydroUnitGroupBoundsCountsSpec, LinearTerm,
+        ResolvedHydroUnitGroupBounds, ScalarExpr, SlackConfig, StageId,
+    };
+    use novomodelo_io::constraints::scenario::{
+        AvailabilityAtom, CompareOp, DataAtom, ResolvedCondition,
+    };
+    use novomodelo_io::constraints::{ConstraintScenario, ScenarioLayer};
 
     use crate::ResolvedParameters;
+    use crate::policy::resolved_generic_coefficients::{LoadBuses, ScenarioSources};
 
     const PER_UNIT_5000: Option<SlackConfig> = Some(SlackConfig {
         penalty: 5000.0,
@@ -341,7 +390,7 @@ mod tests {
         slack: Option<SlackConfig>,
     ) -> GenericConstraintRowEntry {
         GenericConstraintRowEntry {
-            constraint_idx,
+            origin: RowOrigin::Generic { constraint_idx },
             entity_id,
             block_idx,
             is_stage_level,
@@ -385,6 +434,273 @@ mod tests {
             thermal_id: EntityId(id),
             block_id: None,
         }
+    }
+
+    const PLANT_14_MW: f64 = 300.0;
+    const BUS_1: [EntityId; 1] = [EntityId(1)];
+
+    /// The owner of `constraints` over one study stage of one block, with plant 14, one unit
+    /// group of [`PLANT_14_MW`], behind the capacities of `layer`, and bus 1, whose load is drawn
+    /// as noise, behind its loads.
+    fn scenario_coefficients(
+        constraints: &[GenericConstraint],
+        layer: &ScenarioLayer,
+    ) -> ResolvedGenericCoefficients {
+        let hydros = [make_hydro(HydroSpec {
+            id: 14,
+            max_generation_mw: PLANT_14_MW,
+            ..HydroSpec::default()
+        })];
+        let group_bounds = ResolvedHydroUnitGroupBounds::new(&HydroUnitGroupBoundsCountsSpec {
+            groups_per_plant: &[1],
+            n_stages: 1,
+            max_blocks: 1,
+        });
+        ResolvedGenericCoefficients::build_with_scenario(
+            constraints,
+            &ScenarioSources {
+                layer,
+                hydros: &hydros,
+                group_bounds: &group_bounds,
+                loads: LoadBuses {
+                    buses_with_load: &BUS_1,
+                    noise_members: &BUS_1,
+                    bus_ids: &BUS_1,
+                },
+            },
+            &ResolvedParameters::default(),
+            &[StageId(7)],
+            &[1],
+        )
+        .unwrap()
+    }
+
+    /// The one row of constraint 0 at the one block, with the endpoints the layout takes.
+    fn layout_entry(
+        rgc: &ResolvedGenericCoefficients,
+        entity_id: i32,
+    ) -> GenericConstraintRowEntry {
+        let endpoints = rgc.endpoints(0, 0, 0, None, None);
+        entry(
+            0,
+            entity_id,
+            0,
+            false,
+            endpoints.lower,
+            endpoints.upper,
+            None,
+        )
+    }
+
+    /// derived: the upper bound reads the load of bus 1 (data atom 940), so a solve evaluates it
+    /// and the layout holds it at `+inf`; the lower bound `35` is fixed, and the shape counts
+    /// both sides.
+    #[test]
+    fn a_per_solve_side_is_flagged_and_has_no_fixed_bound() {
+        let load = || ScalarExpr::param(EntityId(940));
+        let layer = ScenarioLayer {
+            data_atoms: vec![(
+                EntityId(940),
+                DataAtom::BusLoadValue {
+                    bus_id: EntityId(1),
+                    block_id: None,
+                },
+            )],
+            constraints: vec![ConstraintScenario {
+                constraint_id: EntityId(13),
+                active_when: Some(ResolvedCondition::Compare {
+                    lhs: load(),
+                    op: CompareOp::Gt,
+                    rhs: ScalarExpr::literal(0.0),
+                }),
+                endpoint_shift: None,
+            }],
+            ..ScenarioLayer::default()
+        };
+        let mut gated = constraint(13, "gated", vec![LinearTerm::literal(1.0, thermal(0))]);
+        gated.bound_lower = Some(ScalarExpr::literal(35.0));
+        gated.bound_upper = Some(load());
+        let constraints = vec![gated];
+        let rgc = scenario_coefficients(&constraints, &layer);
+
+        let rows =
+            build_echo_rows_from_parts(&[vec![layout_entry(&rgc, 13)]], &[7], &rgc, &constraints);
+
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.term_index, Some(0));
+        assert_eq!(r.bound_lower, Some(35.0));
+        assert_eq!(r.bound_upper, None);
+        assert!(!r.lower_per_solve);
+        assert!(r.upper_per_solve);
+        assert!(r.has_active_when);
+        assert_eq!(r.derived_shape, "band");
+        assert_eq!(r.value, None);
+    }
+
+    /// derived: plant 14's one unit group of [`PLANT_14_MW`] is its capacity at the one cell, a
+    /// setup value, so the upper bound it sets stays fixed.
+    #[test]
+    fn a_capacity_read_is_a_row_with_its_setup_value_after_the_terms() {
+        let capacity = EntityId(900);
+        let layer = ScenarioLayer {
+            availability_atoms: vec![(
+                capacity,
+                AvailabilityAtom {
+                    hydro_id: EntityId(14),
+                    block_id: None,
+                },
+            )],
+            ..ScenarioLayer::default()
+        };
+        let mut c = constraint(
+            21,
+            "under_capacity",
+            vec![
+                LinearTerm::literal(1.0, thermal(0)),
+                LinearTerm::literal(1.0, thermal(1)),
+            ],
+        );
+        c.bound_upper = Some(ScalarExpr::param(capacity));
+        let constraints = vec![c];
+        let rgc = scenario_coefficients(&constraints, &layer);
+
+        let rows =
+            build_echo_rows_from_parts(&[vec![layout_entry(&rgc, 21)]], &[7], &rgc, &constraints);
+
+        assert_eq!(
+            rows.iter().map(|r| r.term_index).collect::<Vec<_>>(),
+            [Some(0), Some(1), None]
+        );
+        let read = &rows[2];
+        assert_eq!(read.variable_kind.as_deref(), Some("hydro_availability"));
+        assert_eq!(
+            read.variable.as_deref(),
+            Some("hydro_availability(id=14, block=all)")
+        );
+        assert_eq!(read.coefficient, None);
+        let setup = rgc.setup_value(capacity, 0, 0);
+        assert_eq!(setup, Some(PLANT_14_MW));
+        assert_eq!(read.value.map(f64::to_bits), setup.map(f64::to_bits));
+        assert_eq!(read.bound_upper, Some(PLANT_14_MW));
+        assert!(rows[..2].iter().all(|r| r.value.is_none()));
+    }
+
+    #[test]
+    fn a_term_less_constraint_reading_a_capacity_has_no_placeholder_row() {
+        let layer = ScenarioLayer {
+            availability_atoms: vec![(
+                EntityId(900),
+                AvailabilityAtom {
+                    hydro_id: EntityId(14),
+                    block_id: None,
+                },
+            )],
+            ..ScenarioLayer::default()
+        };
+        let mut c = constraint(22, "capacity_floor", vec![]);
+        c.bound_lower = Some(ScalarExpr::literal(50.0) - ScalarExpr::param(EntityId(900)));
+        let constraints = vec![c];
+        let rgc = scenario_coefficients(&constraints, &layer);
+
+        let rows =
+            build_echo_rows_from_parts(&[vec![layout_entry(&rgc, 22)]], &[7], &rgc, &constraints);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].term_index, None);
+        assert_eq!(rows[0].variable_kind.as_deref(), Some("hydro_availability"));
+        assert_eq!(rows[0].value, Some(PLANT_14_MW));
+    }
+
+    /// Every row of constraints the scenario layer does not reach carries the fields it had
+    /// before the scenario columns, no capacity value and every flag `false`.
+    #[test]
+    fn a_constraint_without_scenario_data_echoes_as_before() {
+        let constraints = vec![
+            constraint(
+                54,
+                "band",
+                vec![
+                    LinearTerm::literal(1.0, thermal(3)),
+                    LinearTerm::literal(-2.0, thermal(4)),
+                ],
+            ),
+            constraint(7, "const_only", vec![]),
+        ];
+        let entries = vec![vec![
+            entry(0, 54, 0, false, Some(35.0), Some(100.0), PER_UNIT_5000),
+            entry(0, 54, 1, false, Some(35.0), Some(100.0), PER_UNIT_5000),
+            entry(1, 7, 0, true, Some(5.0), None, None),
+        ]];
+        let resolved = ResolvedParameters::default();
+
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[2],
+            &coefficients(&constraints, &resolved, &[2], &entries),
+            &constraints,
+        );
+
+        let term = GenericConstraintEchoRow {
+            stage_id: 2,
+            block_id: Some(0),
+            constraint_id: 54,
+            constraint_name: "band".to_string(),
+            term_index: Some(0),
+            variable_kind: Some("thermal_generation".to_string()),
+            variable: Some("thermal_generation(id=3, block=all)".to_string()),
+            coefficient: Some(1.0),
+            bound_lower: Some(35.0),
+            bound_upper: Some(100.0),
+            derived_shape: "band".to_string(),
+            slack_enabled: true,
+            slack_penalty: Some(5000.0),
+            slack_penalty_basis: Some("per_unit".to_string()),
+            value: None,
+            lower_per_solve: false,
+            upper_per_solve: false,
+            has_active_when: false,
+        };
+        let second_term = GenericConstraintEchoRow {
+            term_index: Some(1),
+            variable: Some("thermal_generation(id=4, block=all)".to_string()),
+            coefficient: Some(-2.0),
+            ..term.clone()
+        };
+        let placeholder = GenericConstraintEchoRow {
+            block_id: None,
+            constraint_id: 7,
+            constraint_name: "const_only".to_string(),
+            term_index: None,
+            variable_kind: None,
+            variable: None,
+            coefficient: None,
+            bound_lower: Some(5.0),
+            bound_upper: None,
+            derived_shape: "floor".to_string(),
+            slack_enabled: false,
+            slack_penalty: None,
+            slack_penalty_basis: None,
+            ..term.clone()
+        };
+        let expected = [
+            placeholder,
+            term.clone(),
+            second_term.clone(),
+            GenericConstraintEchoRow {
+                block_id: Some(1),
+                ..term
+            },
+            GenericConstraintEchoRow {
+                block_id: Some(1),
+                ..second_term
+            },
+        ];
+        assert!(rows.iter().all(|r| r.value.is_none()
+            && !r.lower_per_solve
+            && !r.upper_per_solve
+            && !r.has_active_when));
+        assert_eq!(format!("{rows:?}"), format!("{expected:?}"));
     }
 
     /// An upper-only stage-level entry (the d13 shape) renders a `cap` row with
@@ -861,6 +1177,20 @@ mod tests {
         assert_eq!(derived_shape(Some(50.0), Some(50.0)), "equality");
     }
 
+    /// The layout holds a per-solve side at the infinity of its side, which the shape counts as a
+    /// present side and never as equal to the other.
+    #[test]
+    fn a_per_solve_side_counts_in_the_shape_as_the_infinity_of_its_side() {
+        assert_eq!(derived_shape(Some(f64::NEG_INFINITY), None), "floor");
+        assert_eq!(derived_shape(None, Some(f64::INFINITY)), "cap");
+        assert_eq!(derived_shape(Some(35.0), Some(f64::INFINITY)), "band");
+        assert_eq!(derived_shape(Some(f64::NEG_INFINITY), Some(100.0)), "band");
+        assert_eq!(
+            derived_shape(Some(f64::NEG_INFINITY), Some(f64::INFINITY)),
+            "band"
+        );
+    }
+
     /// Rendered labels match the canonical `kind(args)` form, including `block=all`
     /// for a `None` block and a bus selector on a split plant.
     #[test]
@@ -915,5 +1245,20 @@ mod tests {
         });
         assert_eq!(kind, "pumping_volume");
         assert_eq!(r, "pumping_volume(id=3)");
+
+        let (kind, r) = render_variable(&VariableRef::HydroGroupGeneration {
+            hydro_id: EntityId(14),
+            group_id: EntityId(0),
+            block_id: None,
+        });
+        assert_eq!(kind, "hydro_generation");
+        assert_eq!(r, "hydro_generation(id=14, unit_group=0, block=all)");
+
+        let (kind, r) = render_variable(&VariableRef::HydroAvailability {
+            hydro_id: EntityId(14),
+            block_id: Some(1),
+        });
+        assert_eq!(kind, "hydro_availability");
+        assert_eq!(r, "hydro_availability(id=14, block=1)");
     }
 }

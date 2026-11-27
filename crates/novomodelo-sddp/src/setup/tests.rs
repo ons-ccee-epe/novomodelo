@@ -6,11 +6,13 @@ use super::{
 };
 use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
+use crate::build_generic_constraint_echo_rows;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{
     AnticipatedPlants, ChainRuleSlots, LagPointMode, LagPointRule, StateSpace, ThermalSys,
 };
+use crate::simulation::SimulationScenarioResult;
 use crate::test_support;
 use crate::test_support::builders::{
     self, BusSpec, ContractSpec, HydroSpec, NcsSpec, StageSpec, ThermalSpec,
@@ -59,12 +61,13 @@ use novomodelo_stochastic::{
 /// `train_generates_cuts_in_fcf`) solve a genuinely optimized LP with real
 /// duals, not a degenerate all-zero one.
 fn minimal_system(n_stages: usize) -> novomodelo_core::System {
-    minimal_system_with_policy_graph(n_stages, HorizonGraph::default())
+    minimal_system_with_policy_graph(n_stages, HorizonGraph::default(), 0.0)
 }
 
 /// [`minimal_system`]'s body, generalized to accept a caller-supplied
 /// `policy_graph` (a node-native or discount-override fixture, e.g.) instead
-/// of always defaulting to a plain chain.
+/// of always defaulting to a plain chain, and the standard deviation
+/// `load_std_mw` of the load of bus 1.
 #[expect(
     clippy::too_many_lines,
     clippy::items_after_statements,
@@ -73,6 +76,7 @@ fn minimal_system(n_stages: usize) -> novomodelo_core::System {
 fn minimal_system_with_policy_graph(
     n_stages: usize,
     policy_graph: HorizonGraph,
+    load_std_mw: f64,
 ) -> novomodelo_core::System {
     let bus = builders::make_bus(
         EntityId(1),
@@ -147,7 +151,7 @@ fn minimal_system_with_policy_graph(
             bus_id: EntityId(1),
             stage_id: i as i32,
             mean_mw: 100.0,
-            std_mw: 0.0,
+            std_mw: load_std_mw,
         })
         .collect();
 
@@ -452,6 +456,1267 @@ fn new_minimal_valid_system_returns_ok() {
     assert!(result.is_ok(), "expected Ok, got {result:?}");
     let setup = result.unwrap();
     assert!(!setup.inputs.stage_data.stage_templates.templates.is_empty());
+}
+
+/// [`minimal_config`] training for one iteration and simulating `num_scenarios` scenarios.
+fn simulation_config(num_scenarios: u32) -> Config {
+    let mut config = minimal_config(1, 1);
+    config.simulation = IoSimulationConfig {
+        enabled: true,
+        selection: Some(SimulationSelection::Sampled { num_scenarios }),
+        io_channel_capacity: 8,
+        ..IoSimulationConfig::default()
+    };
+    config
+}
+
+/// `setup` trained and then simulated, returning the scenario results.
+fn train_and_simulate(mut setup: StudySetup) -> Vec<SimulationScenarioResult> {
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
+
+    let comm = LocalBackend;
+    let mut solver = ActiveSolver::new().expect("solver");
+    setup
+        .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
+        .expect("train");
+    let mut pool = setup
+        .create_workspace_pool(&comm, 1, ActiveSolver::new)
+        .expect("sim pool");
+
+    let io_capacity = setup.simulation_config.io_channel_capacity.max(1);
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(io_capacity);
+    let drain_handle = std::thread::spawn(move || result_rx.into_iter().collect::<Vec<_>>());
+    setup
+        .simulate(&mut pool.workspaces, &comm, &result_tx, None, None, &[])
+        .expect("simulate");
+    drop(result_tx);
+    drain_handle.join().expect("drain thread")
+}
+
+/// The stage-0 template as a solve from the initial state patches it, with the raw noise
+/// `load_eta` on every load bus and zero elsewhere.
+fn patched_stage_0_template(setup: &StudySetup, load_eta: f64) -> novomodelo_solver::StageTemplate {
+    let graph = &setup.inputs.node_graph;
+    let root = (0..graph.nodes.len())
+        .map(NodePos)
+        .find(|&pos| graph.nodes[pos].stage == super::node_graph::StageIdx(0))
+        .expect("a stage-0 node");
+    let mut noise = vec![0.0; setup.inputs.stochastic.dim()];
+    noise[setup.inputs.stochastic.class_dimensions().load_bus_range()].fill(load_eta);
+    test_support::capture_patched_node_template_at(setup, root, &noise, &setup.inputs.initial.state)
+}
+
+/// [`minimal_system`] over two stages with the load of bus 1 at mean 100 MW and standard
+/// deviation 10 MW and hydro 3 generating 1 MW per m³/s it turbines, set up with the generic
+/// constraint 800 `hydro_generation(3) >= 10`, active at every stage with no table endpoint, and
+/// the scenario layer `layer`.
+fn setup_with_a_generic_constraint(layer: novomodelo_io::constraints::ScenarioLayer) -> StudySetup {
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, ScalarExpr};
+
+    setup_with_generic_constraint(
+        GenericConstraint {
+            id: EntityId(800),
+            name: "gated".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(1.0, hydro_3_generation())],
+            },
+            slack: None,
+            bound_lower: Some(ScalarExpr::literal(10.0)),
+            bound_upper: None,
+        },
+        layer,
+    )
+}
+
+fn hydro_3_generation() -> novomodelo_core::VariableRef {
+    novomodelo_core::VariableRef::HydroGeneration {
+        hydro_id: EntityId(3),
+        block_id: None,
+        bus_id: None,
+    }
+}
+
+/// [`setup_with_a_generic_constraint`] with `constraint` in place of constraint 800.
+fn setup_with_generic_constraint(
+    constraint: novomodelo_core::GenericConstraint,
+    layer: novomodelo_io::constraints::ScenarioLayer,
+) -> StudySetup {
+    setup_with_generic_constraints(vec![constraint], layer, 1, &minimal_config(1, 10))
+}
+
+/// [`setup_with_generic_constraint`] with every constraint of `constraints`,
+/// `branching_factor` openings per stage, over the study `config`.
+fn setup_with_generic_constraints(
+    constraints: Vec<novomodelo_core::GenericConstraint>,
+    layer: novomodelo_io::constraints::ScenarioLayer,
+    branching_factor: usize,
+    config: &Config,
+) -> StudySetup {
+    setup_over_generic_system(
+        &system_with_generic_constraints(constraints, branching_factor),
+        layer,
+        config,
+    )
+}
+
+/// [`minimal_system`] over two stages with the load of bus 1 at mean 100 MW and standard
+/// deviation 10 MW, `branching_factor` openings per stage and every constraint of `constraints`,
+/// in any order, each with a bounds row without endpoints at block 0 of every one-block stage.
+fn system_with_generic_constraints(
+    constraints: Vec<novomodelo_core::GenericConstraint>,
+    branching_factor: usize,
+) -> System {
+    use std::collections::HashMap;
+
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+
+    let base = minimal_system_with_policy_graph(2, HorizonGraph::default(), 10.0);
+    let mut ids: Vec<i32> = constraints
+        .iter()
+        .map(|constraint| constraint.id.0)
+        .collect();
+    ids.sort_unstable();
+    let id_map: HashMap<i32, usize> = ids.iter().copied().zip(0..).collect();
+    let mut stages = base.stages().to_vec();
+    for stage in &mut stages {
+        stage.scenario_config.branching_factor = branching_factor;
+    }
+    SystemBuilder::new()
+        .buses(base.buses().to_vec())
+        .thermals(base.thermals().to_vec())
+        .hydros(base.hydros().to_vec())
+        .stages(stages)
+        .inflow_models(base.inflow_models().to_vec())
+        .load_models(base.load_models().to_vec())
+        .bounds(base.bounds().clone())
+        .penalties(base.penalties().clone())
+        .policy_graph(base.policy_graph().clone())
+        .generic_constraints(constraints)
+        .resolved_generic_bounds(ResolvedGenericConstraintBounds::new(
+            &id_map,
+            ids.iter()
+                .flat_map(|&id| (0..2).map(move |stage_id| (id, stage_id, Some(0), None, None))),
+        ))
+        .build()
+        .expect("adding generic constraints keeps the fixture valid")
+}
+
+/// `system`, with hydro 3 generating 1 MW per m³/s it turbines, set up over the scenario layer
+/// `layer` and the study `config`.
+fn setup_over_generic_system(
+    system: &System,
+    layer: novomodelo_io::constraints::ScenarioLayer,
+    config: &Config,
+) -> StudySetup {
+    use std::path::Path;
+
+    let stochastic = build_stochastic_context(
+        system,
+        42,
+        None,
+        &[],
+        &[],
+        OpeningTreeInputs::default(),
+        ClassSchemes {
+            inflow: Some(SamplingScheme::InSample),
+            load: Some(SamplingScheme::InSample),
+            ncs: Some(SamplingScheme::InSample),
+        },
+    )
+    .expect("stochastic context");
+    let mut params = super::StudyParams::from_config(config, Vec::new()).expect("from_config");
+    params.generic_scenario = layer;
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
+    hydro_models.production = ProductionModelSet::new(
+        vec![vec![
+            ResolvedProductionModel::ConstantProductivity {
+                productivity: 1.0
+            };
+            2
+        ]],
+        system.hydros(),
+        2,
+    );
+    let sentinel = Path::new("config.json");
+    StudySetup::from_broadcast_params(
+        system,
+        stochastic,
+        params,
+        hydro_models,
+        &config
+            .training_scenario_source(sentinel)
+            .expect("training source"),
+        &config
+            .simulation_scenario_source(sentinel)
+            .expect("simulation source"),
+    )
+    .expect("setup")
+}
+
+/// The scenario layer of [`setup_with_a_generic_constraint`] gating constraint 800 by
+/// `bus_load_value(1) > 100`.
+fn load_value_gate() -> novomodelo_io::constraints::ScenarioLayer {
+    use novomodelo_core::ScalarExpr;
+    use novomodelo_io::constraints::ConstraintScenario;
+    use novomodelo_io::constraints::scenario::{CompareOp, DataAtom, ResolvedCondition};
+
+    novomodelo_io::constraints::ScenarioLayer {
+        data_atoms: vec![(
+            EntityId(1000),
+            DataAtom::BusLoadValue {
+                bus_id: EntityId(1),
+                block_id: None,
+            },
+        )],
+        constraints: vec![ConstraintScenario {
+            constraint_id: EntityId(800),
+            active_when: Some(ResolvedCondition::Compare {
+                lhs: ScalarExpr::param(EntityId(1000)),
+                op: CompareOp::Gt,
+                rhs: ScalarExpr::literal(100.0),
+            }),
+            endpoint_shift: None,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_stage_context_lends_the_generic_row_owner() {
+    let setup = setup_with_a_generic_constraint(load_value_gate());
+    let ctx = setup.inputs.stage_ctx();
+    assert!(std::ptr::eq(
+        ctx.generic_rows,
+        &raw const setup.inputs.stage_data.generic_rows
+    ));
+    assert_eq!(ctx.generic_rows.per_solve_tables().conditions.len(), 1);
+
+    let setup =
+        setup_with_a_generic_constraint(novomodelo_io::constraints::ScenarioLayer::default());
+    let ctx = setup.inputs.stage_ctx();
+    assert!(ctx.generic_rows.per_solve_tables().conditions.is_empty());
+    assert!(
+        ctx.geometry_per_stage
+            .iter()
+            .all(|geometry| geometry.per_solve_rows.is_empty())
+    );
+}
+
+/// derived: the load of bus 1 is `100 + 10η`: 120 at `η = +2`, where the condition holds and the
+/// row takes its operator's bound 10, and 80 at `η = -2`, where it is open. The template's own
+/// bounds on the row are cleared first, so only the solve's patch can write them.
+#[test]
+fn the_stage_solve_writes_the_bounds_of_the_generic_rows_it_gates() {
+    let mut setup = setup_with_a_generic_constraint(load_value_gate());
+    let stage_templates = &mut setup.inputs.stage_data.stage_templates;
+    let [row] = stage_templates.geometry_per_stage[0]
+        .per_solve_rows
+        .as_slice()
+    else {
+        panic!(
+            "one row per block of the one-block stage: {:?}",
+            stage_templates.geometry_per_stage[0].per_solve_rows
+        );
+    };
+    assert_eq!((row.constraint_id, row.block_idx), (800, 0));
+    assert_eq!(row.base_lower, None);
+    let r = row.row;
+    let template = &mut stage_templates.templates[0];
+    let scale = template.row_scale.get(r).copied().unwrap_or(1.0);
+    assert_eq!(
+        (template.row_lower[r], template.row_upper[r]),
+        (10.0 * scale, f64::INFINITY)
+    );
+    template.row_lower[r] = 0.0;
+    template.row_upper[r] = 0.0;
+
+    let active = patched_stage_0_template(&setup, 2.0);
+    let inactive = patched_stage_0_template(&setup, -2.0);
+
+    assert_eq!(
+        (active.row_lower[r], active.row_upper[r]),
+        (10.0 * scale, f64::INFINITY)
+    );
+    assert_eq!(
+        (inactive.row_lower[r], inactive.row_upper[r]),
+        (f64::NEG_INFINITY, f64::INFINITY)
+    );
+    assert_only_the_row_bounds_differ(&active, &inactive);
+}
+
+/// derived: the load of bus 1 is `100 + 10η`, so [`load_value_gate`] holds where a solve draws
+/// `η > 0`: the row of the gated constraint 800 then takes its operator's bound 10, and is open
+/// otherwise. Constraint 801 reads no scenario data, so no solve bounds its row and it reports
+/// nothing. Four openings per stage put the eight scenarios on both sides of the gate.
+#[test]
+fn the_simulation_reports_the_activation_of_the_generic_rows_a_solve_bounds() {
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, ScalarExpr};
+
+    let capped = |id, cap| GenericConstraint {
+        id: EntityId(id),
+        name: format!("cap {id}"),
+        description: None,
+        expression: ConstraintExpression {
+            terms: vec![LinearTerm::literal(1.0, hydro_3_generation())],
+        },
+        slack: None,
+        bound_lower: None,
+        bound_upper: Some(ScalarExpr::literal(cap)),
+    };
+    let scenarios = train_and_simulate(setup_with_generic_constraints(
+        vec![capped(800, 10.0), capped(801, 1000.0)],
+        load_value_gate(),
+        4,
+        &simulation_config(8),
+    ));
+
+    assert_eq!(scenarios.len(), 8);
+    let mut seen = [false; 2];
+    for scenario in &scenarios {
+        assert_eq!(scenario.stages.len(), 2);
+        for stage in &scenario.stages {
+            let [record] = stage.generic_activation.as_slice() else {
+                panic!(
+                    "one record per stage of one block: {:?}",
+                    stage.generic_activation
+                );
+            };
+            assert_eq!(
+                (record.stage_id, record.block_id, record.constraint_id),
+                (stage.stage_id, Some(0), 800)
+            );
+            let [bus] = stage.buses.as_slice() else {
+                panic!("one bus: {:?}", stage.buses);
+            };
+            assert_eq!(record.active, bus.load_mw > 100.0, "{record:?} {bus:?}");
+            let bounds = if record.active {
+                (None, Some(10.0))
+            } else {
+                (None, None)
+            };
+            assert_eq!((record.bound_lower, record.bound_upper), bounds);
+            seen[usize::from(record.active)] = true;
+        }
+    }
+    assert_eq!(seen, [true, true], "scenarios on both sides of the gate");
+}
+
+/// derived: hydro 3 turbines at most 100 m³/s at 1 MW per m³/s, so the soft constraint 800
+/// `hydro_generation(3) >= 1000` is short wherever [`load_value_gate`] holds, `load > 100`;
+/// where it fails the row is open and its slack, still priced, stays 0. Four openings per stage
+/// put the eight scenarios on both sides of the gate.
+#[test]
+fn the_generic_violation_cost_closes_over_the_rows_a_solve_bounds() {
+    use novomodelo_core::{
+        ConstraintExpression, GenericConstraint, LinearTerm, PenaltyBasis, ScalarExpr, SlackConfig,
+    };
+
+    let scenarios = train_and_simulate(setup_with_generic_constraints(
+        vec![GenericConstraint {
+            id: EntityId(800),
+            name: "short".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(1.0, hydro_3_generation())],
+            },
+            slack: Some(SlackConfig {
+                penalty: 100.0,
+                penalty_basis: PenaltyBasis::PerHour,
+            }),
+            bound_lower: Some(ScalarExpr::literal(1000.0)),
+            bound_upper: None,
+        }],
+        load_value_gate(),
+        4,
+        &simulation_config(8),
+    ));
+
+    assert_eq!(scenarios.len(), 8);
+    let mut seen = [false; 2];
+    for scenario in &scenarios {
+        assert_eq!(scenario.stages.len(), 2);
+        for stage in &scenario.stages {
+            let [violation] = stage.generic_violations.as_slice() else {
+                panic!(
+                    "one record per stage of one block: {:?}",
+                    stage.generic_violations
+                );
+            };
+            assert_eq!(
+                (violation.stage_id, violation.constraint_id),
+                (stage.stage_id, 800)
+            );
+            let [bus] = stage.buses.as_slice() else {
+                panic!("one bus: {:?}", stage.buses);
+            };
+            let active = bus.load_mw > 100.0;
+            if active {
+                assert!(
+                    violation.slack_value != 0.0 && violation.slack_cost > 0.0,
+                    "{violation:?} {bus:?}"
+                );
+            } else {
+                assert_eq!(
+                    (violation.slack_value, violation.slack_cost),
+                    (0.0, 0.0),
+                    "{violation:?} {bus:?}"
+                );
+            }
+            seen[usize::from(active)] = true;
+
+            let cost = &stage.costs[0];
+            let slack_cost: f64 = stage.generic_violations.iter().map(|v| v.slack_cost).sum();
+            assert!(
+                (slack_cost - cost.generic_violation_cost).abs()
+                    <= 1e-9 * cost.generic_violation_cost.abs().max(1.0),
+                "Σ slack_cost {slack_cost} must close to {}",
+                cost.generic_violation_cost
+            );
+        }
+    }
+    assert_eq!(seen, [true, true], "scenarios on both sides of the gate");
+}
+
+/// 10 times the 500 $/`MWh` deficit of bus 1, charged per hour of the row.
+const TEN_DEFICITS_PER_HOUR: novomodelo_core::SlackConfig = novomodelo_core::SlackConfig {
+    penalty: 5000.0,
+    penalty_basis: novomodelo_core::PenaltyBasis::PerHour,
+};
+
+/// Generic constraint `id`, named `constraint_<id>`, over `terms`, relaxed by `slack`, within
+/// `lower` and `upper`.
+fn generic_constraint(
+    id: i32,
+    terms: Vec<novomodelo_core::LinearTerm>,
+    slack: Option<novomodelo_core::SlackConfig>,
+    lower: Option<novomodelo_core::ScalarExpr>,
+    upper: Option<novomodelo_core::ScalarExpr>,
+) -> novomodelo_core::GenericConstraint {
+    novomodelo_core::GenericConstraint {
+        id: EntityId(id),
+        name: format!("constraint_{id}"),
+        description: None,
+        expression: novomodelo_core::ConstraintExpression { terms },
+        slack,
+        bound_lower: lower,
+        bound_upper: upper,
+    }
+}
+
+fn only_hydro_3_generation() -> Vec<novomodelo_core::LinearTerm> {
+    vec![novomodelo_core::LinearTerm::literal(
+        1.0,
+        hydro_3_generation(),
+    )]
+}
+
+/// The entry gating constraint `constraint_id` by `bus_load_value(1) <= threshold`, the load
+/// read through data atom 1000.
+fn active_while_load_value_at_most(
+    constraint_id: i32,
+    threshold: f64,
+) -> novomodelo_io::constraints::ConstraintScenario {
+    use novomodelo_core::ScalarExpr;
+    use novomodelo_io::constraints::scenario::{CompareOp, ResolvedCondition};
+
+    novomodelo_io::constraints::ConstraintScenario {
+        constraint_id: EntityId(constraint_id),
+        active_when: Some(ResolvedCondition::Compare {
+            lhs: ScalarExpr::param(EntityId(1000)),
+            op: CompareOp::Le,
+            rhs: ScalarExpr::literal(threshold),
+        }),
+        endpoint_shift: None,
+    }
+}
+
+/// derived: hydro 3 turbines at most 100 m³/s at 1 MW per m³/s, so the soft constraint 800
+/// `hydro_generation(3) >= 1000` is short in every block, and its slack costs its 5000 $/`MWh`
+/// over the 744 h of the stage's single block.
+#[test]
+fn a_generic_slack_reaches_the_simulation_cost_breakdown() {
+    const BLOCK_HOURS: f64 = 744.0;
+    let scenarios = train_and_simulate(setup_with_generic_constraints(
+        vec![generic_constraint(
+            800,
+            only_hydro_3_generation(),
+            Some(TEN_DEFICITS_PER_HOUR),
+            Some(novomodelo_core::ScalarExpr::literal(1000.0)),
+            None,
+        )],
+        novomodelo_io::constraints::ScenarioLayer::default(),
+        1,
+        &simulation_config(2),
+    ));
+
+    assert_eq!(scenarios.len(), 2);
+    for scenario in &scenarios {
+        assert_eq!(scenario.stages.len(), 2);
+        for stage in &scenario.stages {
+            let [violation] = stage.generic_violations.as_slice() else {
+                panic!("one record per stage: {:?}", stage.generic_violations);
+            };
+            assert_eq!(
+                (violation.constraint_id, violation.block_id),
+                (800, Some(0))
+            );
+            assert!(violation.slack_value > 0.0, "{violation:?}");
+            let expected = violation.slack_value * TEN_DEFICITS_PER_HOUR.penalty * BLOCK_HOURS;
+            assert!(
+                (violation.slack_cost - expected).abs() <= 1e-9 * expected,
+                "{violation:?} must cost {expected}"
+            );
+
+            let cost = &stage.costs[0];
+            assert_eq!(cost.generic_violation_cost, violation.slack_cost);
+            let breakdown = cost.thermal_cost
+                + cost.anticipated_thermal_cost
+                + cost.contract_cost
+                + cost.deficit_cost
+                + cost.excess_cost
+                + cost.storage_violation_cost
+                + cost.filling_target_cost
+                + cost.hydro_violation_cost
+                + cost.inflow_penalty_cost
+                + cost.generic_violation_cost
+                + cost.spillage_cost
+                + cost.turbined_cost
+                + cost.curtailment_cost
+                + cost.exchange_cost
+                + cost.pumping_cost;
+            assert!(
+                (breakdown - cost.immediate_cost).abs() <= 1e-9 * cost.immediate_cost.abs(),
+                "Σ(breakdown) {breakdown} must close to immediate_cost {}",
+                cost.immediate_cost
+            );
+        }
+    }
+}
+
+/// Constraints 800 `hydro_generation(3) <= 10`, active while `bus_load_value(1) <= 1e9`, and
+/// 801 `hydro_generation(3) <= 5`, active while `bus_load_value(1) <= 0`, both soft, declared in
+/// reverse when `reversed`, trained and simulated over two scenarios.
+fn simulate_two_gated_generic_rows(reversed: bool) -> Vec<SimulationScenarioResult> {
+    use novomodelo_core::ScalarExpr;
+    use novomodelo_io::constraints::scenario::DataAtom;
+
+    let capped = |id, cap| {
+        generic_constraint(
+            id,
+            only_hydro_3_generation(),
+            Some(TEN_DEFICITS_PER_HOUR),
+            None,
+            Some(ScalarExpr::literal(cap)),
+        )
+    };
+    let mut constraints = vec![capped(800, 10.0), capped(801, 5.0)];
+    if reversed {
+        constraints.reverse();
+    }
+    train_and_simulate(setup_with_generic_constraints(
+        constraints,
+        novomodelo_io::constraints::ScenarioLayer {
+            data_atoms: vec![(
+                EntityId(1000),
+                DataAtom::BusLoadValue {
+                    bus_id: EntityId(1),
+                    block_id: None,
+                },
+            )],
+            constraints: vec![
+                active_while_load_value_at_most(800, 1e9),
+                active_while_load_value_at_most(801, 0.0),
+            ],
+            ..Default::default()
+        },
+        1,
+        &simulation_config(2),
+    ))
+}
+
+/// derived: the load of bus 1 is `100 + 10η`, positive and below 1e9 at every draw, so
+/// `bus_load_value(1) <= 1e9` holds and `bus_load_value(1) <= 0` does not, at every stage of
+/// every scenario; an inactive row is open on both sides, an active one keeps the 10 MW of its
+/// constraint.
+#[test]
+fn the_simulation_reports_the_activation_of_every_gated_generic_row() {
+    let scenarios = simulate_two_gated_generic_rows(false);
+
+    assert_eq!(scenarios.len(), 2);
+    for scenario in &scenarios {
+        assert_eq!(scenario.stages.len(), 2);
+        for stage in &scenario.stages {
+            let [bus] = stage.buses.as_slice() else {
+                panic!("one bus: {:?}", stage.buses);
+            };
+            assert!(bus.load_mw > 0.0 && bus.load_mw <= 1e9, "{bus:?}");
+            let [active, inactive] = stage.generic_activation.as_slice() else {
+                panic!("one record per gated row: {:?}", stage.generic_activation);
+            };
+
+            assert_eq!(
+                (active.stage_id, active.block_id, active.constraint_id),
+                (stage.stage_id, Some(0), 800)
+            );
+            assert!(active.active, "{active:?}");
+            assert_eq!((active.bound_lower, active.bound_upper), (None, Some(10.0)));
+
+            assert_eq!(
+                (inactive.stage_id, inactive.block_id, inactive.constraint_id),
+                (stage.stage_id, Some(0), 801)
+            );
+            assert!(!inactive.active, "{inactive:?}");
+            assert_eq!((inactive.bound_lower, inactive.bound_upper), (None, None));
+        }
+    }
+}
+
+#[test]
+fn generic_activation_is_declaration_order_invariant() {
+    let declared = simulate_two_gated_generic_rows(false);
+    let reversed = simulate_two_gated_generic_rows(true);
+
+    assert_eq!(declared.len(), reversed.len());
+    for (declared, reversed) in declared.iter().zip(&reversed) {
+        assert_eq!(declared.scenario_id, reversed.scenario_id);
+        assert_eq!(declared.stages.len(), reversed.stages.len());
+        for (declared, reversed) in declared.stages.iter().zip(&reversed.stages) {
+            assert_eq!(declared.generic_activation.len(), 2);
+            assert_eq!(declared.generic_activation, reversed.generic_activation);
+        }
+    }
+}
+
+/// Constraints 800 `hydro_generation(3) <= hydro_availability(3)`, active while
+/// `bus_load_value(1) <= 1e9`, 801 `hydro_generation(3) <= bus_load_value(1)` without a
+/// condition and 802 `hydro_generation(3) <= 5`, active while `bus_load_value(1) <= 0`, all
+/// soft, declared in reverse when `reversed`, with the system that carries them, set up.
+fn generic_echo_setup(reversed: bool) -> (System, StudySetup) {
+    use novomodelo_core::ScalarExpr;
+    use novomodelo_io::constraints::scenario::{AvailabilityAtom, DataAtom};
+
+    let capped = |id, cap| {
+        generic_constraint(
+            id,
+            only_hydro_3_generation(),
+            Some(TEN_DEFICITS_PER_HOUR),
+            None,
+            Some(cap),
+        )
+    };
+    let mut constraints = vec![
+        capped(800, ScalarExpr::param(EntityId(1002))),
+        capped(801, ScalarExpr::param(EntityId(1001))),
+        capped(802, ScalarExpr::literal(5.0)),
+    ];
+    if reversed {
+        constraints.reverse();
+    }
+    let system = system_with_generic_constraints(constraints, 1);
+    let setup = setup_over_generic_system(
+        &system,
+        novomodelo_io::constraints::ScenarioLayer {
+            data_atoms: vec![
+                (
+                    EntityId(1000),
+                    DataAtom::BusLoadValue {
+                        bus_id: EntityId(1),
+                        block_id: None,
+                    },
+                ),
+                (
+                    EntityId(1001),
+                    DataAtom::BusLoadValue {
+                        bus_id: EntityId(1),
+                        block_id: None,
+                    },
+                ),
+            ],
+            availability_atoms: vec![(
+                EntityId(1002),
+                AvailabilityAtom {
+                    hydro_id: EntityId(3),
+                    block_id: None,
+                },
+            )],
+            selectors: Vec::new(),
+            constraints: vec![
+                active_while_load_value_at_most(800, 1e9),
+                active_while_load_value_at_most(802, 0.0),
+            ],
+        },
+        &minimal_config(1, 10),
+    );
+    (system, setup)
+}
+
+/// derived: the mirror unit group of hydro 3 declares its 250 MW, so `hydro_availability(3)` reads
+/// 250 at both stages (ids 0 and 1, one block each) and is the upper bound of 800; 801 reads the
+/// load of bus 1, which a solve evaluates, so its bound has no static value; every row carries its
+/// constraint's slack of 5000 $/`MWh`, charged per hour.
+#[test]
+fn the_generic_echo_reflects_terms_bounds_conditions_and_plant_capacities() {
+    const CAPACITY: f64 = 250.0;
+    let (system, setup) = generic_echo_setup(false);
+
+    let rows = build_generic_constraint_echo_rows(&setup, &system);
+
+    assert_eq!(rows.len(), 8);
+    let keys: Vec<_> = rows
+        .iter()
+        .map(|r| (r.constraint_id, r.stage_id, r.block_id))
+        .collect();
+    assert!(keys.is_sorted(), "{keys:?}");
+    for row in &rows {
+        assert_eq!(
+            row.constraint_name,
+            format!("constraint_{}", row.constraint_id)
+        );
+        assert_eq!(row.block_id, Some(0));
+        assert!(row.slack_enabled);
+        assert_eq!(row.slack_penalty, Some(5000.0));
+        assert_eq!(row.slack_penalty_basis.as_deref(), Some("per_hour"));
+        assert_eq!(row.bound_lower, None);
+        assert!(!row.lower_per_solve);
+        assert_eq!(row.derived_shape, "cap");
+    }
+    for stage_id in 0..2 {
+        let cell = |constraint_id| {
+            rows.iter()
+                .filter(|r| r.constraint_id == constraint_id && r.stage_id == stage_id)
+                .collect::<Vec<_>>()
+        };
+
+        let [generation, capacity] = cell(800)[..] else {
+            panic!("a term and a capacity read: {:?}", cell(800));
+        };
+        assert_eq!(generation.term_index, Some(0));
+        assert_eq!(
+            generation.variable_kind.as_deref(),
+            Some("hydro_generation")
+        );
+        assert_eq!(
+            generation.variable.as_deref(),
+            Some("hydro_generation(id=3, bus=all, block=all)")
+        );
+        assert_eq!(generation.coefficient, Some(1.0));
+        assert_eq!(generation.value, None);
+        assert_eq!(generation.bound_upper, Some(CAPACITY));
+        assert!(!generation.upper_per_solve);
+        assert!(generation.has_active_when);
+        assert_eq!(capacity.term_index, None);
+        assert_eq!(
+            capacity.variable_kind.as_deref(),
+            Some("hydro_availability")
+        );
+        assert_eq!(
+            capacity.variable.as_deref(),
+            Some("hydro_availability(id=3, block=all)")
+        );
+        assert_eq!(capacity.coefficient, None);
+        assert_eq!(capacity.value, Some(CAPACITY));
+        assert_eq!(capacity.value, generation.bound_upper);
+        assert_eq!(capacity.bound_upper, generation.bound_upper);
+        assert!(capacity.has_active_when);
+
+        let [load] = cell(801)[..] else {
+            panic!("one term: {:?}", cell(801));
+        };
+        assert_eq!(load.term_index, Some(0));
+        assert_eq!(load.coefficient, Some(1.0));
+        assert_eq!(load.bound_upper, None);
+        assert!(load.upper_per_solve);
+        assert!(!load.has_active_when);
+
+        let [gated] = cell(802)[..] else {
+            panic!("one term: {:?}", cell(802));
+        };
+        assert_eq!(gated.bound_upper, Some(5.0));
+        assert!(!gated.upper_per_solve);
+        assert!(gated.has_active_when);
+    }
+}
+
+#[test]
+fn the_generic_echo_is_declaration_order_invariant() {
+    let (system, setup) = generic_echo_setup(false);
+    let declared = build_generic_constraint_echo_rows(&setup, &system);
+    let (system, setup) = generic_echo_setup(true);
+    let reversed = build_generic_constraint_echo_rows(&setup, &system);
+
+    assert_eq!(declared.len(), 8);
+    assert_eq!(format!("{declared:?}"), format!("{reversed:?}"));
+}
+
+#[test]
+fn the_generic_echo_of_a_setup_without_constraints_is_empty() {
+    let system = system_with_generic_constraints(Vec::new(), 1);
+    let setup = setup_over_generic_system(
+        &system,
+        novomodelo_io::constraints::ScenarioLayer::default(),
+        &minimal_config(1, 10),
+    );
+
+    assert!(build_generic_constraint_echo_rows(&setup, &system).is_empty());
+}
+
+/// derived: a constraint with no variable and no capacity, `0 <= 5`, holds one row per stage
+/// that carries no item, bounded above by 5.
+#[test]
+fn the_generic_echo_marks_a_constraint_that_has_no_term_and_reads_no_capacity() {
+    let system = system_with_generic_constraints(
+        vec![generic_constraint(
+            804,
+            Vec::new(),
+            Some(TEN_DEFICITS_PER_HOUR),
+            None,
+            Some(novomodelo_core::ScalarExpr::literal(5.0)),
+        )],
+        1,
+    );
+    let setup = setup_over_generic_system(
+        &system,
+        novomodelo_io::constraints::ScenarioLayer::default(),
+        &minimal_config(1, 10),
+    );
+
+    let rows = build_generic_constraint_echo_rows(&setup, &system);
+
+    assert_eq!(rows.len(), 2);
+    for (row, stage_id) in rows.iter().zip(0..) {
+        assert_eq!(
+            (row.constraint_id, row.stage_id, row.block_id),
+            (804, stage_id, Some(0))
+        );
+        assert_eq!(row.term_index, None);
+        assert_eq!(row.variable_kind, None);
+        assert_eq!(row.variable, None);
+        assert_eq!(row.coefficient, None);
+        assert_eq!(row.value, None);
+        assert_eq!(row.bound_upper, Some(5.0));
+    }
+}
+
+/// derived: the load of bus 1 is `100 + 10η`: 100 at `η = 0`, 80 at `η = -2` and 120 at `η = +2`,
+/// so the upper bound of `hydro_generation(3) <= 200 - bus_load_value(1)` is `200 - 100`,
+/// `200 - 80` and `200 - 120`. The template's own bounds on the row are cleared first, so only the
+/// solve's patch can write them.
+#[test]
+fn the_stage_solve_bounds_a_generic_row_by_the_load_value_of_its_bus() {
+    use novomodelo_core::ScalarExpr;
+    use novomodelo_io::constraints::scenario::DataAtom;
+
+    let mut setup = setup_with_generic_constraint(
+        generic_constraint(
+            800,
+            only_hydro_3_generation(),
+            Some(TEN_DEFICITS_PER_HOUR),
+            None,
+            Some(ScalarExpr::literal(200.0) - ScalarExpr::param(EntityId(1000))),
+        ),
+        novomodelo_io::constraints::ScenarioLayer {
+            data_atoms: vec![(
+                EntityId(1000),
+                DataAtom::BusLoadValue {
+                    bus_id: EntityId(1),
+                    block_id: None,
+                },
+            )],
+            ..Default::default()
+        },
+    );
+    let stage_templates = &mut setup.inputs.stage_data.stage_templates;
+    let [row] = stage_templates.geometry_per_stage[0]
+        .per_solve_rows
+        .as_slice()
+    else {
+        panic!(
+            "one row per block of the one-block stage: {:?}",
+            stage_templates.geometry_per_stage[0].per_solve_rows
+        );
+    };
+    let r = row.row;
+    stage_templates.templates[0].row_lower[r] = 0.0;
+    stage_templates.templates[0].row_upper[r] = 0.0;
+
+    for (load_eta, load) in [(0.0, 100.0), (-2.0, 80.0), (2.0, 120.0)] {
+        let template = patched_stage_0_template(&setup, load_eta);
+
+        let scale = template.row_scale.get(r).copied().unwrap_or(1.0);
+        assert_eq!(
+            (template.row_lower[r], template.row_upper[r]),
+            (f64::NEG_INFINITY, (200.0 - load) * scale),
+            "load {load}"
+        );
+    }
+}
+
+/// derived: the load of bus 1 is `100 + 10η`, so [`load_value_gate`] holds at `η = +2` and fails
+/// at `η = -2`. A full hydro 3 spills, at a cost, the inflow it cannot turbine under the gated
+/// row, so the row binds the first solve; the second takes the open row's bounds and the first
+/// solve's basis and must reach the optimum a fresh solver finds.
+#[test]
+fn a_flipped_generic_activation_keeps_the_warm_start_valid() {
+    use novomodelo_solver::{ActiveSolver, Basis, SolverInterface};
+
+    let setup = with_hydro_3_full(setup_with_generic_constraint(
+        generic_constraint(
+            800,
+            only_hydro_3_generation(),
+            Some(TEN_DEFICITS_PER_HOUR),
+            None,
+            Some(novomodelo_core::ScalarExpr::literal(10.0)),
+        ),
+        load_value_gate(),
+    ));
+    let [row] = setup.inputs.stage_data.stage_templates.geometry_per_stage[0]
+        .per_solve_rows
+        .as_slice()
+    else {
+        panic!("one gated row");
+    };
+    let r = row.row;
+    let active = patched_stage_0_template(&setup, 2.0);
+    let inactive = patched_stage_0_template(&setup, -2.0);
+    let scale = active.row_scale.get(r).copied().unwrap_or(1.0);
+    assert_eq!(active.row_upper[r], 10.0 * scale);
+    assert_eq!(inactive.row_upper[r], f64::INFINITY);
+
+    let mut solver = ActiveSolver::new().expect("solver");
+    solver.load_model(&active);
+    let gated_dual = solver.solve(None).expect("the gated template solves").dual[r];
+    assert_ne!(gated_dual, 0.0, "the gated row must bind");
+    let mut basis = Basis::new(active.num_cols, active.num_rows);
+    solver.get_basis(&mut basis);
+    let rows: Vec<usize> = (0..inactive.num_rows).collect();
+    solver.set_row_bounds(&rows, &inactive.row_lower, &inactive.row_upper);
+    let warm = solver
+        .solve(Some(&basis))
+        .expect("the flipped template solves warm")
+        .objective;
+
+    let mut fresh = ActiveSolver::new().expect("solver");
+    fresh.load_model(&inactive);
+    let cold = fresh
+        .solve(None)
+        .expect("the flipped template solves")
+        .objective;
+
+    assert!(
+        (warm - cold).abs() <= 1e-9 * cold.abs().max(1.0),
+        "warm {warm}, cold {cold}"
+    );
+}
+
+#[test]
+fn the_load_buses_add_the_noise_members_to_the_load_models() {
+    assert_eq!(
+        super::buses_with_load(&minimal_system(2), &[EntityId(7)]),
+        [EntityId(1), EntityId(7)]
+    );
+}
+
+/// derived: constraint 800 bounds `hydro_generation(3)` below only, so its soft row takes one
+/// slack column.
+#[test]
+fn a_soft_generic_row_takes_one_slack_column_a_hard_one_does_not() {
+    let num_cols = |slack| {
+        setup_with_generic_constraint(
+            generic_constraint(
+                800,
+                only_hydro_3_generation(),
+                slack,
+                Some(novomodelo_core::ScalarExpr::literal(10.0)),
+                None,
+            ),
+            novomodelo_io::constraints::ScenarioLayer::default(),
+        )
+        .inputs
+        .stage_data
+        .stage_templates
+        .templates[0]
+            .num_cols
+    };
+
+    assert_eq!(num_cols(Some(TEN_DEFICITS_PER_HOUR)), num_cols(None) + 1);
+}
+
+/// derived: hydro 3 turbines at most 100 m³/s at 1 MW per m³/s, so no scenario meets
+/// `hydro_generation(3) >= 1e9`: without slack the stage LP is infeasible, and a soft constraint
+/// relaxes the row by a positive slack, the one column whose only entry is in the row.
+#[test]
+fn a_hard_generic_constraint_no_scenario_meets_makes_the_stage_infeasible() {
+    use novomodelo_core::{PenaltyBasis, SlackConfig};
+    use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface};
+
+    let unmeetable = |slack| {
+        setup_with_generic_constraint(
+            generic_constraint(
+                800,
+                only_hydro_3_generation(),
+                slack,
+                Some(novomodelo_core::ScalarExpr::literal(1e9)),
+                None,
+            ),
+            novomodelo_io::constraints::ScenarioLayer::default(),
+        )
+    };
+
+    let hard = patched_stage_0_template(&unmeetable(None), 0.0);
+    let mut solver = ActiveSolver::new().expect("solver");
+    solver.load_model(&hard);
+    let result = solver.solve(None);
+    assert!(matches!(result, Err(SolverError::Infeasible)), "{result:?}");
+
+    let setup = unmeetable(Some(SlackConfig {
+        penalty: 10.0,
+        penalty_basis: PenaltyBasis::PerHour,
+    }));
+    let [entry] = setup
+        .inputs
+        .stage_data
+        .stage_templates
+        .generic_constraint_row_entries[0]
+        .as_slice()
+    else {
+        panic!("one row of constraint 800 at stage 0");
+    };
+    let slack = entry.slack_plus_col.expect("a soft row has a slack column");
+    let soft = patched_stage_0_template(&setup, 0.0);
+    let offset = |k: i32| usize::try_from(k).expect("a CSC offset");
+    let entries = |j: usize| offset(soft.col_starts[j])..offset(soft.col_starts[j + 1]);
+    let [r] = soft.row_indices[entries(slack)] else {
+        panic!("the slack enters one row");
+    };
+    let r = offset(r);
+    let scale = soft.row_scale.get(r).copied().unwrap_or(1.0);
+    assert_eq!(soft.row_lower[r], 1e9 * scale, "the row of constraint 800");
+    let slacks: Vec<usize> = (0..soft.num_cols)
+        .filter(|&j| {
+            soft.row_indices[entries(j)]
+                .iter()
+                .map(|&row| offset(row))
+                .eq([r])
+        })
+        .collect();
+    assert_eq!(slacks, [slack]);
+    let mut solver = ActiveSolver::new().expect("solver");
+    solver.load_model(&soft);
+    let solution = solver.solve(None).expect("the soft template solves");
+    assert!(solution.primal[slack] > 0.0, "{}", solution.primal[slack]);
+}
+
+fn with_hydro_3_full(mut setup: StudySetup) -> StudySetup {
+    let [storage] = setup.inputs.initial.state.as_mut_slice() else {
+        panic!("one state: the storage of hydro 3");
+    };
+    *storage = 200.0;
+    setup
+}
+
+/// Panics unless `a` and `b` differ in their row bounds only: the same matrix, column bounds and
+/// objective, bit for bit.
+fn assert_only_the_row_bounds_differ(
+    a: &novomodelo_solver::StageTemplate,
+    b: &novomodelo_solver::StageTemplate,
+) {
+    assert_eq!(a.col_starts, b.col_starts);
+    assert_eq!(a.row_indices, b.row_indices);
+    let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    for (name, a, b) in [
+        ("values", &a.values, &b.values),
+        ("col_lower", &a.col_lower, &b.col_lower),
+        ("col_upper", &a.col_upper, &b.col_upper),
+        ("objective", &a.objective, &b.objective),
+    ] {
+        assert_eq!(bits(a), bits(b), "{name}");
+    }
+}
+
+/// The `error` events `run` logs on this thread, as `fmt` lines; `with_default` is thread-local,
+/// so `run` must solve on the calling thread.
+fn error_log_of(run: impl FnOnce()) -> String {
+    #[derive(Clone, Default)]
+    struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let sink = Sink::default();
+    let writer = sink.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, run);
+    String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
+}
+
+/// The `error` log of the production stage solve of stage 0, scenario 0 over the patched stage-0
+/// template of `setup`, which must stop with the `SddpError::Infeasible` of that stage and
+/// scenario.
+fn infeasible_stage_solve_log(setup: &StudySetup) -> String {
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+
+    use crate::solve::stage_solve::{StageInputs, run_stage_solve};
+
+    let graph = &setup.inputs.node_graph;
+    let root = (0..graph.nodes.len())
+        .map(NodePos)
+        .find(|&pos| graph.nodes[pos].stage == super::node_graph::StageIdx(0))
+        .expect("a stage-0 node");
+    let mut workspaces = setup
+        .create_workspace_pool(&LocalBackend, 1, ActiveSolver::new)
+        .expect("workspace pool");
+    let ws = &mut workspaces.workspaces[0];
+    ws.solver.load_model(&patched_stage_0_template(setup, 0.0));
+    let ctx = setup.stage_ctx();
+
+    error_log_of(|| {
+        let result = run_stage_solve(
+            ws,
+            &StageInputs {
+                stage_context: &ctx,
+                pool: &setup.fcf.pools[0],
+                stored_basis: None,
+                stage_index: super::node_graph::StageIdx(0),
+                scenario_index: 0,
+                iteration: None,
+                node_id: graph.node_ids[root],
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(SddpError::Infeasible {
+                    stage: 0,
+                    iteration: 0,
+                    scenario: 0
+                })
+            ),
+            "{result:?}"
+        );
+    })
+}
+
+/// [`infeasible_stage_solve_log`] through the lazy (`dynamic`) forward stage solve.
+fn infeasible_lazy_stage_solve_log(setup: &StudySetup) -> String {
+    use novomodelo_comm::LocalBackend;
+    use novomodelo_solver::ActiveSolver;
+
+    use crate::dcs::DcsParams;
+    use crate::training::TrajectoryRecord;
+    use crate::training::forward::{StageKey, run_forward_stage};
+    use crate::workspace::BasisStore;
+
+    let graph = &setup.inputs.node_graph;
+    let root = (0..graph.nodes.len())
+        .map(NodePos)
+        .find(|&pos| graph.nodes[pos].stage == super::node_graph::StageIdx(0))
+        .expect("a stage-0 node");
+    let mut workspaces = setup
+        .create_workspace_pool(&LocalBackend, 1, ActiveSolver::new)
+        .expect("workspace pool");
+    let ws = &mut workspaces.workspaces[0];
+    ws.current_state.clear();
+    ws.current_state
+        .extend_from_slice(&setup.inputs.initial.state);
+    let ctx = setup.stage_ctx();
+    let training_ctx = setup.training_ctx();
+    let raw_noise = vec![0.0; setup.inputs.stochastic.dim()];
+    let key = StageKey {
+        t: super::node_graph::StageIdx(0),
+        m: 0,
+        local_m: 0,
+        iteration: 0,
+        raw_noise: &raw_noise,
+        basis_row_capacity: ctx.templates[0].num_rows,
+        pool: &setup.fcf.pools[graph.nodes[root].pool_id],
+        dcs: Some(DcsParams {
+            candidate_recency: None,
+            seed_window: 2,
+            max_added_per_round: 10,
+            violation_tolerance: 1e-9,
+            start_iteration: 0,
+            max_inner_iterations: 50,
+        }),
+        node: root,
+    };
+    let mut basis_store = BasisStore::new(1, graph.nodes.len());
+    let mut slices = Vec::new();
+    basis_store.split_workers_into(1, 1, &mut slices);
+    let mut records = TrajectoryRecord::allocate(1, &training_ctx);
+    records[0].node_id = graph.node_ids[root];
+
+    error_log_of(|| {
+        let result = run_forward_stage(ws, &mut slices[0], &ctx, &training_ctx, &key, &mut records);
+        assert!(
+            matches!(
+                result,
+                Err(SddpError::Infeasible {
+                    stage: 0,
+                    iteration: 0,
+                    scenario: 0
+                })
+            ),
+            "{result:?}"
+        );
+    })
+}
+
+/// [`setup_with_generic_constraint`] with constraint 701 `hydro_generation(3) >= 1e9` without
+/// slack, which no scenario meets.
+fn setup_with_an_unmeetable_generic_constraint() -> StudySetup {
+    setup_with_generic_constraint(
+        generic_constraint(
+            701,
+            only_hydro_3_generation(),
+            None,
+            Some(novomodelo_core::ScalarExpr::literal(1e9)),
+            None,
+        ),
+        novomodelo_io::constraints::ScenarioLayer::default(),
+    )
+}
+
+fn assert_logs_the_generic_constraint_701_of_stage_0(log: &str) {
+    assert_eq!(log.lines().count(), 1, "{log}");
+    for needle in [
+        "ERROR",
+        "generic constraints without slack: [701]",
+        "stage=0",
+        "scenario=0",
+        "iteration=0",
+        "constraints=[701]",
+    ] {
+        assert!(log.contains(needle), "{needle} missing from: {log}");
+    }
+}
+
+/// The production stage solve of a stage whose constraint 701 has no slack stops with the
+/// `SddpError::Infeasible` of stage 0, scenario 0 and logs constraint 701 at `error`.
+#[test]
+fn an_infeasible_stage_solve_logs_the_generic_constraints_without_slack() {
+    let log = infeasible_stage_solve_log(&setup_with_an_unmeetable_generic_constraint());
+    assert_logs_the_generic_constraint_701_of_stage_0(&log);
+}
+
+/// The lazy (`dynamic`) forward stage solve of the same stage stops with the same
+/// `SddpError::Infeasible` and logs the same constraint.
+#[test]
+fn an_infeasible_lazy_stage_solve_logs_the_generic_constraints_without_slack() {
+    let log = infeasible_lazy_stage_solve_log(&setup_with_an_unmeetable_generic_constraint());
+    assert_logs_the_generic_constraint_701_of_stage_0(&log);
 }
 
 #[test]
@@ -1020,7 +2285,7 @@ fn node_native_binary_tree_loads_and_constructs_node_graph() {
         season_map: None,
     };
 
-    let system = minimal_system_with_policy_graph(3, policy_graph);
+    let system = minimal_system_with_policy_graph(3, policy_graph, 0.0);
     let config = minimal_config(1, 1);
     let stochastic = build_stochastic_context(
         &system,

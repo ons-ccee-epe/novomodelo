@@ -25,7 +25,8 @@ pub use pipeline::{SimulationOutputSpec, SimulationRunResult, simulate};
 pub use tailrace::SimulationTailrace;
 pub use types::{
     ScenarioCategoryCosts, SimulationBusResult, SimulationContractResult, SimulationCostResult,
-    SimulationExchangeResult, SimulationGenericViolationResult, SimulationHydroResult,
-    SimulationInflowLagResult, SimulationNonControllableResult, SimulationPumpingResult,
-    SimulationScenarioResult, SimulationStageResult, SimulationSummary, SimulationThermalResult,
+    SimulationExchangeResult, SimulationGenericActivationResult, SimulationGenericViolationResult,
+    SimulationHydroResult, SimulationInflowLagResult, SimulationNonControllableResult,
+    SimulationPumpingResult, SimulationScenarioResult, SimulationStageResult, SimulationSummary,
+    SimulationThermalResult,
 };

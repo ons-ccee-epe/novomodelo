@@ -5,6 +5,7 @@ use novomodelo_core::{ContractType, Stage, temporal::StageLagTransition};
 use crate::{
     lp::builder::StageTemplates,
     lp::indexer::{HydroCellIndex, StateSpace, StudyDimensions},
+    policy::resolved_generic_coefficients::ResolvedGenericCoefficients,
     scaling_report::ScalingReport,
     simulation::EntityCounts,
     time_value::TimeValue,
@@ -70,4 +71,8 @@ pub struct StageData {
 
     /// LP scaling report captured during template build.
     pub scaling_report: ScalingReport,
+
+    /// Every generic-constraint term value, bound and condition per study stage and block, read
+    /// by the template build, the per-solve patch and the generic-constraint echo.
+    pub(crate) generic_rows: ResolvedGenericCoefficients,
 }

@@ -83,6 +83,7 @@ use crate::noise::{apply_inflow_slack_col_bounds, realize_inflow};
 use crate::policy::policy_load::{
     FullFcf, PolicyLoadProof, PolicyStageManifest, validate_policy_load,
 };
+use crate::policy::resolved_generic_coefficients::NO_GENERIC_ROWS;
 use crate::risk_measure::BackwardOutcome;
 use crate::setup::node_graph::{
     NodeGraph, NodePos, OpeningSource, StageIdx, build_node_graph, enumerated_node_visit_counts,
@@ -115,6 +116,7 @@ use novomodelo_solver::{
 
 pub mod bound_recording;
 pub mod builders;
+pub mod constraint_row_facts;
 pub mod decks;
 pub mod expander;
 pub mod solve_sites;
@@ -793,7 +795,7 @@ pub fn geometry(
     // Geometry allocation never resolves an EntityId through a position map —
     // restore the empty-positions default over the derived (non-empty
     // hydro/bus) one.
-    let empty_positions = EntityPositions::from_slices([], [], [], [], [], []);
+    let empty_positions = EntityPositions::from_slices([], [], [], [], [], [], []);
     ctx.positions = &empty_positions;
 
     let stage = geometry_stage(dims.n_blks);
@@ -1135,6 +1137,7 @@ impl<'a> StageContextFixture<'a> {
             cumulative_discount_factors: self.cumulative_discount_factors,
             stage_lag_transitions: self.stage_lag_transitions,
             noise_group_ids: self.noise_group_ids,
+            generic_rows: &NO_GENERIC_ROWS,
         }
     }
 }

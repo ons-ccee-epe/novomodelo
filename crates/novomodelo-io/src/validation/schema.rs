@@ -9,7 +9,7 @@
 //! bundle holding every parsed output when all files parse cleanly, or `None`
 //! when any parse or schema error is encountered.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::Path;
 
 use novomodelo_core::{
@@ -26,9 +26,12 @@ use crate::{
     constraints::{
         BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
         HydroPenaltyOverrideRow, HydroUnitGroupBoundsRow, LineBoundsRow, LinePenaltyOverrideRow,
-        NcsBoundsRow, NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow,
+        NcsBoundsRow, NcsPenaltyOverrideRow, PumpingBoundsRow, ScenarioLayer, ThermalBoundsRow,
         build_line_bus_pair_index,
-        generic::{NamedSourcesByConstraint, parse_generic_constraints_with_provenance},
+        generic::{
+            LoadedGenericConstraints, NamedSourcesByConstraint,
+            parse_generic_constraints_with_provenance,
+        },
         load_contract_bounds, load_generic_constraint_bounds, load_hydro_bounds,
         load_hydro_unit_group_bounds, load_line_bounds, load_ncs_bounds,
         load_penalty_overrides_bus, load_penalty_overrides_hydro, load_penalty_overrides_line,
@@ -149,6 +152,8 @@ pub(crate) struct ParsedData {
     pub(crate) generic_constraints: Vec<GenericConstraint>,
     /// Recorded while parsing `constraints/generic_constraints.json`.
     pub(crate) generic_constraint_named_sources: NamedSourcesByConstraint,
+    /// The scenario layer of `constraints/generic_constraints.json`; empty when the file is absent.
+    pub(crate) generic_scenario: ScenarioLayer,
     /// `constraints/generic_constraint_bounds.parquet`.
     pub(crate) generic_constraint_bounds: Vec<GenericConstraintBoundsRow>,
     /// `constraints/penalty_overrides_bus.parquet`.
@@ -557,12 +562,16 @@ pub(crate) fn validate_schema(
 
     // An empty map (file absent or failed to parse) is fine: any `@name` reference
     // then produces a descriptive schema error downstream.
-    let scalar_name_to_id: std::collections::HashMap<String, EntityId> = scalar_parameters
+    let scalar_name_to_id: HashMap<String, EntityId> = scalar_parameters
         .iter()
         .map(|p| (p.name.clone(), p.id))
         .collect();
 
-    let (generic_constraints, generic_constraint_named_sources) = optional_or_error(
+    let LoadedGenericConstraints {
+        constraints: generic_constraints,
+        named_sources: generic_constraint_named_sources,
+        scenario: generic_scenario,
+    } = optional_or_error(
         manifest.present(InputFile::ConstraintsGenericConstraintsJson),
         || {
             let line_pair_index = build_line_bus_pair_index(&lines)?;
@@ -572,7 +581,7 @@ pub(crate) fn validate_schema(
                 &line_pair_index,
             )
         },
-        || (Vec::new(), BTreeMap::new()),
+        LoadedGenericConstraints::default,
         "constraints/generic_constraints.json",
         ctx,
     );
@@ -707,6 +716,7 @@ pub(crate) fn validate_schema(
         contract_bounds,
         generic_constraints,
         generic_constraint_named_sources,
+        generic_scenario,
         generic_constraint_bounds,
         penalty_overrides_bus,
         penalty_overrides_line,

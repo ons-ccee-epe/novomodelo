@@ -52,7 +52,7 @@ slow-tests = []
 ## `#[cfg(any(test, feature = "test-support"))]`, so plain `cargo test` sees
 ## them via `test` and downstream integration tests see them via this feature.
 ## Must NOT be enabled in production builds.
-test-support = ["novomodelo-core/test-support", "novomodelo-io/test-support", "dep:serde_json"]
+test-support = ["novomodelo-core/test-support", "novomodelo-io/test-support", "dep:serde_json", "dep:sha2"]
 
 [dependencies]
 novomodelo-core = { version = "0.22.0", path = "../novomodelo-core" }
@@ -66,6 +66,7 @@ matrixmultiply = { workspace = true }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true, optional = true }
+sha2 = { version = "0.11", optional = true }
 thiserror = "2"
 tracing = "0.1"
 

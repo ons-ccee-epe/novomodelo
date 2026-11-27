@@ -190,8 +190,8 @@ fn load_artifacts_for_hydro_models(case_dir: &Path) -> Result<CaseArtifacts, Sdd
         plane_reduction: production_file.plane_reduction,
         hydro_energy_productivity: load_hydro_energy_productivity(prod_eff_path_opt)?,
         fpha_hyperplanes: load_fpha_hyperplanes(fpha_path.as_deref())?,
-        scalar_parameters: Vec::new(),
         tailrace_curves: load_tailrace_curves(tailrace_path.as_deref())?,
+        ..CaseArtifacts::default()
     })
 }
 

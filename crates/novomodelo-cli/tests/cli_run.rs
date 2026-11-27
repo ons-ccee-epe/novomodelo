@@ -27,6 +27,11 @@ use common::{
     snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
 };
 
+#[path = "cli_run/scenario_constraint_case.rs"]
+mod scenario_constraint_case;
+#[path = "cli_run/scenario_constraint_case_golden.rs"]
+mod scenario_constraint_case_golden;
+
 #[test]
 fn valid_case_exits_0() {
     let dir = TempDir::new().unwrap();
@@ -1123,7 +1128,7 @@ fn run_case(case: &Path, out: &Path) {
 
 /// `novomodelo run` emits `generic_constraints/resolved_echo.parquet` for a study
 /// with generic constraints; the echo is a training-side sidecar carrying the
-/// 14-column echo schema and the resolved interval a reader can compare
+/// 18-column echo schema and the resolved interval a reader can compare
 /// against the deck.
 #[test]
 fn cli_writes_generic_constraint_echo_for_d13() {
@@ -1151,8 +1156,8 @@ fn cli_writes_generic_constraint_echo_for_d13() {
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("build parquet reader");
     assert_eq!(
         builder.schema().fields().len(),
-        14,
-        "echo must carry the 14-column schema"
+        18,
+        "echo must carry the 18-column schema"
     );
     let reader = builder.build().expect("build reader");
 

@@ -1,0 +1,1259 @@
+{
+  "formula_with_bounds": {
+    "stages": [
+      {
+        "stage_id": 0,
+        "n_blocks": 1,
+        "outside_family_sha256": "ea23fb8c060e92eb9cb7321de778408e8585a1883a4b31dafa7e689af87d908c",
+        "rows": [
+          {
+            "constraint_id": 401,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 12
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 13
+                  }
+                },
+                "value": "-1.0"
+              }
+            ],
+            "lower": {
+              "Fixed": "-50.0"
+            },
+            "upper": {
+              "Fixed": "80.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              }
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 411,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 12
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 13
+                  }
+                },
+                "value": "-1.0"
+              }
+            ],
+            "lower": "PerSolve",
+            "upper": "PerSolve",
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              }
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": [
+              {
+                "constraint_id": 411,
+                "block_id": 0,
+                "active": true,
+                "lower": "-540.0",
+                "upper": "460.0"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "stage_id": 1,
+        "n_blocks": 1,
+        "outside_family_sha256": "ea23fb8c060e92eb9cb7321de778408e8585a1883a4b31dafa7e689af87d908c",
+        "rows": [
+          {
+            "constraint_id": 401,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 12
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 13
+                  }
+                },
+                "value": "-1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "60.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 411,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 12
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 13
+                  }
+                },
+                "value": "-1.0"
+              }
+            ],
+            "lower": "PerSolve",
+            "upper": "PerSolve",
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              }
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": [
+              {
+                "constraint_id": 411,
+                "block_id": 0,
+                "active": true,
+                "lower": "-540.0",
+                "upper": "460.0"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "inequalities_and_horizon": {
+    "stages": [
+      {
+        "stage_id": 0,
+        "n_blocks": 1,
+        "outside_family_sha256": "bf617b7c805bfbfcab01109bdbf5ab2b3b2dd94026e40fe3b31a1265eb71e022",
+        "rows": [
+          {
+            "constraint_id": 501,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": {
+              "Fixed": "1000.0"
+            },
+            "upper": "Absent",
+            "slack": {
+              "penalty": "2000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "1.0",
+                "objective": "1.46",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 502,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 6
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "120.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 503,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": {
+              "Fixed": "25.0"
+            },
+            "upper": {
+              "Fixed": "25.0"
+            },
+            "slack": null,
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      },
+      {
+        "stage_id": 1,
+        "n_blocks": 1,
+        "outside_family_sha256": "bf617b7c805bfbfcab01109bdbf5ab2b3b2dd94026e40fe3b31a1265eb71e022",
+        "rows": [
+          {
+            "constraint_id": 502,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 6
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "130.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 503,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": {
+              "Fixed": "25.0"
+            },
+            "upper": {
+              "Fixed": "25.0"
+            },
+            "slack": null,
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      }
+    ]
+  },
+  "range_overrides": {
+    "stages": [
+      {
+        "stage_id": 0,
+        "n_blocks": 2,
+        "outside_family_sha256": "64787f1998d9c3a66fb0ee59a94ca5c220a482415b26127116a9350574be9800",
+        "rows": [
+          {
+            "constraint_id": 6011,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 1
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "400.0"
+            },
+            "slack": {
+              "penalty": "1500.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "0.6",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 6011,
+            "block_id": 1,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 2
+                  }
+                },
+                "value": "1.0"
+              },
+              {
+                "column": {
+                  "Outside": {
+                    "index": 4
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "400.0"
+            },
+            "slack": {
+              "penalty": "1500.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "0.495",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 6021,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "250.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "4.0",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 6021,
+            "block_id": 1,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 4
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "250.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "3.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      },
+      {
+        "stage_id": 1,
+        "n_blocks": 2,
+        "outside_family_sha256": "64787f1998d9c3a66fb0ee59a94ca5c220a482415b26127116a9350574be9800",
+        "rows": [
+          {
+            "constraint_id": 6012,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 1
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "200.0"
+            },
+            "slack": null,
+            "gated": false
+          },
+          {
+            "constraint_id": 6013,
+            "block_id": 1,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 2
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "300.0"
+            },
+            "slack": null,
+            "gated": false
+          },
+          {
+            "constraint_id": 6022,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "350.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "4.0",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 6022,
+            "block_id": 1,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 4
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "350.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "3.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      }
+    ]
+  },
+  "gated_and_selected": {
+    "stages": [
+      {
+        "stage_id": 0,
+        "n_blocks": 1,
+        "outside_family_sha256": "02a00b0b359c0f5e0afa32f8191c5d88f7c475b0f7a5a2e5047b05104bf2c354",
+        "rows": [
+          {
+            "constraint_id": 701,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "1000000.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": true
+          },
+          {
+            "constraint_id": 702,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": "PerSolve",
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 703,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "PerSolve",
+            "upper": "Absent",
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [
+              "40.0"
+            ],
+            "rows": [
+              {
+                "constraint_id": 701,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "1000000.0"
+              },
+              {
+                "constraint_id": 702,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "600.0"
+              },
+              {
+                "constraint_id": 703,
+                "block_id": 0,
+                "active": true,
+                "lower": "2.0",
+                "upper": "inf"
+              }
+            ]
+          },
+          {
+            "loads": [
+              "80.0"
+            ],
+            "rows": [
+              {
+                "constraint_id": 701,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "1000000.0"
+              },
+              {
+                "constraint_id": 702,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "600.0"
+              },
+              {
+                "constraint_id": 703,
+                "block_id": 0,
+                "active": true,
+                "lower": "4.0",
+                "upper": "inf"
+              }
+            ]
+          },
+          {
+            "loads": [
+              "120.0"
+            ],
+            "rows": [
+              {
+                "constraint_id": 701,
+                "block_id": 0,
+                "active": false,
+                "lower": "-inf",
+                "upper": "inf"
+              },
+              {
+                "constraint_id": 702,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "800.0"
+              },
+              {
+                "constraint_id": 703,
+                "block_id": 0,
+                "active": true,
+                "lower": "6.0",
+                "upper": "inf"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "stage_id": 1,
+        "n_blocks": 1,
+        "outside_family_sha256": "02a00b0b359c0f5e0afa32f8191c5d88f7c475b0f7a5a2e5047b05104bf2c354",
+        "rows": [
+          {
+            "constraint_id": 701,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "1000000.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": true
+          },
+          {
+            "constraint_id": 702,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": "PerSolve",
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 703,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "PerSolve",
+            "upper": "Absent",
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [
+              "40.0"
+            ],
+            "rows": [
+              {
+                "constraint_id": 701,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "1000000.0"
+              },
+              {
+                "constraint_id": 702,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "600.0"
+              },
+              {
+                "constraint_id": 703,
+                "block_id": 0,
+                "active": true,
+                "lower": "2.0",
+                "upper": "inf"
+              }
+            ]
+          },
+          {
+            "loads": [
+              "80.0"
+            ],
+            "rows": [
+              {
+                "constraint_id": 701,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "1000000.0"
+              },
+              {
+                "constraint_id": 702,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "600.0"
+              },
+              {
+                "constraint_id": 703,
+                "block_id": 0,
+                "active": true,
+                "lower": "4.0",
+                "upper": "inf"
+              }
+            ]
+          },
+          {
+            "loads": [
+              "120.0"
+            ],
+            "rows": [
+              {
+                "constraint_id": 701,
+                "block_id": 0,
+                "active": false,
+                "lower": "-inf",
+                "upper": "inf"
+              },
+              {
+                "constraint_id": 702,
+                "block_id": 0,
+                "active": true,
+                "lower": "-inf",
+                "upper": "800.0"
+              },
+              {
+                "constraint_id": 703,
+                "block_id": 0,
+                "active": true,
+                "lower": "6.0",
+                "upper": "inf"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "unit_group": {
+    "stages": [
+      {
+        "stage_id": 0,
+        "n_blocks": 2,
+        "outside_family_sha256": "b1ecfb928d9b19654c634b5a0d201535aace80247c310a8018b189d31e3a7a34",
+        "rows": [
+          {
+            "constraint_id": 901,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 27
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "50.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "2.0",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          },
+          {
+            "constraint_id": 901,
+            "block_id": 1,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 28
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "50.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "5.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      },
+      {
+        "stage_id": 1,
+        "n_blocks": 1,
+        "outside_family_sha256": "684eba054d5a32b337ef9523c9e1a34276c7c42f73bd9b22084a0d9ee8dca2e5",
+        "rows": [
+          {
+            "constraint_id": 901,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 15
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "50.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      }
+    ]
+  },
+  "capacity_as_data": {
+    "stages": [
+      {
+        "stage_id": 0,
+        "n_blocks": 1,
+        "outside_family_sha256": "bf617b7c805bfbfcab01109bdbf5ab2b3b2dd94026e40fe3b31a1265eb71e022",
+        "rows": [
+          {
+            "constraint_id": 951,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "50.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      },
+      {
+        "stage_id": 1,
+        "n_blocks": 1,
+        "outside_family_sha256": "bf617b7c805bfbfcab01109bdbf5ab2b3b2dd94026e40fe3b31a1265eb71e022",
+        "rows": [
+          {
+            "constraint_id": 951,
+            "block_id": 0,
+            "is_stage_level": false,
+            "entries": [
+              {
+                "column": {
+                  "Outside": {
+                    "index": 3
+                  }
+                },
+                "value": "1.0"
+              }
+            ],
+            "lower": "Absent",
+            "upper": {
+              "Fixed": "50.0"
+            },
+            "slack": {
+              "penalty": "10000.0",
+              "basis": "PerHour",
+              "plus": {
+                "coefficient": "-1.0",
+                "objective": "7.3",
+                "lower": "0.0",
+                "upper": "inf"
+              },
+              "minus": null
+            },
+            "gated": false
+          }
+        ],
+        "probes": [
+          {
+            "loads": [],
+            "rows": []
+          }
+        ]
+      }
+    ]
+  }
+}

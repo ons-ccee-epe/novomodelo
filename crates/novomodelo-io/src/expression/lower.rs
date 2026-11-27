@@ -9,20 +9,33 @@
 //! before anything folds, so `0 * x` still holds a term for `x`.
 //!
 //! A `@name` reference to a named expression lowers to the form of its body, each body lowered
-//! at most once per constraint. Every form operation is refused before it builds a form whose
-//! programs hold more than [`MAX_INLINED_OPS`] operations in total. Each body is also lowered
-//! once at declaration with its own references read as empty forms, so a fault in its source is
-//! reported there and only faults of the composition reach a constraint.
+//! at most once per constraint. Every operation is refused before it builds a form or a scalar
+//! whose programs hold more than [`MAX_INLINED_OPS`] operations in total. Each body is also
+//! lowered once at declaration with its own references read as empty forms, or as a parameter
+//! where a scalar stands, so a fault in its source is reported there and only faults of the
+//! composition reach a constraint.
+//!
+//! A constraint scope holds the ids of the data atoms. A body there may read no LP variable: it
+//! types as scalar, the bodies it references typed first, and a reference to it lowers to its
+//! body's program wherever a scalar may stand. An `if()` lowers to a selector: a scalar
+//! parameter, numbered by the caller, that stands for the branch its condition picks. The
+//! condition reads data only, and the branches of an `if()` that reads LP variables must read
+//! the same ones, so a selector replaces a coefficient or a constant and the structure of the
+//! constraint stays fixed. The body of a scalar parameter reads neither data nor `if()`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::ops::Range;
 
 use novomodelo_core::{EntityId, ScalarExpr, VariableRef, is_exact_zero};
 
 use super::Diagnostic;
-use super::catalog::{LineBusPairIndex, LinePairOrientation, variable_from_call};
-use super::parser::{AddOp, Expr, ExprKind, MulOp, RelOp, parse};
+use super::catalog::{
+    DataAtom, LineBusPairIndex, LinePairOrientation, data_param, is_data_term,
+    unknown_name_refusal, variable_from_call,
+};
+use super::parser::{AddOp, Condition, Expr, ExprKind, MulOp, RelOp, VariableCall, parse};
+use crate::constraints::scenario::{ConditionalScalar, ResolvedCondition};
 
 /// The most operations the coefficient programs and constant of one form may hold together; a
 /// guard against expansion blowup, set far above the size of an authored constraint so that
@@ -34,13 +47,18 @@ pub(crate) struct Scope<'a> {
     pub(crate) params: &'a HashMap<String, EntityId>,
     pub(crate) line_index: &'a LineBusPairIndex,
     pub(crate) named: &'a NamedTable,
+    /// The scalar-parameter id of each data atom; `None` in the body of a scalar parameter,
+    /// which reads no scenario data.
+    pub(crate) data_ids: Option<&'a BTreeMap<DataAtom, EntityId>>,
 }
 
 /// The named expressions of one file, parsed, typed and checked, but expanded only where a
 /// constraint references them.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct NamedTable {
     declarations: Vec<Declaration>,
+    /// The type of each body, by declaration.
+    types: Vec<Type>,
     index: HashMap<String, usize>,
 }
 
@@ -62,20 +80,23 @@ pub(crate) struct NamedSource {
 }
 
 impl NamedTable {
-    /// Parses and types each body, reading every named reference as linear, then lowers it with
-    /// every named reference read as an empty form, so no body is expanded. Names must be unique
-    /// and must not collide with `params`.
+    /// Parses and types each body, each after the bodies it references and reading a reference
+    /// that closes a cycle as linear, then lowers it with every named reference read as an empty
+    /// form, so no body is expanded. Each body resolves its data terms through `data_ids`; one
+    /// that reads no LP variable types as scalar. Names must be unique and must not collide with
+    /// `params`.
     ///
     /// # Errors
     ///
     /// Returns the index of the first declaration, in file order, whose body does not parse,
-    /// contains a relational operator, reads an unknown name, is not linear, reads no LP
-    /// variable, or fails to lower on its own (a variable call that does not resolve, a fold
-    /// that divides by zero or is not finite), with a diagnostic on that body's source.
+    /// contains a relational operator, reads an unknown name, is not linear, or fails to lower
+    /// on its own (a variable call that does not resolve, a fold that divides by zero or is not
+    /// finite), with a diagnostic on that body's source.
     pub(crate) fn declare(
         decls: &[(&str, &str)],
         params: &HashMap<String, EntityId>,
         line_index: &LineBusPairIndex,
+        data_ids: &BTreeMap<DataAtom, EntityId>,
     ) -> Result<NamedTable, (usize, Diagnostic)> {
         let index: HashMap<String, usize> = decls
             .iter()
@@ -83,9 +104,9 @@ impl NamedTable {
             .map(|(j, (name, _))| ((*name).to_owned(), j))
             .collect();
         let mut declarations = Vec::with_capacity(decls.len());
-        let mut unparsed = None;
+        let mut first_fault = None;
         for (j, &(name, source)) in decls.iter().enumerate() {
-            match declared_body(name, source, params, &index) {
+            match declared_body(source) {
                 Ok(body) => {
                     let mut references = Vec::new();
                     collect_named_references(&body, &index, &mut references);
@@ -96,14 +117,33 @@ impl NamedTable {
                         variables: Vec::new(),
                     });
                 }
-                Err(fault) => {
-                    unparsed = Some((j, fault));
+                Err(diagnostic) => {
+                    first_fault = Some((j, diagnostic));
                     break;
                 }
             }
         }
+        let mut types = vec![Type::Linear; declarations.len()];
+        for j in typing_order(&declarations) {
+            let names = Names {
+                params,
+                named: &index,
+                types: &types,
+                data_ids: Some(data_ids),
+                in_condition: false,
+            };
+            match type_of(&declarations[j].body, names) {
+                Ok(ty) => types[j] = ty,
+                Err(diagnostic) if first_fault.as_ref().is_none_or(|(first, _)| j < *first) => {
+                    first_fault = Some((j, diagnostic));
+                }
+                Err(_) => {}
+            }
+        }
+        let checked = first_fault.as_ref().map_or(declarations.len(), |(j, _)| *j);
         let mut table = NamedTable {
             declarations,
+            types,
             index,
         };
         let variables: Vec<Vec<VariableRef>> = {
@@ -111,10 +151,11 @@ impl NamedTable {
                 params,
                 line_index,
                 named: &table,
+                data_ids: Some(data_ids),
             };
             let mut lowering = Lowering::opaque(&scope);
-            let mut variables = Vec::with_capacity(table.declarations.len());
-            for (j, declaration) in table.declarations.iter().enumerate() {
+            let mut variables = Vec::with_capacity(checked);
+            for (j, declaration) in table.declarations[..checked].iter().enumerate() {
                 let form = lowering
                     .form(&declaration.body)
                     .map_err(|fault| (j, fault.into_diagnostic()))?;
@@ -130,19 +171,25 @@ impl NamedTable {
         for (declaration, variables) in table.declarations.iter_mut().zip(variables) {
             declaration.variables = variables;
         }
-        unparsed.map_or(Ok(table), Err)
+        first_fault.map_or(Ok(table), Err)
     }
 
     /// The uses of each body, indexed by declaration, over a constraint's two sides and every
     /// body they reach; a body no side reaches has none.
     fn use_counts(&self, lhs: &Expr, rhs: Option<&Expr>) -> Vec<usize> {
-        let mut remaining = vec![0; self.declarations.len()];
-        let mut reached = vec![false; self.declarations.len()];
         let mut uses = Vec::new();
         collect_named_references(lhs, &self.index, &mut uses);
         if let Some(rhs) = rhs {
             collect_named_references(rhs, &self.index, &mut uses);
         }
+        self.reach_counts(uses)
+    }
+
+    /// The uses of each body, indexed by declaration, over the named references `uses`, repeats
+    /// kept, and every body they reach.
+    fn reach_counts(&self, mut uses: Vec<usize>) -> Vec<usize> {
+        let mut remaining = vec![0; self.declarations.len()];
+        let mut reached = vec![false; self.declarations.len()];
         let mut frontier = Vec::new();
         while !uses.is_empty() {
             for j in uses.drain(..) {
@@ -176,30 +223,43 @@ impl NamedTable {
     }
 }
 
-fn declared_body(
-    name: &str,
-    source: &str,
-    params: &HashMap<String, EntityId>,
-    named: &HashMap<String, usize>,
-) -> Result<Expr, Diagnostic> {
+fn declared_body(source: &str) -> Result<Expr, Diagnostic> {
     let relation = parse(source)?;
-    let whole = 0..source.len();
     if relation.rhs.is_some() {
         return Err(Diagnostic {
-            span: whole,
+            span: 0..source.len(),
             message: "a named expression cannot contain a relational operator".to_owned(),
         });
     }
-    match type_of(&relation.lhs, params, named)? {
-        Type::Linear => Ok(relation.lhs),
-        Type::Scalar => Err(Diagnostic {
-            span: whole,
-            message: format!(
-                "\"{name}\" contains no LP variable; declare it in generic_parameters.json as a \
-                 kind \"expression\" parameter"
-            ),
-        }),
+    Ok(relation.lhs)
+}
+
+/// Every declaration once, each after the declarations its body references, except where a
+/// reference closes a cycle; iterative, so a long chain never recurses.
+fn typing_order(declarations: &[Declaration]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(declarations.len());
+    let mut seen = vec![false; declarations.len()];
+    for root in 0..declarations.len() {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![(root, 0_usize)];
+        while let Some((node, next)) = stack.last_mut() {
+            let node = *node;
+            if let Some(&child) = declarations[node].references.get(*next) {
+                *next += 1;
+                if child < declarations.len() && !seen[child] {
+                    seen[child] = true;
+                    stack.push((child, 0));
+                }
+            } else {
+                stack.pop();
+                order.push(node);
+            }
+        }
     }
+    order
 }
 
 fn collect_named_references(expr: &Expr, named: &HashMap<String, usize>, out: &mut Vec<usize>) {
@@ -218,6 +278,32 @@ fn collect_named_references(expr: &Expr, named: &HashMap<String, usize>, out: &m
             for (_, operand) in tail {
                 collect_named_references(operand, named, out);
             }
+        }
+        ExprKind::Conditional {
+            cond,
+            then_br,
+            else_br,
+        } => {
+            collect_condition_references(cond, named, out);
+            collect_named_references(then_br, named, out);
+            collect_named_references(else_br, named, out);
+        }
+    }
+}
+
+fn collect_condition_references(
+    condition: &Condition,
+    named: &HashMap<String, usize>,
+    out: &mut Vec<usize>,
+) {
+    match condition {
+        Condition::Compare { lhs, rhs, .. } => {
+            collect_named_references(lhs, named, out);
+            collect_named_references(rhs, named, out);
+        }
+        Condition::And(left, right) | Condition::Or(left, right) => {
+            collect_condition_references(left, named, out);
+            collect_condition_references(right, named, out);
         }
     }
 }
@@ -244,26 +330,41 @@ impl LinearForm {
 }
 
 /// A constraint's variables, moved to the left, and the remainder on each endpoint its
-/// relational operator targets.
+/// relational operator targets. `selectors` lists, in numbering order, the parameter each
+/// `if()` of the constraint stands for.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LoweredRelation {
     pub(crate) terms: Vec<(VariableRef, ScalarExpr)>,
     pub(crate) lower: Option<ScalarExpr>,
     pub(crate) upper: Option<ScalarExpr>,
-    /// The named expressions the constraint reached, directly or through another, sorted by name.
+    /// The named expressions with an LP variable that the constraint reached, directly or through
+    /// another, sorted by name; a data-only expression brings no variable, so it is not listed.
     pub(crate) named_sources: Vec<NamedSource>,
+    pub(crate) selectors: Vec<(EntityId, ConditionalScalar)>,
 }
 
-/// Parses and lowers a constraint expression. A relation `L op R` moves every right-side
-/// variable left with a flipped sign and targets its endpoint(s) with a remainder that starts
-/// from `literal(0.0)`, adds `R.c` and subtracts `L.c`, each only when present, so it is never
-/// `-0.0`; `R.c` alone or `-L.c` would keep or create one. An expression without an operator
-/// targets no endpoint and cannot have a constant part; a named body's constant counts as its
-/// side's.
+/// [`lower_relation_from`] numbering the selectors from id 0.
+#[cfg(test)]
 pub(crate) fn lower_relation(src: &str, scope: &Scope) -> Result<LoweredRelation, Diagnostic> {
+    lower_relation_from(src, scope, EntityId(0))
+}
+
+/// Parses and lowers a constraint expression, numbering the selectors of its `if()` calls from
+/// `first_selector`. A relation `L op R` moves every right-side variable left with a flipped
+/// sign and targets its endpoint(s) with a remainder that starts from `literal(0.0)`, adds `R.c`
+/// and subtracts `L.c`, each only when present, so it is never `-0.0`; `R.c` alone or `-L.c`
+/// would keep or create one. An expression without an operator targets no endpoint and cannot
+/// have a constant part; a named body's constant counts as its side's.
+pub(crate) fn lower_relation_from(
+    src: &str,
+    scope: &Scope,
+    first_selector: EntityId,
+) -> Result<LoweredRelation, Diagnostic> {
     let relation = parse(src)?;
     let rhs = relation.rhs.as_ref().map(|(_, rhs)| rhs);
-    Lowering::new(scope, &relation.lhs, rhs)
+    let mut lowering = Lowering::new(scope, &relation.lhs, rhs);
+    lowering.selectors.first = first_selector.0;
+    lowering
         .relation(&relation.lhs, relation.rhs.as_ref(), 0..src.len())
         .map_err(Fault::into_diagnostic)
 }
@@ -288,95 +389,230 @@ pub(crate) fn lower_scalar_body(
                 .to_owned(),
         });
     }
-    lower_scalar(&relation.lhs, params)
+    let line_index = LineBusPairIndex::default();
+    let named = NamedTable::default();
+    let scope = Scope {
+        params,
+        line_index: &line_index,
+        named: &named,
+        data_ids: None,
+    };
+    Lowering::with_remaining(&scope, Vec::new())
+        .scalar(&relation.lhs)
+        .map_err(Fault::into_diagnostic)
 }
 
-/// Lowers a tree that reads no LP variable; each chain step is checked over the source of its
-/// partial result, from the chain's head to the step's operand.
-fn lower_scalar(expr: &Expr, params: &HashMap<String, EntityId>) -> Result<ScalarExpr, Diagnostic> {
-    match &expr.kind {
-        ExprKind::Number(value) => Ok(ScalarExpr::literal(*value)),
-        ExprKind::Name(name) => params
-            .get(name)
-            .map(|id| ScalarExpr::param(*id))
-            .ok_or_else(|| Diagnostic {
-                span: expr.span.clone(),
-                message: format!(
-                    "unknown scalar parameter \"@{name}\"; a named expression cannot appear in a \
-                     scalar-parameter expression"
-                ),
-            }),
-        ExprKind::Variable(_) => Err(Diagnostic {
-            span: expr.span.clone(),
-            message: "an LP variable cannot appear in a scalar-parameter expression".to_owned(),
-        }),
-        ExprKind::Neg(operand) => checked(-lower_scalar(operand, params)?, &expr.span),
-        ExprKind::Sum { head, tail } => {
-            let mut acc = lower_scalar(head, params)?;
-            for (op, operand) in tail {
-                let rhs = lower_scalar(operand, params)?;
-                let step = head.span.start..operand.span.end;
-                acc = match op {
-                    AddOp::Add => checked(acc + rhs, &step)?,
-                    AddOp::Sub => checked(acc - rhs, &step)?,
-                };
-            }
-            Ok(acc)
+#[derive(Clone, Copy)]
+struct Names<'a> {
+    params: &'a HashMap<String, EntityId>,
+    named: &'a HashMap<String, usize>,
+    /// The type of each declaration; one without an entry reads as linear.
+    types: &'a [Type],
+    data_ids: Option<&'a BTreeMap<DataAtom, EntityId>>,
+    in_condition: bool,
+}
+
+impl Names<'_> {
+    fn named_type(self, j: usize) -> Type {
+        self.types.get(j).copied().unwrap_or(Type::Linear)
+    }
+}
+
+pub(crate) enum CallClass {
+    Data,
+    Variable,
+}
+
+/// Classifies `call` as a data term or an LP variable.
+pub(crate) fn classify_call(call: &VariableCall) -> CallClass {
+    if is_data_term(&call.name) {
+        CallClass::Data
+    } else {
+        CallClass::Variable
+    }
+}
+
+/// The selectors a lowering has created, numbered from `first`.
+#[derive(Default)]
+struct Selectors {
+    first: i32,
+    items: Vec<(EntityId, ConditionalScalar)>,
+    /// Set for an activation condition, which reads no `if()`.
+    refused: bool,
+}
+
+impl Selectors {
+    fn push(
+        &mut self,
+        selector: ConditionalScalar,
+        span: &Range<usize>,
+    ) -> Result<ScalarExpr, Diagnostic> {
+        if self.refused {
+            return Err(Diagnostic {
+                span: span.clone(),
+                message: "an activation condition cannot use if()".to_owned(),
+            });
         }
-        ExprKind::Product { head, tail } => {
-            let mut acc = lower_scalar(head, params)?;
-            for (op, operand) in tail {
-                let rhs = lower_scalar(operand, params)?;
-                let step = head.span.start..operand.span.end;
-                acc = match op {
-                    MulOp::Mul => checked(acc * rhs, &step)?,
-                    MulOp::Div => checked_div(acc, rhs, &step)?,
-                };
+        let id = i32::try_from(self.items.len())
+            .ok()
+            .and_then(|count| self.first.checked_add(count))
+            .map(EntityId)
+            .ok_or_else(|| Diagnostic {
+                span: span.clone(),
+                message: "the scalar-parameter ids leave no room for the if() selectors of this \
+                          constraint"
+                    .to_owned(),
+            })?;
+        self.items.push((id, selector));
+        Ok(ScalarExpr::param(id))
+    }
+}
+
+/// Lowers the condition of an activation rule, which reads data only: the loads, the scalar
+/// parameters and the named expressions that read no LP variable. An `if()` in it,
+/// or in a named expression it reads, is rejected, so it creates no selector.
+pub(crate) fn lower_activation_condition(
+    condition: &Condition,
+    scope: &Scope,
+) -> Result<ResolvedCondition, Diagnostic> {
+    let mut uses = Vec::new();
+    collect_condition_references(condition, &scope.named.index, &mut uses);
+    let mut lowering = Lowering::with_remaining(scope, scope.named.reach_counts(uses));
+    lowering.selectors.refused = true;
+    lowering
+        .condition(condition, lowering.names())
+        .map_err(Fault::into_diagnostic)
+}
+
+fn check_condition(condition: &Condition, names: Names) -> Result<(), Diagnostic> {
+    match condition {
+        Condition::Compare { lhs, rhs, .. } => {
+            for side in [lhs, rhs] {
+                if let Some(fault) = capacity_or_unknown_fault(side, names) {
+                    return Err(fault);
+                }
+                if type_of(side, names)? == Type::Linear {
+                    return Err(Diagnostic {
+                        span: side.span.clone(),
+                        message: "an if() condition may read only data, not an LP variable"
+                            .to_owned(),
+                    });
+                }
             }
-            Ok(acc)
+            Ok(())
+        }
+        Condition::And(left, right) | Condition::Or(left, right) => {
+            check_condition(left, names)?;
+            check_condition(right, names)
         }
     }
 }
 
-/// Types `expr`, reading a named reference as linear without looking at its body.
-fn type_of(
-    expr: &Expr,
-    params: &HashMap<String, EntityId>,
-    named: &HashMap<String, usize>,
-) -> Result<Type, Diagnostic> {
+/// The fault of `side` when its first term in source order that a condition cannot read is a
+/// plant capacity or an unknown name; the fault outranks one of the structure of the side. When
+/// that first term is an LP variable, or a named expression reading one, there is none, so a
+/// capacity after it is not reported, as in an activation condition.
+fn capacity_or_unknown_fault(side: &Expr, names: Names) -> Option<Diagnostic> {
+    let term = first_refused_term(side, names)?;
+    let ExprKind::Variable(call) = &term.kind else {
+        return None;
+    };
+    if call.name == "hydro_availability" {
+        return Some(capacity_in_condition(&term.span));
+    }
+    unknown_name_refusal(call).map(|message| Diagnostic {
+        span: term.span.clone(),
+        message,
+    })
+}
+
+/// The first term of `expr` in source order that a condition cannot read as data: a call that
+/// is not a data term, or a name that is neither a scalar parameter nor a named expression
+/// reading no LP variable.
+fn first_refused_term<'e>(expr: &'e Expr, names: Names) -> Option<&'e Expr> {
+    let first = |operand: &'e Expr| first_refused_term(operand, names);
+    match &expr.kind {
+        ExprKind::Number(_) => None,
+        ExprKind::Name(name) => {
+            let readable = names.params.contains_key(name)
+                || names
+                    .named
+                    .get(name)
+                    .is_some_and(|&j| names.named_type(j) == Type::Scalar);
+            (!readable).then_some(expr)
+        }
+        ExprKind::Variable(call) => (!is_data_term(&call.name)).then_some(expr),
+        ExprKind::Neg(operand) => first(operand),
+        ExprKind::Sum { head, tail } => {
+            first(head).or_else(|| tail.iter().find_map(|(_, e)| first(e)))
+        }
+        ExprKind::Product { head, tail } => {
+            first(head).or_else(|| tail.iter().find_map(|(_, e)| first(e)))
+        }
+        ExprKind::Conditional {
+            cond,
+            then_br,
+            else_br,
+        } => first_refused_in_condition(cond, names)
+            .or_else(|| first(then_br))
+            .or_else(|| first(else_br)),
+    }
+}
+
+fn first_refused_in_condition<'e>(condition: &'e Condition, names: Names) -> Option<&'e Expr> {
+    match condition {
+        Condition::Compare { lhs, rhs, .. } => {
+            first_refused_term(lhs, names).or_else(|| first_refused_term(rhs, names))
+        }
+        Condition::And(left, right) | Condition::Or(left, right) => {
+            first_refused_in_condition(left, names)
+                .or_else(|| first_refused_in_condition(right, names))
+        }
+    }
+}
+
+/// Types `expr`, reading a named reference as the type of its declaration without looking at
+/// its body.
+fn type_of(expr: &Expr, names: Names) -> Result<Type, Diagnostic> {
     match &expr.kind {
         ExprKind::Number(_) => Ok(Type::Scalar),
-        ExprKind::Name(name) if params.contains_key(name) => Ok(Type::Scalar),
-        ExprKind::Name(name) if named.contains_key(name) => Ok(Type::Linear),
-        ExprKind::Name(name) => Err(Diagnostic {
-            span: expr.span.clone(),
-            message: format!(
-                "unknown name \"@{name}\": no scalar parameter or named expression with this \
-                 name was declared"
-            ),
-        }),
-        ExprKind::Variable(_) => Ok(Type::Linear),
-        ExprKind::Neg(operand) => type_of(operand, params, named),
+        ExprKind::Name(name) if names.params.contains_key(name) => Ok(Type::Scalar),
+        ExprKind::Name(name) => match names.named.get(name) {
+            Some(&j) => Ok(names.named_type(j)),
+            None => Err(Diagnostic {
+                span: expr.span.clone(),
+                message: format!(
+                    "unknown name \"@{name}\": no scalar parameter or named expression with \
+                     this name was declared"
+                ),
+            }),
+        },
+        ExprKind::Variable(call) => match classify_call(call) {
+            CallClass::Data => Ok(Type::Scalar),
+            CallClass::Variable => Ok(Type::Linear),
+        },
+        ExprKind::Neg(operand) => type_of(operand, names),
         ExprKind::Sum { head, tail } => {
-            let mut ty = type_of(head, params, named)?;
+            let mut ty = type_of(head, names)?;
             for (_, operand) in tail {
-                if type_of(operand, params, named)? == Type::Linear {
+                if type_of(operand, names)? == Type::Linear {
                     ty = Type::Linear;
                 }
             }
             Ok(ty)
         }
         ExprKind::Product { head, tail } => {
-            let mut ty = type_of(head, params, named)?;
+            let mut ty = type_of(head, names)?;
             let mut first_linear = (ty == Type::Linear).then_some(&**head);
             for (op, operand) in tail {
-                let rhs = type_of(operand, params, named)?;
+                let rhs = type_of(operand, names)?;
                 ty = match (op, ty, rhs) {
                     (MulOp::Mul, Type::Linear, Type::Linear) | (MulOp::Div, _, Type::Linear) => {
                         let culprit = match op {
-                            MulOp::Mul => named_reference(operand, named)
-                                .or_else(|| first_linear.and_then(|e| named_reference(e, named))),
-                            MulOp::Div => named_reference(operand, named),
+                            MulOp::Mul => named_reference(operand, names.named).or_else(|| {
+                                first_linear.and_then(|e| named_reference(e, names.named))
+                            }),
+                            MulOp::Div => named_reference(operand, names.named),
                         };
                         let mut error = not_linear(op, head.span.start..operand.span.end);
                         if let Some((name, j)) = culprit {
@@ -397,6 +633,39 @@ fn type_of(
             }
             Ok(ty)
         }
+        ExprKind::Conditional {
+            cond,
+            then_br,
+            else_br,
+        } => {
+            if names.data_ids.is_none() {
+                return Err(conditional_unsupported(&expr.span));
+            }
+            check_condition(cond, names)?;
+            let then_ty = type_of(then_br, names)?;
+            let else_ty = type_of(else_br, names)?;
+            Ok(if then_ty == Type::Scalar && else_ty == Type::Scalar {
+                Type::Scalar
+            } else {
+                Type::Linear
+            })
+        }
+    }
+}
+
+fn conditional_unsupported(span: &Range<usize>) -> Diagnostic {
+    Diagnostic {
+        span: span.clone(),
+        message: "`if()` is not supported in this expression context".to_owned(),
+    }
+}
+
+fn capacity_in_condition(span: &Range<usize>) -> Diagnostic {
+    Diagnostic {
+        span: span.clone(),
+        message: "a condition cannot read hydro_availability: it is the capacity of a plant, \
+                  resolved per stage and block, not a scenario value"
+            .to_owned(),
     }
 }
 
@@ -458,6 +727,7 @@ struct Lowering<'a> {
     origin: Option<(usize, Range<usize>)>,
     /// Every named reference lowers to an empty form, which checks a body without expanding it.
     opaque_references: bool,
+    selectors: Selectors,
     #[cfg(test)]
     lowerings: Vec<usize>,
     #[cfg(test)]
@@ -482,6 +752,7 @@ impl<'a> Lowering<'a> {
             remaining,
             origin: None,
             opaque_references: false,
+            selectors: Selectors::default(),
             #[cfg(test)]
             lowerings: vec![0; declarations.len()],
             #[cfg(test)]
@@ -512,6 +783,7 @@ impl<'a> Lowering<'a> {
                 lower: None,
                 upper: None,
                 named_sources,
+                selectors: mem::take(&mut self.selectors.items),
             });
         };
 
@@ -548,6 +820,7 @@ impl<'a> Lowering<'a> {
             lower,
             upper,
             named_sources,
+            selectors: mem::take(&mut self.selectors.items),
         })
     }
 
@@ -559,7 +832,7 @@ impl<'a> Lowering<'a> {
             .declarations
             .iter()
             .zip(&self.remaining)
-            .filter(|&(_, &uses)| uses > 0)
+            .filter(|&(declaration, &uses)| uses > 0 && !declaration.variables.is_empty())
             .map(|(declaration, _)| NamedSource {
                 name: declaration.name.clone(),
                 variables: declaration.variables.clone(),
@@ -569,8 +842,150 @@ impl<'a> Lowering<'a> {
         sources
     }
 
+    fn names(&self) -> Names<'a> {
+        let scope = self.scope;
+        Names {
+            params: scope.params,
+            named: &scope.named.index,
+            types: &scope.named.types,
+            data_ids: scope.data_ids,
+            in_condition: false,
+        }
+    }
+
     fn type_of(&self, expr: &Expr) -> Result<Type, Diagnostic> {
-        type_of(expr, self.scope.params, &self.scope.named.index)
+        type_of(expr, self.names())
+    }
+
+    fn scalar(&mut self, expr: &Expr) -> Result<ScalarExpr, Fault> {
+        self.scalar_in(expr, self.names())
+    }
+
+    /// Lowers a tree that reads no LP variable; each chain step is checked over the source of its
+    /// partial result, from the chain's head to the step's operand.
+    fn scalar_in(&mut self, expr: &Expr, names: Names) -> Result<ScalarExpr, Fault> {
+        match &expr.kind {
+            ExprKind::Number(value) => Ok(ScalarExpr::literal(*value)),
+            ExprKind::Name(name) => match (names.params.get(name), names.named.get(name)) {
+                (Some(id), _) => Ok(ScalarExpr::param(*id)),
+                (None, Some(&j)) if names.named_type(j) == Type::Scalar => {
+                    self.scalar_reference(j, &expr.span)
+                }
+                _ => Err(Fault::Local(Diagnostic {
+                    span: expr.span.clone(),
+                    message: format!(
+                        "unknown scalar parameter \"@{name}\"; a named expression cannot appear \
+                         in a scalar-parameter expression"
+                    ),
+                })),
+            },
+            ExprKind::Variable(call) => match classify_call(call) {
+                CallClass::Data => Ok(data_param(call, names.data_ids)
+                    .map(ScalarExpr::param)
+                    .map_err(|message| Diagnostic {
+                        span: expr.span.clone(),
+                        message,
+                    })?),
+                CallClass::Variable if names.in_condition && call.name == "hydro_availability" => {
+                    Err(capacity_in_condition(&expr.span).into())
+                }
+                CallClass::Variable => Err(Fault::Local(Diagnostic {
+                    span: expr.span.clone(),
+                    message: unknown_name_refusal(call).unwrap_or_else(|| {
+                        "an LP variable cannot appear in a scalar-parameter expression".to_owned()
+                    }),
+                })),
+            },
+            ExprKind::Neg(operand) => {
+                let value = self.scalar_in(operand, names)?;
+                self.check_budget(unary_ops(Some(&value)), &expr.span)?;
+                Ok(checked(-value, &expr.span)?)
+            }
+            ExprKind::Sum { head, tail } => {
+                let mut acc = self.scalar_in(head, names)?;
+                for (op, operand) in tail {
+                    let rhs = self.scalar_in(operand, names)?;
+                    let step = head.span.start..operand.span.end;
+                    self.check_budget(binary_ops(Some(&acc), Some(&rhs)), &step)?;
+                    acc = match op {
+                        AddOp::Add => checked(acc + rhs, &step)?,
+                        AddOp::Sub => checked(acc - rhs, &step)?,
+                    };
+                }
+                Ok(acc)
+            }
+            ExprKind::Product { head, tail } => {
+                let mut acc = self.scalar_in(head, names)?;
+                for (op, operand) in tail {
+                    let rhs = self.scalar_in(operand, names)?;
+                    let step = head.span.start..operand.span.end;
+                    self.check_budget(binary_ops(Some(&acc), Some(&rhs)), &step)?;
+                    acc = match op {
+                        MulOp::Mul => checked(acc * rhs, &step)?,
+                        MulOp::Div => checked_div(acc, rhs, &step)?,
+                    };
+                }
+                Ok(acc)
+            }
+            ExprKind::Conditional {
+                cond,
+                then_br,
+                else_br,
+            } => {
+                if names.data_ids.is_none() {
+                    return Err(conditional_unsupported(&expr.span).into());
+                }
+                let cond = self.condition(cond, names)?;
+                let then = self.scalar_in(then_br, names)?;
+                let else_ = self.scalar_in(else_br, names)?;
+                Ok(self
+                    .selectors
+                    .push(ConditionalScalar { cond, then, else_ }, &expr.span)?)
+            }
+        }
+    }
+
+    fn condition(
+        &mut self,
+        condition: &Condition,
+        names: Names,
+    ) -> Result<ResolvedCondition, Fault> {
+        let names = Names {
+            in_condition: true,
+            ..names
+        };
+        Ok(match condition {
+            Condition::Compare { lhs, op, rhs } => ResolvedCondition::Compare {
+                lhs: self.scalar_in(lhs, names)?,
+                op: *op,
+                rhs: self.scalar_in(rhs, names)?,
+            },
+            Condition::And(left, right) => ResolvedCondition::And(
+                Box::new(self.condition(left, names)?),
+                Box::new(self.condition(right, names)?),
+            ),
+            Condition::Or(left, right) => ResolvedCondition::Or(
+                Box::new(self.condition(left, names)?),
+                Box::new(self.condition(right, names)?),
+            ),
+        })
+    }
+
+    /// The program of scalar body `j` for one of its uses at `span`. An opaque reference reads
+    /// as a parameter, so no fold at declaration takes the body for a literal.
+    fn scalar_reference(&mut self, j: usize, span: &Range<usize>) -> Result<ScalarExpr, Fault> {
+        if self.opaque_references {
+            return Ok(ScalarExpr::param(EntityId(0)));
+        }
+        let form = self.reference(j, span)?;
+        Ok(form.constant.unwrap_or_else(|| ScalarExpr::literal(0.0)))
+    }
+
+    fn constant(&mut self, expr: &Expr) -> Result<LinearForm, Fault> {
+        Ok(LinearForm {
+            terms: Vec::new(),
+            constant: Some(self.scalar(expr)?),
+        })
     }
 
     /// Lowers a tree that reads an LP variable or not; a tree that reads none becomes a form
@@ -582,7 +997,7 @@ impl<'a> Lowering<'a> {
         }
         fn operand(lowering: &mut Lowering, expr: &Expr) -> Result<Acc, Fault> {
             Ok(match lowering.type_of(expr)? {
-                Type::Scalar => Acc::Scalar(lower_scalar(expr, lowering.scope.params)?),
+                Type::Scalar => Acc::Scalar(lowering.scalar(expr)?),
                 Type::Linear => Acc::Form(lowering.form(expr)?),
             })
         }
@@ -592,21 +1007,24 @@ impl<'a> Lowering<'a> {
             return self.reference(j, &expr.span);
         }
         match &expr.kind {
-            ExprKind::Variable(call) => {
-                let (variable, orientation) = variable_from_call(call, self.scope.line_index)
-                    .map_err(|message| Diagnostic {
+            ExprKind::Variable(call) => match classify_call(call) {
+                CallClass::Data => self.constant(expr),
+                CallClass::Variable => {
+                    let (variable, orientation) = variable_from_call(call, self.scope.line_index)
+                        .map_err(|message| Diagnostic {
                         span: expr.span.clone(),
                         message,
                     })?;
-                let coefficient = match orientation {
-                    LinePairOrientation::Forward => None,
-                    LinePairOrientation::Reversed => Some(ScalarExpr::literal(-1.0)),
-                };
-                Ok(LinearForm {
-                    terms: vec![(variable, coefficient)],
-                    constant: None,
-                })
-            }
+                    let coefficient = match orientation {
+                        LinePairOrientation::Forward => None,
+                        LinePairOrientation::Reversed => Some(ScalarExpr::literal(-1.0)),
+                    };
+                    Ok(LinearForm {
+                        terms: vec![(variable, coefficient)],
+                        constant: None,
+                    })
+                }
+            },
             ExprKind::Neg(inner) if linear => {
                 let form = self.form(inner)?;
                 self.map_form(form, Scaling::Negate, &expr.span)
@@ -625,9 +1043,11 @@ impl<'a> Lowering<'a> {
                     let step = head.span.start..rhs.span.end;
                     acc = match (acc, op, operand(self, rhs)?) {
                         (Acc::Scalar(lhs), MulOp::Mul, Acc::Scalar(rhs)) => {
+                            self.check_budget(binary_ops(Some(&lhs), Some(&rhs)), &step)?;
                             Acc::Scalar(checked(lhs * rhs, &step)?)
                         }
                         (Acc::Scalar(lhs), MulOp::Div, Acc::Scalar(rhs)) => {
+                            self.check_budget(binary_ops(Some(&lhs), Some(&rhs)), &step)?;
                             Acc::Scalar(checked_div(lhs, rhs, &step)?)
                         }
                         (Acc::Scalar(s), MulOp::Mul, Acc::Form(form)) => {
@@ -653,11 +1073,98 @@ impl<'a> Lowering<'a> {
                     Acc::Form(form) => form,
                 })
             }
-            _ => Ok(LinearForm {
-                terms: Vec::new(),
-                constant: Some(lower_scalar(expr, self.scope.params)?),
-            }),
+            ExprKind::Conditional {
+                cond,
+                then_br,
+                else_br,
+            } if linear => {
+                let cond = self.condition(cond, self.names())?;
+                let then_form = self.form(then_br)?;
+                let else_form = self.form(else_br)?;
+                let variables_known = !self.opaque_references || {
+                    let mut references = Vec::new();
+                    collect_named_references(then_br, &self.scope.named.index, &mut references);
+                    collect_named_references(else_br, &self.scope.named.index, &mut references);
+                    references.is_empty()
+                };
+                self.select(&cond, then_form, else_form, variables_known, &expr.span)
+            }
+            _ => self.constant(expr),
         }
+    }
+
+    /// The form that takes `then_form` where `cond` holds and `else_form` elsewhere: the
+    /// branches read the same variables, and each coefficient and the constant that differs
+    /// between them becomes a selector. Without `variables_known` a branch reads an opaque
+    /// reference, so the variables are checked only once a constraint inlines it.
+    fn select(
+        &mut self,
+        cond: &ResolvedCondition,
+        then_form: LinearForm,
+        else_form: LinearForm,
+        variables_known: bool,
+        span: &Range<usize>,
+    ) -> Result<LinearForm, Fault> {
+        let same_variables = then_form.terms.len() == else_form.terms.len()
+            && then_form
+                .terms
+                .iter()
+                .all(|(variable, _)| else_form.terms.iter().any(|(other, _)| other == variable));
+        if variables_known && !same_variables {
+            return Err(Fault::Local(Diagnostic {
+                span: span.clone(),
+                message: "the branches of if() must read the same LP variables; they may differ \
+                          only in coefficients and constants"
+                    .to_owned(),
+            }));
+        }
+        let mut terms = Vec::with_capacity(then_form.terms.len());
+        for (variable, then_coefficient) in then_form.terms {
+            let else_coefficient = else_form
+                .terms
+                .iter()
+                .find(|(other, _)| *other == variable)
+                .and_then(|(_, coefficient)| coefficient.clone());
+            let coefficient = match (then_coefficient, else_coefficient) {
+                (None, None) => None,
+                (then, other) => Some(self.choose(
+                    cond,
+                    then.unwrap_or_else(one),
+                    other.unwrap_or_else(one),
+                    span,
+                )?),
+            };
+            terms.push((variable, coefficient));
+        }
+        let constant = match (then_form.constant, else_form.constant) {
+            (None, None) => None,
+            (then, other) => Some(self.choose(
+                cond,
+                then.unwrap_or_else(|| ScalarExpr::literal(0.0)),
+                other.unwrap_or_else(|| ScalarExpr::literal(0.0)),
+                span,
+            )?),
+        };
+        Ok(LinearForm { terms, constant })
+    }
+
+    /// `then` when the branches agree, else the parameter of a new selector over both.
+    fn choose(
+        &mut self,
+        cond: &ResolvedCondition,
+        then: ScalarExpr,
+        else_: ScalarExpr,
+        span: &Range<usize>,
+    ) -> Result<ScalarExpr, Fault> {
+        if then == else_ {
+            return Ok(then);
+        }
+        let selector = ConditionalScalar {
+            cond: cond.clone(),
+            then,
+            else_,
+        };
+        Ok(self.selectors.push(selector, span)?)
     }
 
     /// The form of body `j` for one of its uses at `span`; the last use takes the cached form,
@@ -769,9 +1276,9 @@ impl<'a> Lowering<'a> {
             Some((j, at)) => Fault::Anchored(Diagnostic {
                 span: at.clone(),
                 message: format!(
-                    "named-expression reference \"@{}\" expands to more than {MAX_INLINED_OPS} \
-                     coefficient operations; this indicates an exponential reference pattern \
-                     (e.g. a doubling chain \"@e = @prev + @prev\")",
+                    "named-expression reference \"@{}\" expands to more than \
+                     {MAX_INLINED_OPS} coefficient operations; this indicates an exponential \
+                     reference pattern (e.g. a doubling chain \"@e = @prev + @prev\")",
                     self.scope.named.declarations[*j].name
                 ),
             }),

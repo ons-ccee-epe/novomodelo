@@ -28,6 +28,7 @@ use crate::{
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
     solve::StageOpeningSolver,
+    solve::stage_solve::report_hard_generic_constraints,
     training::stage_solve_prep::{
         BracketSource, LoadedCutRows, NoiseTermSource, PartialSumSource, StageSolvePrep,
         StateSource,
@@ -269,11 +270,19 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
         );
 
         let view = solver.solve(None).map_err(|e| match e {
-            SolverError::Infeasible => SddpError::Infeasible {
-                stage: 0,
-                iteration: 0,
-                scenario: opening_idx,
-            },
+            SolverError::Infeasible => {
+                report_hard_generic_constraints(
+                    &ctx.geometry_per_stage[0].hard_constraint_ids,
+                    0,
+                    opening_idx,
+                    0,
+                );
+                SddpError::Infeasible {
+                    stage: 0,
+                    iteration: 0,
+                    scenario: opening_idx,
+                }
+            }
             other => SddpError::Solver(other),
         })?;
         objectives_buf.push(view.objective);

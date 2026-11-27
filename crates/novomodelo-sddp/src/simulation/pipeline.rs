@@ -41,7 +41,7 @@ use crate::{
         extraction::{
             HydroReverseLookup, SolutionView, StageExtractionSpec, TransitSeedArc,
             accumulate_category_costs, build_transit_seed, extract_anticipated_lanes,
-            extract_stage_result_with_lookups,
+            extract_generic_activation, extract_stage_result_with_lookups,
         },
         tailrace::{SimulationTailrace, fill_tailrace_quantities},
         types::{ScenarioCategoryCosts, SimulationScenarioResult, SimulationStageResult},
@@ -585,6 +585,7 @@ pub(crate) fn extract_sim_stage_result(
         unscaled_dual,
         realized_inflow_buf,
         incoming_lags_buf,
+        generic,
         ..
     } = scratch;
     let t = ids.t;
@@ -708,6 +709,8 @@ pub(crate) fn extract_sim_stage_result(
         output.extended_delivery_anchors,
         ids.stage_id_u32,
     );
+    result.generic_activation =
+        extract_generic_activation(&geometry.per_solve_rows, generic, ids.stage_id_u32);
     (immediate_cost, result)
 }
 

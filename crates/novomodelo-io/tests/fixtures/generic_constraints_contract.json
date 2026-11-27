@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/generic_constraints.schema.json",
+  "constraints": [
+    {
+      "id": 101,
+      "name": "constraint_101",
+      "expression": "hydro_generation(0) + hydro_generation(1, unit_group=0) + @north_exchange <= 0.1 * (bus_load_value(0) + bus_load_value(1)) + @reserve_margin",
+      "slack": {
+        "enabled": true,
+        "penalty": 2000.0,
+        "penalty_basis": "per_hour"
+      }
+    },
+    {
+      "id": 102,
+      "name": "constraint_102",
+      "expression": "thermal_generation(0) + non_controllable_generation(0)",
+      "slack": {
+        "enabled": false
+      }
+    },
+    {
+      "id": 103,
+      "name": "constraint_103",
+      "expression": "@north_exchange + @net_load",
+      "slack": {
+        "enabled": true,
+        "penalty": 51000.0,
+        "penalty_basis": "per_hour"
+      }
+    },
+    {
+      "id": 104,
+      "name": "constraint_104",
+      "expression": "hydro_generation(0) <= if((bus_load_value(0) + bus_load_value(1)) > 90000, 800, 600)",
+      "active_when": "82000 < (bus_load_value(0) + bus_load_value(1)) & (bus_load_value(0) + bus_load_value(1)) <= 95000",
+      "slack": {
+        "enabled": false
+      }
+    }
+  ],
+  "expressions": [
+    {
+      "name": "north_exchange",
+      "expression": "line_flow(source_bus=1, target_bus=0) - line_flow(source_bus=0, target_bus=1)"
+    },
+    {
+      "name": "net_load",
+      "expression": "bus_load_value(1) - @reserve_margin"
+    }
+  ]
+}

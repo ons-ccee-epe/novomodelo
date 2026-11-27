@@ -23,6 +23,7 @@
 //! is deferred to Layer 3.
 //! Semantic bound validation (e.g., min < max) is deferred.
 
+mod availability;
 pub mod bounds;
 pub mod generic;
 pub mod generic_bounds;
@@ -30,8 +31,10 @@ pub mod hydro_unit_group_bounds;
 pub mod ncs_bounds;
 pub mod penalty_overrides;
 pub(crate) mod reference_cycles;
+pub mod scenario;
 
 pub use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
+pub use availability::{AvailabilityError, resolve_hydro_availability};
 pub use bounds::{
     ContractBoundsRow, HydroBoundsRow, LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
     parse_contract_bounds, parse_hydro_bounds, parse_line_bounds, parse_pumping_bounds,
@@ -46,6 +49,7 @@ pub use penalty_overrides::{
     parse_penalty_overrides_bus, parse_penalty_overrides_hydro, parse_penalty_overrides_line,
     parse_penalty_overrides_ncs,
 };
+pub use scenario::{ConstraintScenario, ScenarioLayer};
 
 use novomodelo_core::{EntityId, GenericConstraint};
 use std::collections::HashMap;

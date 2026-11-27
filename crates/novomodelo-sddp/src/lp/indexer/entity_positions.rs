@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use novomodelo_core::{EntityId, System};
 
 /// Canonical `EntityId -> slot` maps for hydros, thermals, lines, buses,
-/// pumping stations, and energy contracts, each in the family's own
-/// canonical (id-sorted) slice order.
+/// pumping stations, energy contracts, and non-controllable sources, each in
+/// the family's own canonical (id-sorted) slice order.
 pub(crate) struct EntityPositions {
     hydro: BTreeMap<EntityId, usize>,
     thermal: BTreeMap<EntityId, usize>,
@@ -15,6 +15,7 @@ pub(crate) struct EntityPositions {
     bus: BTreeMap<EntityId, usize>,
     pumping: BTreeMap<EntityId, usize>,
     contract: BTreeMap<EntityId, usize>,
+    ncs: BTreeMap<EntityId, usize>,
 }
 
 impl EntityPositions {
@@ -50,10 +51,11 @@ impl EntityPositions {
             system.buses().iter().map(|b| b.id),
             pumping_stations.iter().map(|p| p.id),
             contracts.iter().map(|c| c.id),
+            system.non_controllable_sources().iter().map(|n| n.id),
         )
     }
 
-    /// Builds the six maps from id iterators alone, bypassing the
+    /// Builds the seven maps from id iterators alone, bypassing the
     /// resolved-bounds cross-checks [`Self::build`] additionally holds
     /// (unavailable to a hand-crafted test fixture with no backing
     /// [`System`]). [`Self::build`] delegates here once its own checks pass.
@@ -64,6 +66,7 @@ impl EntityPositions {
         buses: impl IntoIterator<Item = EntityId>,
         pumping_stations: impl IntoIterator<Item = EntityId>,
         contracts: impl IntoIterator<Item = EntityId>,
+        ncs: impl IntoIterator<Item = EntityId>,
     ) -> Self {
         fn indexed(ids: impl IntoIterator<Item = EntityId>) -> BTreeMap<EntityId, usize> {
             ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
@@ -75,6 +78,7 @@ impl EntityPositions {
             bus: indexed(buses),
             pumping: indexed(pumping_stations),
             contract: indexed(contracts),
+            ncs: indexed(ncs),
         }
     }
 
@@ -113,6 +117,12 @@ impl EntityPositions {
     pub(crate) fn contract(&self, id: EntityId) -> Option<usize> {
         self.contract.get(&id).copied()
     }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn ncs(&self, id: EntityId) -> Option<usize> {
+        self.ncs.get(&id).copied()
+    }
 }
 
 #[cfg(test)]
@@ -130,22 +140,26 @@ mod tests {
             [EntityId(5), EntityId(6)],
             [],
             [],
+            [EntityId(7), EntityId(3)],
         );
         assert_eq!(positions.hydro(EntityId(3)), Some(0));
         assert_eq!(positions.hydro(EntityId(1)), Some(1));
         assert_eq!(positions.thermal(EntityId(10)), Some(0));
         assert_eq!(positions.bus(EntityId(5)), Some(0));
         assert_eq!(positions.bus(EntityId(6)), Some(1));
+        assert_eq!(positions.ncs(EntityId(7)), Some(0));
+        assert_eq!(positions.ncs(EntityId(3)), Some(1));
     }
 
     #[test]
     fn unknown_id_is_none() {
-        let positions = EntityPositions::from_slices([EntityId(1)], [], [], [], [], []);
+        let positions = EntityPositions::from_slices([EntityId(1)], [], [], [], [], [], []);
         assert_eq!(positions.hydro(EntityId(99)), None);
         assert_eq!(positions.thermal(EntityId(1)), None);
         assert_eq!(positions.line(EntityId(1)), None);
         assert_eq!(positions.bus(EntityId(1)), None);
         assert_eq!(positions.pumping(EntityId(1)), None);
         assert_eq!(positions.contract(EntityId(1)), None);
+        assert_eq!(positions.ncs(EntityId(1)), None);
     }
 }

@@ -7,7 +7,8 @@ use std::ops::Range;
 use novomodelo_core::{BlockMode, EntityId, PenaltyBasis, PostStudyThermalBound, SlackConfig};
 use novomodelo_solver::StageTemplate;
 
-use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, StateBox};
+use crate::lp::builder::layout::PerSolveRow;
+use crate::lp::builder::{GenericConstraintRowEntry, RowOrigin, StageGeometry, StateBox};
 use crate::lp::indexer::{
     BlockRowFamily, EvaporationIndices, HydroSys, StateSpace, StorageBoundaryGrid,
 };
@@ -177,6 +178,27 @@ fn put_evap_indices(buf: &mut Vec<u8>, indices: &EvaporationIndices) {
     put_usize(buf, *evap_row);
 }
 
+fn put_per_solve_row(buf: &mut Vec<u8>, per_solve_row: &PerSolveRow) {
+    let PerSolveRow {
+        row,
+        constraint_idx,
+        constraint_id,
+        block_idx,
+        is_stage_level,
+        base_lower,
+        base_upper,
+        volume_shift,
+    } = per_solve_row;
+    put_usize(buf, *row);
+    put_usize(buf, *constraint_idx);
+    put_i32(buf, *constraint_id);
+    put_usize(buf, *block_idx);
+    put_bool(buf, *is_stage_level);
+    put_option_f64(buf, *base_lower);
+    put_option_f64(buf, *base_upper);
+    put_option_f64(buf, *volume_shift);
+}
+
 fn put_hydro_sys_slice(buf: &mut Vec<u8>, values: &[HydroSys]) {
     put_usize(buf, values.len());
     for &v in values {
@@ -186,7 +208,7 @@ fn put_hydro_sys_slice(buf: &mut Vec<u8>, values: &[HydroSys]) {
 
 fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
     let GenericConstraintRowEntry {
-        constraint_idx,
+        origin,
         entity_id,
         block_idx,
         is_stage_level,
@@ -196,7 +218,8 @@ fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
         slack_plus_col,
         slack_minus_col,
     } = entry;
-    put_usize(buf, *constraint_idx);
+    let RowOrigin::Generic { constraint_idx } = *origin;
+    put_usize(buf, constraint_idx);
     put_i32(buf, *entity_id);
     put_usize(buf, *block_idx);
     put_bool(buf, *is_stage_level);
@@ -270,6 +293,8 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         fpha_slack,
         plant_max_turbine,
         plant_max_generation,
+        per_solve_rows,
+        hard_constraint_ids,
         n_blks,
         storage_internal_start,
         block_mode,
@@ -319,6 +344,11 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, fpha_slack);
     put_range(buf, plant_max_turbine);
     put_range(buf, plant_max_generation);
+    put_usize(buf, per_solve_rows.len());
+    for row in per_solve_rows {
+        put_per_solve_row(buf, row);
+    }
+    put_i32_slice(buf, hard_constraint_ids);
 
     put_usize(buf, *n_blks);
 

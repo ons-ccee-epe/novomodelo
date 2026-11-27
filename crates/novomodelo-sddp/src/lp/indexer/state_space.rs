@@ -242,7 +242,7 @@ impl StateSpace {
 
     /// Assemble a finalized [`StateSpace`] from the state dimensions, the
     /// per-plant anticipated resolution, and the per-hydro effective lag-slot
-    /// counts — the shared body [`Self::build`] and [`Self::new`] both
+    /// counts — the shared body [`Self::build`] and `Self::new` both
     /// delegate to. `n_buckets` is `transit_bucket_column_order.len()`; `0`
     /// reproduces the pre-bucket layout byte-for-byte.
     ///

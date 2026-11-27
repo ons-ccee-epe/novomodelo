@@ -1034,7 +1034,8 @@ fn load_entity_type(py: Python<'_>, entity_dir: &Path) -> PyResult<Py<PyList>> {
 /// - `output_dir` — root output directory (same as passed to `novomodelo.run.run()`).
 /// - `entity_type` — optional entity type name (`"costs"`, `"buses"`, `"hydros"`,
 ///   `"thermals"`, `"exchanges"`, `"pumping_stations"`, `"contracts"`,
-///   `"non_controllables"`, `"inflow_lags"`, or `"violations/generic"`). When
+///   `"non_controllables"`, `"inflow_lags"`, `"violations/generic"`, or
+///   `"generic_activation"`). When
 ///   provided, only that entity type is loaded and a flat list of dicts is
 ///   returned. When `None`, all available entity types are loaded and a dict of
 ///   lists is returned.
@@ -1261,7 +1262,8 @@ fn ipc_bytes_to_py_table<'py>(
 /// - `output_dir` — root output directory (same as passed to `novomodelo.run.run()`).
 /// - `entity_type` — optional entity type name (`"costs"`, `"buses"`, `"hydros"`,
 ///   `"thermals"`, `"exchanges"`, `"pumping_stations"`, `"contracts"`,
-///   `"non_controllables"`, `"inflow_lags"`, or `"violations/generic"`). When
+///   `"non_controllables"`, `"inflow_lags"`, `"violations/generic"`, or
+///   `"generic_activation"`). When
 ///   provided, only that entity type is loaded and a single `pyarrow.Table` is
 ///   returned. When `None`, all available entity types are loaded and a
 ///   `dict[str, pyarrow.Table]` is returned.

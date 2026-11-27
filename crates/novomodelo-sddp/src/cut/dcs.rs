@@ -27,6 +27,7 @@ use crate::error::SddpError;
 use crate::gemm::gemm_block;
 use crate::indexer::{CutStateProjection, StateSpace};
 use crate::setup::{NodeId, StageIdx};
+use crate::solve::stage_solve::report_hard_generic_constraints;
 use crate::workspace::CapturedBasis;
 use crate::workspace::workspace::reserve_to;
 
@@ -396,7 +397,7 @@ pub fn score_violated_candidates(
 /// Per-(stage, solve) context for [`lazy_solve_preloaded`], mirroring the error-context
 /// fields `run_stage_solve` uses.
 #[derive(Clone, Copy, Debug)]
-pub struct DcsSolveContext {
+pub struct DcsSolveContext<'a> {
     /// Stage index `t`.
     pub stage_index: StageIdx,
     /// Scenario index `m`.
@@ -421,6 +422,10 @@ pub struct DcsSolveContext {
     /// Declared id of the node being solved (`NodeGraph::node_ids[node]`); a
     /// `stored_basis` whose `node_id` differs is treated as cold.
     pub node_id: NodeId,
+
+    /// Generic constraints without slack of stage `stage_index`
+    /// (`StageGeometry::hard_constraint_ids`), logged when the solve is infeasible.
+    pub hard_constraint_ids: &'a [i32],
 }
 
 /// The folded value `B + W` of every active cut of a compact layout's solve, in
@@ -599,13 +604,22 @@ impl DcsSolveScratch {
 
 /// Map a [`SolverError`] to an [`SddpError`] with stage/scenario/iteration
 /// context — kept consistent with `stage_solve::run_stage_solve`.
-fn map_solver_error(e: SolverError, ctx: DcsSolveContext) -> SddpError {
+fn map_solver_error(e: SolverError, ctx: DcsSolveContext<'_>) -> SddpError {
     match e {
-        SolverError::Infeasible => SddpError::Infeasible {
-            stage: ctx.stage_index.0,
-            iteration: ctx.iteration.unwrap_or(0),
-            scenario: ctx.scenario_index,
-        },
+        SolverError::Infeasible => {
+            let iteration = ctx.iteration.unwrap_or(0);
+            report_hard_generic_constraints(
+                ctx.hard_constraint_ids,
+                ctx.stage_index.0,
+                ctx.scenario_index,
+                iteration,
+            );
+            SddpError::Infeasible {
+                stage: ctx.stage_index.0,
+                iteration,
+                scenario: ctx.scenario_index,
+            }
+        }
         other => SddpError::Solver(other),
     }
 }
@@ -613,7 +627,7 @@ fn map_solver_error(e: SolverError, ctx: DcsSolveContext) -> SddpError {
 fn solve_mapped<'a, S: SolverInterface>(
     solver: &'a mut ProfiledSolver<S>,
     basis: Option<&Basis>,
-    ctx: DcsSolveContext,
+    ctx: DcsSolveContext<'_>,
 ) -> Result<SolutionView<'a>, SddpError> {
     solver.solve(basis).map_err(|e| map_solver_error(e, ctx))
 }
@@ -656,7 +670,8 @@ fn solve_mapped<'a, S: SolverInterface>(
 ///
 /// Propagates solver failures via the same mapping as `run_stage_solve`:
 /// `SolverError::Infeasible` → [`SddpError::Infeasible`] with stage/scenario/
-/// iteration context; every other variant → [`SddpError::Solver`].
+/// iteration context, after logging the stage's generic constraints without
+/// slack; every other variant → [`SddpError::Solver`].
 ///
 /// # Panics
 ///
@@ -675,7 +690,7 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
     cut_rhs: ActiveCutRhs<'_>,
     params: &DcsParams,
     scratch: &mut DcsSolveScratch,
-    ctx: DcsSolveContext,
+    ctx: DcsSolveContext<'_>,
 ) -> Result<(), SddpError> {
     let DcsCutView {
         pool,
@@ -2409,13 +2424,14 @@ mod tests {
         ProfiledSolver::new(ActiveSolver::new().expect("ActiveSolver::new()"))
     }
 
-    fn ctx() -> DcsSolveContext {
+    fn ctx() -> DcsSolveContext<'static> {
         DcsSolveContext {
             stage_index: StageIdx(0),
             scenario_index: 0,
             iteration: Some(10),
             continue_carry: false,
             node_id: NodeId(0),
+            hard_constraint_ids: &[],
         }
     }
 

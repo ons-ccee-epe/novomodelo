@@ -159,6 +159,9 @@ impl StageOpeningSolver {
                         iteration: inputs.iteration,
                         continue_carry: lazy.continue_carry,
                         node_id: inputs.node_id,
+                        hard_constraint_ids: &inputs.stage_context.geometry_per_stage
+                            [inputs.stage_index.0]
+                            .hard_constraint_ids,
                     },
                 )?;
                 Ok(ws.backward_accum.dcs_solve.result_view())

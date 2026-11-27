@@ -4,10 +4,11 @@
 //! `nonzero_stage_fpha_override_regression` prototype).
 //!
 //! [`permute_case`] copies a golden-case directory into a fresh [`TempDir`],
-//! shuffling every JSON array classified below as shuffle-safe with a seeded
-//! Fisher-Yates permutation and leaving every other byte in the tree
-//! untouched. The classification is an explicit `(case-relative path,
-//! top-level keys)` map — never auto-discovery — because a case directory
+//! shuffling every JSON array classified below as shuffle-safe, and the rows of
+//! [`BOUNDS_FILE`], with a seeded Fisher-Yates permutation and
+//! leaving every other byte in the tree untouched. The classification is an
+//! explicit `(case-relative path, top-level keys)` map — never
+//! auto-discovery — because a case directory
 //! legitimately contains order-bearing arrays (an ordinal per-lag vector
 //! nested inside a shuffled record) alongside the id-keyed registries this
 //! axis permutes; walking every array
@@ -18,17 +19,21 @@
 //!
 //! ## Coverage bound
 //!
-//! This primitive permutes JSON registry arrays only. Input parquet row order
-//! (`fpha_hyperplanes.parquet`, seasonal-stats tables) is NOT exercised by
-//! this axis.
+//! This primitive permutes JSON registry arrays and the rows of
+//! [`BOUNDS_FILE`] only. The row order of the other input parquet
+//! tables (`fpha_hyperplanes.parquet`, seasonal-stats tables) is NOT exercised
+//! by this axis.
 
 use std::ffi::OsStr;
 use std::path::Path;
 
+use novomodelo_io::parse_generic_constraint_bounds;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use tempfile::TempDir;
+
+use super::parquet_fixtures::{GenericBoundsRow, write_generic_constraint_bounds};
 
 /// `(case-relative path, top-level keys)` entries whose JSON array order
 /// carries no meaning: each resolves through an id-keyed lookup downstream —
@@ -37,7 +42,10 @@ use tempfile::TempDir;
 /// sorts every field by `hydro_id`/`thermal_id`; `System::hydros`/`thermals`
 /// canonicalize by `(operational_start_date, id)`; `resolve_load_factors`
 /// writes into a dense table keyed by `(bus_id, stage_id, block_id)`;
-/// `novomodelo_io::constraints::generic::convert` sorts `constraints` by `gc.id`;
+/// `novomodelo_io::constraints::generic::convert` sorts `constraints` by `gc.id`
+/// (their `if()` selectors are numbered in file order, and
+/// `scenario_constraint_invariance` in `tests/parity.rs` proves those ids reach
+/// neither the LP nor the outputs) and looks `expressions` up by name;
 /// `novomodelo_io::system::pumping_stations::convert_pumping` sorts
 /// `pumping_stations` by `s.id`; `novomodelo_io::post_study_stages::convert_stages`
 /// rejects a duplicate `start_date` and sorts `stages`, `thermal_stages` and
@@ -69,7 +77,10 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
     ),
     ("system/energy_contracts.json", &["contracts"]),
     ("scenarios/load_factors.json", &["load_factors"]),
-    ("constraints/generic_constraints.json", &["constraints"]),
+    (
+        "constraints/generic_constraints.json",
+        &["constraints", "expressions"],
+    ),
     (
         "constraints/generic_parameters.json",
         &["scalar_parameters"],
@@ -86,6 +97,11 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// The parquet table whose rows are rewritten in a seeded order:
+/// [`parse_generic_constraint_bounds`] sorts them by
+/// `(constraint_id, stage_id, block_id)`.
+const BOUNDS_FILE: &str = "constraints/generic_constraint_bounds.parquet";
+
 /// `(case-relative path, top-level keys)` entries whose JSON array order IS
 /// semantically load-bearing and must never be shuffled by this axis. Empty
 /// today — every registry this axis has encountered resolves through an
@@ -93,8 +109,8 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
 /// one-line justification, the day one does not.
 const KEEP_ORDERED: &[(&str, &[&str])] = &[];
 
-/// Copy `base_dir` into a fresh [`TempDir`], shuffling every
-/// [`SHUFFLE_WHITELIST`]-classified array with an RNG seeded from `seed`.
+/// Copy `base_dir` into a fresh [`TempDir`], shuffling every classified array
+/// and the rows of [`BOUNDS_FILE`] with an RNG seeded from `seed`.
 ///
 /// # Panics
 /// Panics on any I/O or JSON-parse failure, or if a `*.json` file contains a
@@ -167,6 +183,8 @@ fn copy_dir_permuted(case_root: &Path, src_dir: &Path, dst_dir: &Path, rng: &mut
 
         if src_path.extension().and_then(OsStr::to_str) == Some("json") {
             permute_json_file(case_root, &src_path, &dst_path, rng);
+        } else if relative_key(case_root, &src_path) == BOUNDS_FILE {
+            permute_bounds_rows(&src_path, &dst_path, rng);
         } else {
             std::fs::copy(&src_path, &dst_path).unwrap_or_else(|e| {
                 panic!("copy {} -> {}: {e}", src_path.display(), dst_path.display())
@@ -222,4 +240,22 @@ fn permute_json_file(case_root: &Path, src_path: &Path, dst_path: &Path, rng: &m
             panic!("copy {} -> {}: {e}", src_path.display(), dst_path.display())
         });
     }
+}
+
+fn permute_bounds_rows(src_path: &Path, dst_path: &Path, rng: &mut StdRng) {
+    let mut rows: Vec<GenericBoundsRow> = parse_generic_constraint_bounds(src_path)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", src_path.display()))
+        .into_iter()
+        .map(|row| {
+            (
+                row.constraint_id,
+                row.stage_id,
+                row.block_id,
+                row.bound_lower,
+                row.bound_upper,
+            )
+        })
+        .collect();
+    rows.shuffle(rng);
+    write_generic_constraint_bounds(dst_path, &rows);
 }

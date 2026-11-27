@@ -467,6 +467,25 @@ pub struct SimulationGenericViolationResult {
     pub slack_cost: f64,
 }
 
+/// Generic constraint activation for one (stage, block, constraint) tuple.
+///
+/// Corresponds to one row in the `generic_activation` output schema.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SimulationGenericActivationResult {
+    /// Stage index (0-based).
+    pub stage_id: u32,
+    /// Block index within the stage, `None` for a stage-level row.
+    pub block_id: Option<u32>,
+    /// Generic constraint entity ID.
+    pub constraint_id: i32,
+    /// Whether the constraint is active.
+    pub active: bool,
+    /// Lower bound, if the row carries one.
+    pub bound_lower: Option<f64>,
+    /// Upper bound, if the row carries one.
+    pub bound_upper: Option<f64>,
+}
+
 /// Post-horizon commitment lane result for one resolved post-study lane, one
 /// terminal scenario.
 ///
@@ -538,6 +557,8 @@ pub struct SimulationStageResult {
     /// Empty if no generic constraints exist or no violations occurred.
     /// Only non-zero violations are included.
     pub generic_violations: Vec<SimulationGenericViolationResult>,
+    /// Generic constraint activation records for this stage, one per row its solve bounds.
+    pub generic_activation: Vec<SimulationGenericActivationResult>,
     /// Post-horizon commitment lane records for this stage.
     /// Empty except at a declared window's own in-study decider stage.
     pub anticipated_lanes: Vec<SimulationAnticipatedLaneResult>,
@@ -1093,6 +1114,7 @@ mod tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         };
 
@@ -1129,6 +1151,7 @@ mod tests {
                 inflow_lags: vec![],
                 transit_buckets: vec![],
                 generic_violations: vec![],
+                generic_activation: vec![],
                 anticipated_lanes: vec![],
             })
             .collect();

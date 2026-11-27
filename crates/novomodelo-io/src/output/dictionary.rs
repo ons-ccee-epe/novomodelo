@@ -297,10 +297,13 @@ const NAMED_UNITS: &[(&str, &str, &str)] = &[
     ("fpha_deviation_points", "deviation", "MW"),
     ("bounds", "bound_value", VARIES),
     ("generic_violations", "slack_value", VARIES),
+    ("generic_activation", "bound_lower", VARIES),
+    ("generic_activation", "bound_upper", VARIES),
     ("generic_constraint_echo", "coefficient", VARIES),
     ("generic_constraint_echo", "bound_lower", VARIES),
     ("generic_constraint_echo", "bound_upper", VARIES),
     ("generic_constraint_echo", "slack_penalty", VARIES),
+    ("generic_constraint_echo", "value", "MW"),
 ];
 
 fn suffix_unit(name: &str) -> &'static str {
@@ -827,6 +830,35 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "slack_cost",
         "Constraint slack penalty cost",
     ),
+    ("generic_activation", "stage_id", "Stage index"),
+    (
+        "generic_activation",
+        "block_id",
+        "Block index within stage; NULL on a row that holds for every block of the stage",
+    ),
+    (
+        "generic_activation",
+        "constraint_id",
+        "Generic constraint identifier",
+    ),
+    (
+        "generic_activation",
+        "active",
+        "Whether the constraint is active in this stage and block; false where its \
+         active_when condition does not hold, and then both bounds are NULL",
+    ),
+    (
+        "generic_activation",
+        "bound_lower",
+        "Lower bound of the constraint row, NULL on an inactive row or where the row has \
+         no lower side; its unit is that of the constraint identified by constraint_id",
+    ),
+    (
+        "generic_activation",
+        "bound_upper",
+        "Upper bound of the constraint row, NULL on an inactive row or where the row has \
+         no upper side; its unit is that of the constraint identified by constraint_id",
+    ),
     (
         "scenario_summary",
         "probability",
@@ -1258,44 +1290,48 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "Position of the term in the constraint's merged left-hand side, ordered by \
          variable independently of authoring order. Repeated references to one variable \
          merge into one term; two variable names that address the same LP column, such as \
-         hydro_storage and hydro_storage_final, stay separate terms. NULL on a term-less \
-         constraint's placeholder row",
+         hydro_storage and hydro_storage_final, stay separate terms. NULL on a capacity read \
+         row, and on the placeholder row of a constraint with neither a term nor a capacity \
+         read",
     ),
     (
         "generic_constraint_echo",
         "variable_kind",
-        "Kind of the term's variable, such as thermal_generation; NULL on a placeholder row",
+        "Kind of the term's variable, such as thermal_generation, or hydro_availability on a \
+         capacity read row; NULL on a placeholder row",
     ),
     (
         "generic_constraint_echo",
         "variable",
-        "Rendered label of the term's variable; NULL on a placeholder row",
+        "Rendered label of the term's variable or of the capacity read; NULL on a placeholder \
+         row",
     ),
     (
         "generic_constraint_echo",
         "coefficient",
-        "Resolved term coefficient, NULL on a placeholder row. A coefficient that reads a \
-         parameter keeps its row when it resolves to 0.0; a constant coefficient that folds \
-         to exactly zero drops its term at load. It is the coefficient before any factor the \
-         LP applies to the variable's columns; its unit converts the unit of the variable \
-         named by variable_kind into the unit of the constraint identified by constraint_id",
+        "Resolved term coefficient, NULL on a capacity read row and on a placeholder row. A \
+         coefficient that reads a parameter keeps its row when it resolves to 0.0; a constant \
+         coefficient that folds to exactly zero drops its term at load. It is the coefficient \
+         before any factor the LP applies to the variable's columns; its unit converts the \
+         unit of the variable named by variable_kind into the unit of the constraint \
+         identified by constraint_id",
     ),
     (
         "generic_constraint_echo",
         "bound_lower",
-        "Lower interval endpoint, NULL when unbounded below; its unit is that of the \
-         constraint identified by constraint_id",
+        "Lower interval endpoint, NULL when unbounded below or evaluated per solve (see \
+         lower_per_solve); its unit is that of the constraint identified by constraint_id",
     ),
     (
         "generic_constraint_echo",
         "bound_upper",
-        "Upper interval endpoint, NULL when unbounded above; its unit is that of the \
-         constraint identified by constraint_id",
+        "Upper interval endpoint, NULL when unbounded above or evaluated per solve (see \
+         upper_per_solve); its unit is that of the constraint identified by constraint_id",
     ),
     (
         "generic_constraint_echo",
         "derived_shape",
-        "Shape label derived from which interval endpoints are finite",
+        "Shape label derived from which sides the row carries, fixed or evaluated per solve",
     ),
     (
         "generic_constraint_echo",
@@ -1314,6 +1350,30 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "slack_penalty_basis",
         "How slack_penalty is charged: per_hour (times the hours the row spans) or \
          per_unit; NULL when slack is disabled",
+    ),
+    (
+        "generic_constraint_echo",
+        "value",
+        "Effective hydro capacity in MW that the constraint reads through hydro_availability \
+         at this stage and block; NULL on a term row and on a placeholder row",
+    ),
+    (
+        "generic_constraint_echo",
+        "lower_per_solve",
+        "Whether the lower bound is evaluated per solve, so bound_lower holds no static value; \
+         false where the row has no lower bound",
+    ),
+    (
+        "generic_constraint_echo",
+        "upper_per_solve",
+        "Whether the upper bound is evaluated per solve, so bound_upper holds no static value; \
+         false where the row has no upper bound",
+    ),
+    (
+        "generic_constraint_echo",
+        "has_active_when",
+        "Whether the constraint has an active_when condition, so it is inactive in a stage and \
+         block where the condition does not hold",
     ),
     (
         "bounds",
@@ -2909,8 +2969,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 258,
-            "variables.csv must have exactly 258 data rows (one per column across all schemas)"
+            row_count, 266,
+            "variables.csv must have exactly 266 data rows (one per column across all schemas)"
         );
     }
 
@@ -2964,6 +3024,7 @@ mod tests {
                 "in_transit",
                 "transit_seed",
                 "generic_violations",
+                "generic_activation",
                 "paths",
                 "scenario_summary",
                 "convergence",
@@ -3877,10 +3938,13 @@ mod tests {
         ("fpha_deviation_points", "deviation", "MW"),
         ("bounds", "bound_value", "varies"),
         ("generic_violations", "slack_value", "varies"),
+        ("generic_activation", "bound_lower", "varies"),
+        ("generic_activation", "bound_upper", "varies"),
         ("generic_constraint_echo", "coefficient", "varies"),
         ("generic_constraint_echo", "bound_lower", "varies"),
         ("generic_constraint_echo", "bound_upper", "varies"),
         ("generic_constraint_echo", "slack_penalty", "varies"),
+        ("generic_constraint_echo", "value", "MW"),
         ("hydros", "equivalent_productivity_mw_per_m3s", "MW/(m3/s)"),
         ("hydros", "accumulated_productivity_mw_per_m3s", "MW/(m3/s)"),
         (
@@ -4021,6 +4085,17 @@ mod tests {
                 "constraint_id",
             ],
         ),
+        (
+            "generic_activation",
+            &[
+                "scenario_id",
+                "stage_id",
+                "node_id",
+                "block_id",
+                "constraint_id",
+                "active",
+            ],
+        ),
         ("paths", &["scenario_id", "stage_id", "node_id"]),
         ("scenario_summary", &["scenario_id", "probability"]),
         (
@@ -4104,6 +4179,9 @@ mod tests {
                 "derived_shape",
                 "slack_enabled",
                 "slack_penalty_basis",
+                "lower_per_solve",
+                "upper_per_solve",
+                "has_active_when",
             ],
         ),
         (
@@ -4369,6 +4447,8 @@ mod tests {
         const VARIES_COLUMNS: &[(&str, &str, &[&str])] = &[
             ("bounds", "bound_value", &["bound_type_code"]),
             ("generic_violations", "slack_value", &["constraint_id"]),
+            ("generic_activation", "bound_lower", &["constraint_id"]),
+            ("generic_activation", "bound_upper", &["constraint_id"]),
             (
                 "generic_constraint_echo",
                 "coefficient",
@@ -4509,6 +4589,11 @@ mod tests {
             "generic_constraint_echo.term_index must state the merged, variable-ordered \
              left-hand side, got: {term_index:?}"
         );
+        assert!(
+            term_index.contains("NULL on a capacity read row"),
+            "generic_constraint_echo.term_index must state that a capacity read row has none, \
+             got: {term_index:?}"
+        );
         let coefficient = description_for("generic_constraint_echo", "coefficient");
         assert!(
             coefficient.contains("keeps its row when it resolves to 0.0")
@@ -4516,6 +4601,17 @@ mod tests {
             "generic_constraint_echo.coefficient must state the zero-row and pre-factor \
              contract, got: {coefficient:?}"
         );
+        for (bound, flag) in [
+            ("bound_lower", "lower_per_solve"),
+            ("bound_upper", "upper_per_solve"),
+        ] {
+            let description = description_for("generic_constraint_echo", bound);
+            assert!(
+                description.contains("NULL when") && description.contains(flag),
+                "generic_constraint_echo.{bound} must state that it is NULL on a side \
+                 evaluated per solve, got: {description:?}"
+            );
+        }
     }
 
     #[test]

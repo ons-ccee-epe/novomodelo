@@ -50,9 +50,9 @@ pub struct StageTemplates {
     /// [`novomodelo_core::EntityId`] for declaration-order invariance. Bus `i`'s
     /// load-balance base row is [`StageGeometry::load_balance_row`].
     pub load_bus_indices: Vec<usize>,
-    /// Per-stage metadata for active generic constraint rows: one
-    /// [`GenericConstraintRowEntry`] per active `(constraint, block)` pair at
-    /// stage `s`. Empty for stages with no active generic constraints.
+    /// Per-stage metadata for the constraint rows at stage `s`: one
+    /// [`GenericConstraintRowEntry`] per active generic `(constraint, block)`
+    /// pair.
     pub generic_constraint_row_entries: Vec<Vec<GenericConstraintRowEntry>>,
     /// Per-stage equipment geometry for simulation extraction.
     ///

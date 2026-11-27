@@ -333,6 +333,26 @@ pub enum VariableRef {
         /// Pumping station identifier.
         station_id: EntityId,
     },
+    /// Availability of a hydro plant.
+    ///
+    /// Appended at the END of the enum to keep its postcard discriminant stable.
+    HydroAvailability {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+        /// Block selector.
+        block_id: Option<usize>,
+    },
+    /// Generation of unit group `group_id` of hydro plant `hydro_id`.
+    ///
+    /// Appended at the END of the enum to keep its postcard discriminant stable.
+    HydroGroupGeneration {
+        /// Hydro plant identifier.
+        hydro_id: EntityId,
+        /// The plant's `HydroUnitGroup::id`, unique within the plant only.
+        group_id: EntityId,
+        /// Block selector.
+        block_id: Option<usize>,
+    },
 }
 
 /// One term in a linear constraint expression: `coefficient * variable`.
@@ -380,7 +400,8 @@ impl ConstraintExpression {
 }
 
 /// Sort key over a [`VariableRef`], as `(variant_tag, entity_id, block_sentinel,
-/// bus_sentinel)`. The tag numbers variants in declaration order; keep it an explicit
+/// bus_sentinel)`, or `(variant_tag, hydro_id, group_id, block_sentinel)` for
+/// `HydroGroupGeneration`. The tag numbers variants in declaration order; keep it an explicit
 /// match, never a derived `Ord` — the tail variants are appended out of catalog order
 /// to pin their wire discriminants, and a derive would couple this order to that
 /// convention.
@@ -460,6 +481,17 @@ fn canonical_variable_key(v: &VariableRef) -> (u8, i32, i64, i64) {
         VariableRef::HydroOutflowVolume { hydro_id } => (26, hydro_id.0, -1, -1),
         VariableRef::HydroDiversionVolume { hydro_id } => (27, hydro_id.0, -1, -1),
         VariableRef::PumpingVolume { station_id } => (28, station_id.0, -1, -1),
+        VariableRef::HydroAvailability { hydro_id, block_id } => block_key(29, hydro_id, block_id),
+        VariableRef::HydroGroupGeneration {
+            hydro_id,
+            group_id,
+            block_id,
+        } => (
+            30,
+            hydro_id.0,
+            i64::from(group_id.0),
+            block_sentinel(block_id),
+        ),
     }
 }
 
@@ -764,12 +796,27 @@ mod tests {
                     station_id: EntityId(0),
                 },
             ),
+            (
+                "HydroAvailability",
+                VariableRef::HydroAvailability {
+                    hydro_id: EntityId(0),
+                    block_id: None,
+                },
+            ),
+            (
+                "HydroGroupGeneration",
+                VariableRef::HydroGroupGeneration {
+                    hydro_id: EntityId(0),
+                    group_id: EntityId(0),
+                    block_id: None,
+                },
+            ),
         ];
 
         assert_eq!(
             variants.len(),
-            29,
-            "VariableRef must have exactly 29 variants"
+            31,
+            "VariableRef must have exactly 31 variants"
         );
 
         for (name, variant) in variants {
@@ -871,6 +918,27 @@ mod tests {
         assert_eq!(
             pumping_volume[0], 0x1C,
             "PumpingVolume must serialize to postcard discriminant 0x1C"
+        );
+
+        let availability = postcard::to_allocvec(&VariableRef::HydroAvailability {
+            hydro_id: EntityId(0),
+            block_id: None,
+        })
+        .expect("HydroAvailability serializes");
+        assert_eq!(
+            availability[0], 0x1D,
+            "HydroAvailability must serialize to postcard discriminant 0x1D"
+        );
+
+        let group_generation = postcard::to_allocvec(&VariableRef::HydroGroupGeneration {
+            hydro_id: EntityId(1),
+            group_id: EntityId(0),
+            block_id: None,
+        })
+        .expect("HydroGroupGeneration serializes");
+        assert_eq!(
+            group_generation[0], 0x1E,
+            "HydroGroupGeneration must serialize to postcard discriminant 0x1E"
         );
     }
 
@@ -1011,6 +1079,35 @@ mod tests {
         let bytes = postcard::to_allocvec(&v).expect("serialize");
         let recovered: VariableRef = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(v, recovered);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_availability_postcard_roundtrip() {
+        for block_id in [None, Some(2)] {
+            let variable = VariableRef::HydroAvailability {
+                hydro_id: EntityId(7),
+                block_id,
+            };
+            let bytes = postcard::to_allocvec(&variable).expect("serialize");
+            let recovered: VariableRef = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(variable, recovered);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hydro_group_generation_postcard_roundtrip() {
+        for block_id in [None, Some(2)] {
+            let variable = VariableRef::HydroGroupGeneration {
+                hydro_id: EntityId(47),
+                group_id: EntityId(1),
+                block_id,
+            };
+            let bytes = postcard::to_allocvec(&variable).expect("serialize");
+            let recovered: VariableRef = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(variable, recovered);
+        }
     }
 
     #[test]
@@ -1214,6 +1311,15 @@ mod tests {
             VariableRef::PumpingVolume {
                 station_id: EntityId(0),
             },
+            VariableRef::HydroAvailability {
+                hydro_id: EntityId(0),
+                block_id: None,
+            },
+            VariableRef::HydroGroupGeneration {
+                hydro_id: EntityId(0),
+                group_id: EntityId(0),
+                block_id: None,
+            },
         ];
         let mut keys: Vec<_> = vars.iter().map(canonical_variable_key).collect();
         let n = keys.len();
@@ -1224,6 +1330,20 @@ mod tests {
             n,
             "distinct variables must map to distinct canonical keys"
         );
+    }
+
+    #[test]
+    fn hydro_group_generation_keys_by_plant_then_group() {
+        let key = |hydro: i32, group: i32, block_id| {
+            canonical_variable_key(&VariableRef::HydroGroupGeneration {
+                hydro_id: EntityId(hydro),
+                group_id: EntityId(group),
+                block_id,
+            })
+        };
+        assert!(key(1, 2, None) < key(2, 0, None));
+        assert!(key(1, 0, Some(5)) < key(1, 1, None));
+        assert!(key(1, 1, None) < key(1, 1, Some(0)));
     }
 
     #[test]

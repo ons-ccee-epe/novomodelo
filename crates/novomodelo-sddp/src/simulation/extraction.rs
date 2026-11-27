@@ -20,7 +20,7 @@ use novomodelo_core::HydroPastDefluence;
 use crate::energy_conversion::{ENERGY_FACTOR_MWH_PER_HM3_PER_MW_PER_M3S, EnergyConversionSet};
 use crate::horizon_mode::HorizonMode;
 use crate::lp::builder::{
-    GenericConstraintRowEntry, StageGeometry, evaporation_slot, evaporation_slot_count,
+    GenericConstraintRowEntry, PerSolveRow, StageGeometry, evaporation_slot, evaporation_slot_count,
 };
 use crate::lp::indexer::{
     AnticipatedLocal, AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal,
@@ -28,14 +28,15 @@ use crate::lp::indexer::{
     PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
     anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
+use crate::policy::resolved_generic_coefficients::RowBoundScratch;
 use crate::setup::NodeId;
 use crate::simulation::types::{
     ScenarioCategoryCosts, SimulationAnticipatedLaneResult, SimulationBusResult,
     SimulationContractResult, SimulationCostResult, SimulationExchangeResult,
-    SimulationGenericViolationResult, SimulationHydroBusResult, SimulationHydroResult,
-    SimulationInflowLagResult, SimulationNonControllableResult, SimulationPumpingResult,
-    SimulationStageResult, SimulationThermalResult, SimulationTransitBucketResult,
-    SimulationTransitSeedResult,
+    SimulationGenericActivationResult, SimulationGenericViolationResult, SimulationHydroBusResult,
+    SimulationHydroResult, SimulationInflowLagResult, SimulationNonControllableResult,
+    SimulationPumpingResult, SimulationStageResult, SimulationThermalResult,
+    SimulationTransitBucketResult, SimulationTransitSeedResult,
 };
 
 /// Reverse lookups from system hydro index to local FPHA/evaporation/filling-slack
@@ -1384,6 +1385,9 @@ pub(crate) fn extract_stage_result_with_lookups(
         inflow_lags,
         transit_buckets: extract_transit_buckets(view, spec, stage_id),
         generic_violations,
+        // Filled by `extract_sim_stage_result` from the solve's scratch, which
+        // `StageExtractionSpec` does not carry.
+        generic_activation: Vec::new(),
         // The window-indexed delivery-date array lives outside `StageExtractionSpec`
         // (`SimulationOutputSpec::extended_delivery_anchors`); the hot path
         // (`extract_sim_stage_result`) populates this field as a post-step via
@@ -1588,11 +1592,45 @@ fn compute_cost_result(
     }
 }
 
+/// Net slack value and slack cost of one generic-constraint row entry.
+///
+/// For a two-sided row (`slack_minus_col` present) the value is the net violation
+/// `s_plus - s_minus`, while the cost charges both (`s_plus + s_minus`). A hard row
+/// has no slack and reports `(0.0, 0.0)`.
+fn row_slack(
+    view: &SolutionView<'_>,
+    spec: &StageExtractionSpec<'_>,
+    entry: &GenericConstraintRowEntry,
+) -> (f64, f64) {
+    let Some(slack) = entry.slack else {
+        return (0.0, 0.0);
+    };
+    // Same row hours as the LP objective in `fill_generic_constraint_entries`.
+    let row_hours = if entry.is_stage_level {
+        spec.block_hours.iter().sum()
+    } else {
+        spec.block_hours
+            .get(entry.block_idx)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let unit_cost = slack.unit_cost(row_hours);
+    if let Some(minus_col) = entry.slack_minus_col {
+        let s_plus = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
+        let s_minus = view.primal[minus_col];
+        let net = s_plus - s_minus;
+        let cost = (s_plus + s_minus) * unit_cost;
+        (net, cost)
+    } else {
+        let s = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
+        let cost = s * unit_cost;
+        (s, cost)
+    }
+}
+
 /// Extract generic constraint violation results from a solved LP.
 ///
-/// For a two-sided row (`slack_minus_col` present) the reported `slack_value` is
-/// the net violation `s_plus - s_minus`, while its cost charges both
-/// (`s_plus + s_minus`) — one violation record per row either way.
+/// One violation record per generic row, a hard row included.
 fn extract_generic_violations(
     view: &SolutionView<'_>,
     spec: &StageExtractionSpec<'_>,
@@ -1607,31 +1645,7 @@ fn extract_generic_violations(
     let mut total_cost = 0.0;
 
     for entry in entries {
-        // Same row hours as the LP objective in `fill_generic_constraint_entries`.
-        let row_hours = if entry.is_stage_level {
-            spec.block_hours.iter().sum()
-        } else {
-            spec.block_hours
-                .get(entry.block_idx)
-                .copied()
-                .unwrap_or(0.0)
-        };
-        let (slack_value, slack_cost) = if let Some(slack) = entry.slack {
-            let unit_cost = slack.unit_cost(row_hours);
-            if let Some(minus_col) = entry.slack_minus_col {
-                let s_plus = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
-                let s_minus = view.primal[minus_col];
-                let net = s_plus - s_minus;
-                let cost = (s_plus + s_minus) * unit_cost;
-                (net, cost)
-            } else {
-                let s = entry.slack_plus_col.map_or(0.0, |col| view.primal[col]);
-                let cost = s * unit_cost;
-                (s, cost)
-            }
-        } else {
-            (0.0, 0.0)
-        };
+        let (slack_value, slack_cost) = row_slack(view, spec, entry);
 
         total_cost += slack_cost;
 
@@ -1651,6 +1665,37 @@ fn extract_generic_violations(
     }
 
     (results, total_cost)
+}
+
+/// Extract the activation of every generic row of a stage whose bounds its solve wrote into
+/// `scratch`.
+///
+/// One record per row in the order of `rows`; a constraint with no row in `rows` has no record.
+/// `active` is the state the solve recorded, never inferred from the bounds: an active row may be
+/// open on both sides. The bounds are the row's unscaled LP bounds at that solve, `None` where
+/// open.
+pub(crate) fn extract_generic_activation(
+    rows: &[PerSolveRow],
+    scratch: &RowBoundScratch,
+    stage_id: u32,
+) -> Vec<SimulationGenericActivationResult> {
+    debug_assert_eq!(rows.len(), scratch.row_active().len());
+    debug_assert_eq!(rows.len(), scratch.lower().len());
+    debug_assert_eq!(rows.len(), scratch.upper().len());
+    let bounded = |bound: f64| (!bound.is_infinite()).then_some(bound);
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| SimulationGenericActivationResult {
+            stage_id,
+            // SAFETY: block_idx is a stage block index, always < n_blocks which is << 2^32.
+            #[allow(clippy::cast_possible_truncation)]
+            block_id: (!row.is_stage_level).then_some(row.block_idx as u32),
+            constraint_id: row.constraint_id,
+            active: scratch.row_active()[i],
+            bound_lower: bounded(scratch.lower()[i]),
+            bound_upper: bounded(scratch.upper()[i]),
+        })
+        .collect()
 }
 
 /// Extract NCS generation results from a solved LP — dense, one row per system
@@ -2030,6 +2075,7 @@ mod transit_seed_tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         }
     }

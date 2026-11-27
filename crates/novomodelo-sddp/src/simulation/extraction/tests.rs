@@ -10,21 +10,25 @@ use std::collections::HashMap;
 use super::{
     EntityCounts, HydroReverseLookup, SimulationHydroResult, SolutionView, StageExtractionSpec,
     accumulate_category_costs, assign_scenarios, extract_anticipated_lanes, extract_contracts,
-    extract_generic_violations, extract_pumping_stations, extract_stage_result,
-    extract_stub_collections,
+    extract_generic_activation, extract_generic_violations, extract_pumping_stations,
+    extract_stage_result, extract_stub_collections,
 };
 use novomodelo_core::{BlockMode, ContractType, PenaltyBasis, SlackConfig};
 
 use crate::energy_conversion::EnergyConversionSet;
 use crate::horizon_mode::HorizonMode;
 use crate::lead_time::{AnticipatedResolution, PointResolution};
-use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, evaporation_slot_count};
+use crate::lp::builder::{
+    GenericConstraintRowEntry, PerSolveRow, RowOrigin, StageGeometry, evaporation_slot_count,
+};
 use crate::lp::indexer::{
     AnticipatedPlants, BlockIdx, BlockRowFamily, FillingTargetLocal, FloorLocal, FphaCellLocal,
     FphaLocal, HydroCellIndex, HydroSys, StateSpace, StudyDimensions,
 };
+use crate::policy::resolved_generic_coefficients::RowBoundScratch;
 use crate::simulation::types::{
-    ScenarioCategoryCosts, SimulationCostResult, SimulationInflowLagResult,
+    ScenarioCategoryCosts, SimulationCostResult, SimulationGenericActivationResult,
+    SimulationInflowLagResult,
 };
 use crate::test_support;
 use crate::test_support::anticipated_plants_at;
@@ -1256,6 +1260,90 @@ fn extract_equipment_reads_primal_when_with_equipment() {
     assert!((cost.deficit_cost - 10_000_000_000.0).abs() < 1e-3); // 10 * 1000 * 1_000_000
     assert!((cost.excess_cost - 100_000_000.0).abs() < 1e-3); // 2 * 50 * 1_000_000
     assert!((cost.exchange_cost - 75_000_000.0).abs() < 1e-3); // 15 * 5 * 1_000_000
+}
+
+/// A block of zero hours has no energy price, so `extract_buses` reports 0.0
+/// even though the balance dual is nonzero. Dividing it by the hours would give
+/// infinity.
+#[test]
+fn a_block_with_no_hours_prices_its_buses_at_zero() {
+    let counts = test_support::GeometryDims {
+        hydro_count: 0,
+        max_par_order: 0,
+        n_thermals: 0,
+        n_lines: 0,
+        n_buses: 1,
+        n_blks: 1,
+        has_inflow_penalty: false,
+        max_deficit_segments: 1,
+        n_anticipated: 0,
+        lead_stages: 0,
+        anticipated_plants: AnticipatedPlants::default(),
+    };
+    let indexer = test_support::geometry(&counts, vec![], &[], vec![]);
+    let study_dims = test_support::study_dims_for(&counts);
+    let state = test_support::state_layout_full(0, 0, vec![]);
+    let primal = vec![0.0_f64; col_count(&indexer)];
+    let obj = vec![0.0_f64; primal.len()];
+
+    let n_rows = geometry_row_capacity(&indexer);
+    let load_row = indexer.load_balance.start();
+    let mut dual = vec![0.0_f64; n_rows];
+    dual[load_row] = 108_000.0;
+    let mut row_lower = vec![0.0_f64; n_rows];
+    row_lower[load_row] = 75.0;
+
+    let ec = zero_energy_conversion(0, 1);
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: 0.0,
+            objective_coeffs: &obj,
+            row_lower: &row_lower,
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &indexer,
+            hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+            state: &state,
+            entity_counts: &EntityCounts {
+                hydro_ids: vec![],
+                hydro_productivities: vec![],
+                thermal_ids: vec![],
+                line_ids: vec![],
+                bus_ids: vec![100],
+                pumping_station_ids: vec![],
+                contract_ids: vec![],
+                non_controllable_ids: vec![],
+            },
+            inflow_m3s_per_hydro: &[],
+            incoming_lags: &zero_lags(&state),
+            block_hours: &[0.0],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 1_000_000.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    assert_eq!(result.buses.len(), 1);
+    assert_eq!(result.buses[0].load_mw, 75.0);
+    assert_eq!(result.buses[0].spot_price, 0.0);
 }
 
 /// Verify that `is_anticipated` is set to `true` for thermals whose global
@@ -7845,7 +7933,7 @@ fn two_slack_row_entry(
     s_minus: f64,
 ) -> (GenericConstraintRowEntry, Vec<f64>) {
     let entry = GenericConstraintRowEntry {
-        constraint_idx: 0,
+        origin: RowOrigin::Generic { constraint_idx: 0 },
         entity_id: 42,
         block_idx,
         is_stage_level,
@@ -7982,6 +8070,131 @@ fn stage_level_two_sided_prices_summed_stage_hours() {
     assert_eq!(results[0].slack_cost, 1.0 * 1.0 * 730.0);
 }
 
+/// Rows of constraint 701 at blocks 0 and 1 and a stage-level row of 702 each report the
+/// activation the solve recorded and their finite bounds; the stage-level row has no block.
+#[test]
+fn generic_activation_has_one_record_per_row_a_solve_bounds() {
+    let row = |row, constraint_idx, constraint_id, block_idx, is_stage_level| PerSolveRow {
+        row,
+        constraint_idx,
+        constraint_id,
+        block_idx,
+        is_stage_level,
+        base_lower: None,
+        base_upper: None,
+        volume_shift: None,
+    };
+    let rows = [
+        row(10, 0, 701, 0, false),
+        row(11, 0, 701, 1, false),
+        row(12, 1, 702, 0, true),
+    ];
+    let scratch = RowBoundScratch::with_row_bounds(
+        vec![f64::NEG_INFINITY, 35.0, f64::NEG_INFINITY],
+        vec![50.0, f64::INFINITY, f64::INFINITY],
+        vec![true, true, false],
+    );
+
+    let records = extract_generic_activation(&rows, &scratch, 4);
+
+    let record = |block_id, constraint_id, active, bound_lower, bound_upper| {
+        SimulationGenericActivationResult {
+            stage_id: 4,
+            block_id,
+            constraint_id,
+            active,
+            bound_lower,
+            bound_upper,
+        }
+    };
+    assert_eq!(
+        records,
+        [
+            record(Some(0), 701, true, None, Some(50.0)),
+            record(Some(1), 701, true, Some(35.0), None),
+            record(None, 702, false, None, None),
+        ]
+    );
+}
+
+/// An active row open on both sides stays active, so the state is not read from the bounds.
+#[test]
+fn an_active_generic_row_open_on_both_sides_reports_no_bounds() {
+    let rows = [PerSolveRow {
+        row: 10,
+        constraint_idx: 0,
+        constraint_id: 701,
+        block_idx: 0,
+        is_stage_level: false,
+        base_lower: None,
+        base_upper: None,
+        volume_shift: None,
+    }];
+    let scratch =
+        RowBoundScratch::with_row_bounds(vec![f64::NEG_INFINITY], vec![f64::INFINITY], vec![true]);
+
+    let records = extract_generic_activation(&rows, &scratch, 0);
+
+    let [record] = records.as_slice() else {
+        panic!("one record per row: {records:?}");
+    };
+    assert!(record.active);
+    assert_eq!((record.bound_lower, record.bound_upper), (None, None));
+}
+
+#[test]
+fn a_stage_without_per_solve_rows_reports_no_generic_activation() {
+    let records = extract_generic_activation(&[], &RowBoundScratch::default(), 0);
+
+    assert!(records.is_empty());
+}
+
+/// A soft row and a row without slack each report `(constraint, block, slack_value,
+/// slack_cost)`, in entry order, the latter as `(0, 0)`, and the stage total sums the slack
+/// costs: `2.5 · 10 · 330`.
+#[test]
+fn generic_rows_report_one_record_each_and_sum_their_cost() {
+    let (two_sided, primal) = two_slack_row_entry(false, 1, per_hour(10.0), 2.0, 0.5);
+    let soft = GenericConstraintRowEntry {
+        entity_id: 703,
+        ..two_sided
+    };
+    let hard = GenericConstraintRowEntry {
+        origin: RowOrigin::Generic { constraint_idx: 1 },
+        entity_id: 704,
+        block_idx: 0,
+        slack: None,
+        slack_plus_col: None,
+        slack_minus_col: None,
+        ..soft.clone()
+    };
+    let block_hours = [400.0_f64, 330.0_f64];
+    let dual: Vec<f64> = Vec::new();
+    let view = SolutionView {
+        primal: &primal,
+        dual: &dual,
+        objective: 0.0,
+        objective_coeffs: &[],
+        row_lower: &[],
+    };
+    let entries = [soft, hard];
+    let spec = generic_only_spec(&entries, &block_hours);
+
+    let (results, total_cost) = extract_generic_violations(&view, &spec, 5);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].stage_id, 5);
+    assert_eq!(results[0].constraint_id, 703);
+    assert_eq!(results[0].block_id, Some(1));
+    assert_eq!(results[0].slack_value, 1.5);
+    assert_eq!(results[0].slack_cost, 2.5 * 10.0 * 330.0);
+    assert_eq!(results[1].constraint_id, 704);
+    assert_eq!(results[1].block_id, Some(0));
+    assert_eq!(results[1].slack_value, 0.0);
+    assert_eq!(results[1].slack_cost, 0.0);
+    assert_eq!(total_cost, 8250.0);
+}
+
 /// A per-block two-sided entry (`is_stage_level = false`, `block_idx = 1`) over a
 /// 2-block stage reports `block_id = Some(1)` and prices its slack cost on THAT
 /// block's own duration (`330.0`) — not block 0's `400.0` nor the summed `730.0`.
@@ -8043,7 +8256,7 @@ fn stage_level_per_unit_slack_ignores_stage_hours() {
 #[test]
 fn two_sided_slack_disabled_reports_zero_and_contributes_nothing() {
     let entry = GenericConstraintRowEntry {
-        constraint_idx: 0,
+        origin: RowOrigin::Generic { constraint_idx: 0 },
         entity_id: 42,
         block_idx: 0,
         is_stage_level: false,
@@ -8072,4 +8285,36 @@ fn two_sided_slack_disabled_reports_zero_and_contributes_nothing() {
     assert_eq!(results[0].slack_value, 0.0);
     assert_eq!(results[0].slack_cost, 0.0);
     assert_eq!(total_cost, 0.0);
+}
+
+/// derived: a row whose bounds each solve writes keeps both template endpoints, open, and so both
+/// slacks; it reports the net `3 - 1` and charges `(3 + 1) · 100 · 730`.
+#[test]
+fn a_generic_row_bounded_per_solve_reports_its_slack_and_cost() {
+    let (two_sided, primal) = two_slack_row_entry(false, 0, per_hour(100.0), 3.0, 1.0);
+    let entry = GenericConstraintRowEntry {
+        bound_lower: Some(f64::NEG_INFINITY),
+        bound_upper: Some(f64::INFINITY),
+        ..two_sided
+    };
+    let block_hours = [730.0_f64];
+    let dual: Vec<f64> = Vec::new();
+    let view = SolutionView {
+        primal: &primal,
+        dual: &dual,
+        objective: 0.0,
+        objective_coeffs: &[],
+        row_lower: &[],
+    };
+    let entries = [entry];
+    let spec = generic_only_spec(&entries, &block_hours);
+
+    let (results, total_cost) = extract_generic_violations(&view, &spec, 0);
+
+    let [record] = results.as_slice() else {
+        panic!("one record per row: {results:?}");
+    };
+    assert_eq!(record.slack_value, 2.0);
+    assert_eq!(record.slack_cost, 4.0 * 100.0 * 730.0);
+    assert_eq!(total_cost.to_bits(), record.slack_cost.to_bits());
 }

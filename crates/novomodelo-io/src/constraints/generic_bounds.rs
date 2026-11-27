@@ -1,10 +1,6 @@
 //! Parsing for `constraints/generic_constraint_bounds.parquet` — stage/block-varying
 //! RHS values for user-defined generic constraints.
 //!
-//! [`parse_generic_constraint_bounds`] reads
-//! `constraints/generic_constraint_bounds.parquet` and returns a sorted
-//! `Vec<GenericConstraintBoundsRow>`.
-//!
 //! ## Parquet schema
 //!
 //! | Column          | Type          | Required | Description                       |

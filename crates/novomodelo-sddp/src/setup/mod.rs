@@ -53,7 +53,9 @@ use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 use crate::StageTemplates;
 use crate::bucket_topology;
 use crate::config::LoopParams;
-use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
+use crate::policy::resolved_generic_coefficients::{
+    LoadBuses, ResolvedGenericCoefficients, ScenarioSources,
+};
 use crate::resolved_parameters::{ResolvedParameters, build_resolved_parameters};
 use crate::scaling_report::ScalingReport;
 use crate::simulation::{SimulationConfig, SimulationTailrace};
@@ -100,6 +102,7 @@ use novomodelo_core::{
 };
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::build_hydro_reference_volumes_resolved;
+use novomodelo_io::constraints::ScenarioLayer;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::{
     ClassSchemes, ExternalScenarioLibrary, HistoricalScenarioLibrary, StochasticContext,
@@ -191,10 +194,6 @@ pub struct StudySetup {
     /// [`SimulationOutputSpec`](crate::simulation::SimulationOutputSpec) so the
     /// rolling-seed emitter's per-stage windows never re-derive the calendar.
     pub(crate) study_stage_dates: Vec<(NaiveDate, NaiveDate)>,
-
-    /// Every generic-constraint term value and bound remainder per study stage
-    /// and block.
-    pub(crate) resolved_generic_coefficients: ResolvedGenericCoefficients,
 
     /// Iteration-loop parameters projected from [`crate::config::LoopConfig`].
     ///
@@ -417,7 +416,6 @@ impl StudySetup {
             stage_data,
             initial,
             energy_conversion,
-            resolved_generic_coefficients,
             transit_seed_arcs,
         } = resolve_stage_data(system, &config, &stochastic, &hydro_models)?;
         let n_stages = stage_data.stage_templates.templates.len();
@@ -519,7 +517,6 @@ impl StudySetup {
             transit_seed_arcs,
             past_defluences: system.initial_conditions().past_defluences.clone(),
             study_stage_dates,
-            resolved_generic_coefficients,
             loop_params,
             simulation_config,
             simulation_enumerated: config.simulation_enumerated,
@@ -937,21 +934,31 @@ fn build_postprocessed_templates(
 }
 
 /// Build the energy-conversion set, the resolved-parameter table and the
-/// resolved generic-constraint coefficients — the shared prefix of
+/// resolved generic-constraint coefficients over `generic_scenario`, the load of
+/// a bus read from `noise_members` or the stage template — the shared prefix of
 /// [`resolve_stage_data`] and the validate-time
 /// [`validate_generic_constraint_parameters`].
 ///
 /// # Errors
 ///
 /// [`SddpError::Validation`] on energy-conversion or resolved-parameter
-/// construction failure, or a generic-constraint coefficient or bound that
-/// references an unresolved scalar parameter or resolves to a non-finite value
-/// at some study stage and block.
+/// construction failure, or on any error of
+/// [`ResolvedGenericCoefficients::build_with_scenario`]: a plant capacity that
+/// cannot be resolved, a generic-constraint term with no column in a
+/// generic-constraint row, the generation of a unit group without a bus of its
+/// own in its plant
+/// ([`GroupGenerationUnresolvable`](crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficientsError::GroupGenerationUnresolvable)),
+/// a coefficient or bound that references an unresolved id or resolves to a
+/// non-finite value at some study stage and block, a coefficient reading
+/// scenario data, or a load read of a bus without a load or at a block some
+/// study stage does not have.
 fn build_energy_conversion_and_resolved_parameters(
     system: &System,
     hydro_models: &PrepareHydroModelsResult,
     scalar_parameters: &[ScalarParameter],
     cost_scale_factor: f64,
+    generic_scenario: &ScenarioLayer,
+    noise_members: &[EntityId],
 ) -> Result<
     (
         EnergyConversionSet,
@@ -1008,8 +1015,19 @@ fn build_energy_conversion_and_resolved_parameters(
     )
     .map_err(|e| SddpError::Validation(e.to_string()))?;
 
-    let resolved_generic_coefficients = ResolvedGenericCoefficients::build(
+    let bus_ids: Vec<EntityId> = system.buses().iter().map(|bus| bus.id).collect();
+    let resolved_generic_coefficients = ResolvedGenericCoefficients::build_with_scenario(
         system.generic_constraints(),
+        &ScenarioSources {
+            layer: generic_scenario,
+            hydros: system.hydros(),
+            group_bounds: system.bounds().group_overlay(),
+            loads: LoadBuses {
+                buses_with_load: &buses_with_load(system, noise_members),
+                noise_members,
+                bus_ids: &bus_ids,
+            },
+        },
         &resolved_parameters,
         &study_stage_ids,
         &stage_block_counts,
@@ -1026,24 +1044,32 @@ fn build_energy_conversion_and_resolved_parameters(
 /// Reject an unresolved or non-finite generic-constraint coefficient or bound
 /// at validate time, without building stage templates or a full
 /// [`StudySetup`], so a deck with no boundary policy runs the same checks
-/// [`StudySetup::new`] runs.
+/// [`StudySetup::new`] runs, over the scenario layer `generic_scenario` and the
+/// load noise members `noise_members`, ascending.
 ///
 /// # Errors
 ///
-/// [`SddpError::Validation`] on a scalar parameter that fails to resolve, or a
-/// generic-constraint coefficient or bound that references an unresolved scalar
-/// parameter or resolves to a non-finite value.
+/// [`SddpError::Validation`] on a scalar parameter that fails to resolve, a
+/// plant capacity that cannot be resolved, a generic-constraint term with no
+/// column in a generic-constraint row, a generic-constraint coefficient or bound
+/// that references an unresolved id or resolves to a non-finite value, a
+/// coefficient reading scenario data, or a load read of a bus without a load or
+/// at a block some study stage does not have.
 pub fn validate_generic_constraint_parameters(
     system: &System,
     hydro_models: &PrepareHydroModelsResult,
     scalar_parameters: &[ScalarParameter],
     cost_scale_factor: f64,
+    generic_scenario: &ScenarioLayer,
+    noise_members: &[EntityId],
 ) -> Result<(), SddpError> {
     build_energy_conversion_and_resolved_parameters(
         system,
         hydro_models,
         scalar_parameters,
         cost_scale_factor,
+        generic_scenario,
+        noise_members,
     )?;
     Ok(())
 }
@@ -1271,7 +1297,7 @@ pub(crate) fn resolve_state_layout(
 
 /// [`bucket_topology::build_transit_bucket_topology`] then [`resolve_state_layout`]
 /// — the shared prefix [`resolve_stage_data`] and
-/// [`lp_build_inputs::build_stage_templates_resolving_layout`] both need before
+/// `lp_build_inputs::build_stage_templates_resolving_layout` both need before
 /// diverging.
 ///
 /// # Errors
@@ -1943,7 +1969,6 @@ struct ResolvedStageInputs {
     stage_data: StageData,
     initial: InitialConditions,
     energy_conversion: EnergyConversionSet,
-    resolved_generic_coefficients: ResolvedGenericCoefficients,
     transit_seed_arcs: Vec<TransitSeedArc>,
 }
 
@@ -1951,10 +1976,9 @@ struct ResolvedStageInputs {
 /// and initial conditions built once before scenario libraries and the node
 /// graph.
 ///
-/// `energy_conversion`, `resolved_generic_coefficients` and `transit_seed_arcs`
-/// return alongside [`StageData`] rather than fold into it — all three are
-/// `StudySetup`'s own fields, not part of the stage/training/simulation
-/// contexts' shared inputs.
+/// `energy_conversion` and `transit_seed_arcs` return alongside [`StageData`]
+/// rather than fold into it — both are `StudySetup`'s own fields, not part of
+/// the stage/training/simulation contexts' shared inputs.
 ///
 /// # Errors
 ///
@@ -1987,12 +2011,15 @@ fn resolve_stage_data(
         config.boundary.is_present(),
     );
 
+    let noise_members = &stochastic.entity_order()[stochastic.class_dimensions().load_bus_range()];
     let (energy_conversion, resolved_parameters, resolved_generic_coefficients) =
         build_energy_conversion_and_resolved_parameters(
             system,
             hydro_models,
             &config.scalar_parameters,
             config.cost_scale_factor,
+            &config.generic_scenario,
+            noise_members,
         )?;
 
     let stages: Vec<Stage> = system
@@ -2021,10 +2048,9 @@ fn resolve_stage_data(
         system.bounds(),
         &hydro_cell_index,
     );
-    let load_bus_ids = &stochastic.entity_order()[stochastic.class_dimensions().load_bus_range()];
     let inputs = resolve_lp_build_inputs(
         system,
-        load_bus_ids,
+        noise_members,
         &hydro_models.production,
         &study_dims,
         &time_value,
@@ -2070,15 +2096,29 @@ fn resolve_stage_data(
         stage_lag_transitions,
         noise_group_ids,
         scaling_report,
+        generic_rows: resolved_generic_coefficients,
     };
 
     Ok(ResolvedStageInputs {
         stage_data,
         initial,
         energy_conversion,
-        resolved_generic_coefficients,
         transit_seed_arcs,
     })
+}
+
+/// The buses with a load, ascending: those with a load model and the load `noise_members`, so a
+/// bus only an external scenario gives a load counts too.
+fn buses_with_load(system: &System, noise_members: &[EntityId]) -> Vec<EntityId> {
+    let mut buses: Vec<EntityId> = system
+        .load_models()
+        .iter()
+        .map(|model| model.bus_id)
+        .chain(noise_members.iter().copied())
+        .collect();
+    buses.sort_unstable();
+    buses.dedup();
+    buses
 }
 
 /// Build one phase's per-class [`PhaseLibraries`].
@@ -3363,6 +3403,7 @@ mod transit_seed_round_trip_tests {
             inflow_lags: vec![],
             transit_buckets: vec![],
             generic_violations: vec![],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         }
     }
@@ -3495,10 +3536,12 @@ mod transit_seed_round_trip_tests {
 mod scalar_parameter_construction_tests {
     use novomodelo_core::scenario::SamplingScheme;
     use novomodelo_core::{
-        ComputedParameter, ConstraintExpression, EntityId, GenericConstraint, ParameterKind,
-        ScalarExpr, ScalarParameter, System, SystemBuilder,
+        ComputedParameter, ConstraintExpression, EntityId, GenericConstraint, LinearTerm,
+        ParameterKind, ScalarExpr, ScalarParameter, System, SystemBuilder, VariableRef,
     };
     use novomodelo_io::Config;
+    use novomodelo_io::constraints::ScenarioLayer;
+    use novomodelo_io::constraints::scenario::DataAtom;
     use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     use super::{BoundaryStateRequirements, StudySetup};
@@ -3669,11 +3712,66 @@ mod scalar_parameter_construction_tests {
             &hydro_models,
             &[],
             crate::DEFAULT_COST_SCALE_FACTOR,
+            &ScenarioLayer::default(),
+            &[],
         )
         .expect_err("the validate-time guard must reject the unresolved reference");
         assert!(
             matches!(err, SddpError::Validation(ref msg) if msg.contains("probe_constraint") && msg.contains("999")),
             "expected the same fail-loud message the construction path emits, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_generic_constraint_parameters_rejects_an_unsupported_term() {
+        let base = k_fan_system(3, false);
+        let hydro_id = base.hydros()[0].id;
+        let constraint = GenericConstraint {
+            id: EntityId(500),
+            name: "probe_constraint".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroAvailability {
+                        hydro_id,
+                        block_id: None,
+                    },
+                )],
+            },
+            slack: None,
+            bound_lower: Some(ScalarExpr::literal(0.0)),
+            bound_upper: None,
+        };
+        let system = SystemBuilder::new()
+            .buses(base.buses().to_vec())
+            .hydros(base.hydros().to_vec())
+            .stages(base.stages().to_vec())
+            .inflow_models(base.inflow_models().to_vec())
+            .load_models(base.load_models().to_vec())
+            .bounds(base.bounds().clone())
+            .penalties(base.penalties().clone())
+            .initial_conditions(base.initial_conditions().clone())
+            .policy_graph(base.policy_graph().clone())
+            .generic_constraints(vec![constraint])
+            .build()
+            .expect("adding a generic constraint keeps the fixture valid");
+        let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+        let err = super::validate_generic_constraint_parameters(
+            &system,
+            &hydro_models,
+            &[],
+            crate::DEFAULT_COST_SCALE_FACTOR,
+            &ScenarioLayer::default(),
+            &[],
+        )
+        .expect_err(
+            "a term with no generic-constraint column must reject before any template builds",
+        );
+        let term = format!("hydro_availability(id={}, block=all)", hydro_id.0);
+        assert!(
+            matches!(err, SddpError::Validation(ref msg) if msg.contains("probe_constraint") && msg.contains(&term)),
+            "expected the rejection naming the constraint and the term, got: {err:?}"
         );
     }
 
@@ -3686,8 +3784,47 @@ mod scalar_parameter_construction_tests {
             &hydro_models,
             &[],
             crate::DEFAULT_COST_SCALE_FACTOR,
+            &ScenarioLayer::default(),
+            &[],
         )
         .expect("a deck with no generic-constraint parameter gap must pass the guard");
+    }
+
+    /// A lower bound reading the load of bus 1 is evaluated per solve; one reading the load of
+    /// bus 99, which the system does not have, is rejected before any template builds.
+    #[test]
+    fn validate_generic_constraint_parameters_reads_a_bound_per_solve_and_rejects_a_bus_without_load()
+     {
+        let validate = |atom| {
+            let system = system_with_probe_lower_bound(ScalarExpr::param(EntityId(5)));
+            let layer = ScenarioLayer {
+                data_atoms: vec![(EntityId(5), atom)],
+                ..ScenarioLayer::default()
+            };
+            let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+            super::validate_generic_constraint_parameters(
+                &system,
+                &hydro_models,
+                &[],
+                crate::DEFAULT_COST_SCALE_FACTOR,
+                &layer,
+                &[],
+            )
+        };
+        validate(DataAtom::BusLoadValue {
+            bus_id: EntityId(1),
+            block_id: None,
+        })
+        .expect("a lower bound reading the load of bus 1 is evaluated per solve");
+        let err = validate(DataAtom::BusLoadValue {
+            bus_id: EntityId(99),
+            block_id: None,
+        })
+        .expect_err("the load of a bus without load must reject before any template builds");
+        assert!(
+            matches!(err, SddpError::Validation(ref msg) if msg.contains("probe_constraint") && msg.contains("reads the load of bus 99, which has no load")),
+            "expected the rejection naming the constraint and the bus, got: {err:?}"
+        );
     }
 
     #[test]
@@ -3701,6 +3838,8 @@ mod scalar_parameter_construction_tests {
             &hydro_models,
             &[parameter],
             crate::DEFAULT_COST_SCALE_FACTOR,
+            &ScenarioLayer::default(),
+            &[],
         )
         .expect_err("a NaN bound at a stage the constraint is inactive at must still reject");
         assert!(
@@ -3731,6 +3870,8 @@ mod scalar_parameter_construction_tests {
             &inline_models,
             &[numerator.clone(), denominator.clone()],
             crate::DEFAULT_COST_SCALE_FACTOR,
+            &ScenarioLayer::default(),
+            &[],
         )
         .expect_err("the inline quotient by zero must reject");
 
@@ -3746,6 +3887,8 @@ mod scalar_parameter_construction_tests {
             &expression_models,
             &[numerator, denominator, ratio_parameter],
             crate::DEFAULT_COST_SCALE_FACTOR,
+            &ScenarioLayer::default(),
+            &[],
         )
         .expect_err("the expression parameter holding the quotient by zero must reject");
 

@@ -1,6 +1,7 @@
 use novomodelo_core::commissioning::Phase;
 use novomodelo_core::{BlockMode, ContractType, Stage, VariableRef, is_exact_zero};
 
+use super::RowOrigin;
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
@@ -1174,13 +1175,13 @@ pub(super) struct LpMatrixBuffers<'a> {
     pub(super) row_upper: &'a mut [f64],
 }
 
-/// Fill matrix entries, row bounds, and slack columns for every active generic constraint
-/// row at this stage, resolving each term via `resolve_variable_ref` and pricing enabled
-/// slack by `SlackConfig::unit_cost` over the row's hours. Unknown entity IDs resolve to
-/// zero contributions (the defense-in-depth fallback for referential-validation gaps).
-/// Each generic row gets one entry per column, the sum of its terms' entries on that
-/// column, and no entry when that sum is an exact zero. The realized-inflow terms go to
-/// `sink` under the same merge, one entry per hydro.
+/// Fill matrix entries, row bounds, and slack columns for every row of the generic-constraint
+/// row family at this stage, resolving each term via `resolve_variable_ref` and pricing enabled
+/// slack by `SlackConfig::unit_cost` over the row's hours. Unknown entity IDs resolve to zero
+/// contributions (the defense-in-depth fallback for
+/// referential-validation gaps). Each row gets one entry per column, the sum of its terms'
+/// entries on that column, and no entry when that sum is an exact zero. The realized-inflow
+/// terms go to `sink` under the same merge, one entry per hydro.
 pub(super) fn fill_generic_constraint_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -1202,7 +1203,6 @@ pub(super) fn fill_generic_constraint_entries(
     let mut row_inflow_entries: Vec<(usize, f64)> = Vec::new();
     for (entry_idx, entry) in layout.generic_constraint_rows.iter().enumerate() {
         let row = layout.generic_row(entry_idx);
-        let constraint = &ctx.generic_constraints[entry.constraint_idx];
         // A collapsed stage-level row spans the stage's total hours (it stands in for
         // one row per block); a `per_hour` total is penalty-conserving either way.
         let row_hours = if entry.is_stage_level {
@@ -1220,6 +1220,26 @@ pub(super) fn fill_generic_constraint_entries(
 
         row_entries.clear();
         row_inflow_entries.clear();
+        let mut push_term = |variable: &VariableRef, coefficient: f64| {
+            let inflow_start = row_inflow_entries.len();
+            let pairs = resolve_variable_ref(
+                variable,
+                entry.block_idx,
+                stage.id,
+                stage_idx,
+                ctx,
+                layout,
+                &mut row_inflow_entries,
+            );
+            for (col, multiplier) in pairs {
+                row_entries.push((col, coefficient * multiplier));
+            }
+            for (_, multiplier) in &mut row_inflow_entries[inflow_start..] {
+                *multiplier *= coefficient;
+            }
+        };
+        let RowOrigin::Generic { constraint_idx } = entry.origin;
+        let constraint = &ctx.generic_constraints[constraint_idx];
         for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
             // The loader refuses this composition (semantic.5a.56-5a.58); only a SystemBuilder System reaches it.
             debug_assert!(
@@ -1234,27 +1254,12 @@ pub(super) fn fill_generic_constraint_entries(
                 constraint.id.0
             );
             let coefficient = ctx.resolved.resolved_generic_coefficients.term_value(
-                entry.constraint_idx,
+                constraint_idx,
                 term_idx,
                 stage_idx,
                 entry.block_idx,
             );
-            let inflow_start = row_inflow_entries.len();
-            let pairs = resolve_variable_ref(
-                &term.variable,
-                entry.block_idx,
-                stage.id,
-                stage_idx,
-                ctx,
-                layout,
-                &mut row_inflow_entries,
-            );
-            for (col, multiplier) in pairs {
-                row_entries.push((col, coefficient * multiplier));
-            }
-            for (_, multiplier) in &mut row_inflow_entries[inflow_start..] {
-                *multiplier *= coefficient;
-            }
+            push_term(&term.variable, coefficient);
         }
         for (col, sum) in merged_row_entries(&mut row_entries) {
             col_entries[col].push((row, sum));

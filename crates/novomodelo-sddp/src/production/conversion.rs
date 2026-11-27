@@ -2,20 +2,21 @@
 
 use novomodelo_io::output::simulation_writer::{
     AnticipatedLaneWriteRecord, BusWriteRecord, ContractWriteRecord, CostWriteRecord,
-    ExchangeWriteRecord, GenericViolationWriteRecord, HydroBusWriteRecord, HydroWriteRecord,
-    InflowLagWriteRecord, NonControllableWriteRecord, PumpingWriteRecord, ScenarioWritePayload,
-    StageWritePayload, ThermalWriteRecord, TransitBucketWriteRecord, TransitSeedWriteRecord,
+    ExchangeWriteRecord, GenericActivationWriteRecord, GenericViolationWriteRecord,
+    HydroBusWriteRecord, HydroWriteRecord, InflowLagWriteRecord, NonControllableWriteRecord,
+    PumpingWriteRecord, ScenarioWritePayload, StageWritePayload, ThermalWriteRecord,
+    TransitBucketWriteRecord, TransitSeedWriteRecord,
 };
 
 #[cfg(test)]
 use crate::setup::NodeId;
 use crate::simulation::types::{
     SimulationAnticipatedLaneResult, SimulationBusResult, SimulationContractResult,
-    SimulationCostResult, SimulationExchangeResult, SimulationGenericViolationResult,
-    SimulationHydroBusResult, SimulationHydroResult, SimulationInflowLagResult,
-    SimulationNonControllableResult, SimulationPumpingResult, SimulationScenarioResult,
-    SimulationStageResult, SimulationThermalResult, SimulationTransitBucketResult,
-    SimulationTransitSeedResult,
+    SimulationCostResult, SimulationExchangeResult, SimulationGenericActivationResult,
+    SimulationGenericViolationResult, SimulationHydroBusResult, SimulationHydroResult,
+    SimulationInflowLagResult, SimulationNonControllableResult, SimulationPumpingResult,
+    SimulationScenarioResult, SimulationStageResult, SimulationThermalResult,
+    SimulationTransitBucketResult, SimulationTransitSeedResult,
 };
 
 impl IntoWriteRecord for SimulationCostResult {
@@ -289,6 +290,22 @@ impl IntoWriteRecord for SimulationGenericViolationResult {
     }
 }
 
+impl IntoWriteRecord for SimulationGenericActivationResult {
+    type Record = GenericActivationWriteRecord;
+    fn into_write_record(self, node_id: i32) -> GenericActivationWriteRecord {
+        let s = self;
+        GenericActivationWriteRecord {
+            stage_id: s.stage_id,
+            node_id,
+            block_id: s.block_id,
+            constraint_id: s.constraint_id,
+            active: s.active,
+            bound_lower: s.bound_lower,
+            bound_upper: s.bound_upper,
+        }
+    }
+}
+
 impl From<SimulationTransitSeedResult> for TransitSeedWriteRecord {
     fn from(src: SimulationTransitSeedResult) -> Self {
         Self {
@@ -337,6 +354,7 @@ impl From<SimulationStageResult> for StageWritePayload {
             inflow_lags: with_node(src.inflow_lags, node_id),
             transit_buckets: with_node(src.transit_buckets, node_id),
             generic_violations: with_node(src.generic_violations, node_id),
+            generic_activation: with_node(src.generic_activation, node_id),
             anticipated_lanes: with_node(src.anticipated_lanes, node_id),
         }
     }
@@ -573,6 +591,7 @@ mod tests {
                 make_transit_bucket(stage_id, 2),
             ],
             generic_violations: vec![make_generic_violation(stage_id, 0)],
+            generic_activation: vec![],
             anticipated_lanes: vec![],
         }
     }
@@ -690,5 +709,39 @@ mod tests {
         assert_eq!(payload.transit_buckets[0].lag, 1);
         assert_eq!(payload.transit_buckets[0].in_transit_volume_hm3, 12.0);
         assert_eq!(payload.generic_violations[0].constraint_id, 1);
+    }
+
+    #[test]
+    fn convert_stage_result_stamps_the_node_on_generic_activation_records() {
+        let mut stage = make_stage(4);
+        stage.node_id = NodeId(7);
+        stage.generic_activation = vec![SimulationGenericActivationResult {
+            stage_id: 4,
+            block_id: Some(2),
+            constraint_id: 702,
+            active: true,
+            bound_lower: Some(-3.0),
+            bound_upper: Some(12.0),
+        }];
+
+        let payload = StageWritePayload::from(stage);
+
+        let [activation] = payload.generic_activation.as_slice() else {
+            panic!("one generic activation expected");
+        };
+        assert_eq!(
+            (
+                activation.stage_id,
+                activation.node_id,
+                activation.block_id,
+                activation.constraint_id
+            ),
+            (4, 7, Some(2), 702)
+        );
+        assert!(activation.active);
+        assert_eq!(
+            (activation.bound_lower, activation.bound_upper),
+            (Some(-3.0), Some(12.0))
+        );
     }
 }

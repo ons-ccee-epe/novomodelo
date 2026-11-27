@@ -14,6 +14,7 @@ use crate::{
     inflow_method::InflowNonNegativityMethod,
     lp::builder::{InflowCoupling, StageGeometry, StateBox},
     lp::indexer::{CutStateProjection, StateSpace, StudyDimensions},
+    policy::resolved_generic_coefficients::ResolvedGenericCoefficients,
     setup::node_graph::{NodeGraph, StageIdx},
 };
 
@@ -85,6 +86,9 @@ pub struct StageContext<'a> {
     /// forward pass; uniform monthly studies give each stage a unique ID (no
     /// sharing).
     pub noise_group_ids: &'a [u32],
+    /// The generic-constraint row owner; the per-solve patch reads the bounds of the rows of
+    /// [`StageGeometry::per_solve_rows`] from it.
+    pub(crate) generic_rows: &'a ResolvedGenericCoefficients,
 }
 
 impl StageContext<'_> {

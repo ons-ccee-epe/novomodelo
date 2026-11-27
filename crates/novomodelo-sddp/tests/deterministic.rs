@@ -11368,6 +11368,7 @@ mod enumerated_external {
             export_states: false,
             checkpoint_schedule: None,
             scalar_parameters: Vec::new(),
+            generic_scenario: novomodelo_io::constraints::ScenarioLayer::default(),
             training_solver_backward: None,
             training_solver_forward: None,
             simulation_solver: None,
