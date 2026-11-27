@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `constraints/generic_constraints.json` expression without a relational
   operator may have a constant and data part, which shifts each endpoint
   `constraints/generic_constraint_bounds.parquet` gives. It adds none.
+- A scalar-parameter expression that names an unknown variable is refused
+  with the unknown-name message an expression gives, not as an LP variable.
 
 ### Fixed
 
